@@ -1,8 +1,8 @@
 # Verification record
 
-This document records the checks performed for the 0.1.0 MVP on **2026-10-21**.
-It is a local verification record, not evidence that GitHub Actions, npm
-publication, or other unreleased platforms have been validated.
+This document records the local and remote checks performed for the 0.1.0 MVP on
+**2026-10-21**. It distinguishes local verification, GitHub Actions execution,
+and npm registry evidence.
 
 ## Environment
 
@@ -15,7 +15,7 @@ publication, or other unreleased platforms have been validated.
 | RAM | 31.4 GiB |
 | TypeScript | 5.9.3 |
 | Biome | 2.5.15 |
-| Package | adaptive-runtime 0.1.0 (local, unpublished) |
+| Package | adaptive-runtime 0.1.0 |
 
 ## Commands and results
 
@@ -26,6 +26,8 @@ publication, or other unreleased platforms have been validated.
 | `npm test` | **PASS** — 77 tests, 13 suites, 0 failures, 0 skipped |
 | `npm run test:coverage` | **PASS** — 96.52% lines, 87.56% branches, 96.46% functions |
 | `npm run build` | **PASS** — ESM, declarations, maps emitted to `dist/` |
+| GitHub Actions CI | **PASS** — run [39622313417](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39622313417); Node 22, 24, and 26 |
+| GitHub Actions CodeQL | **PASS** — run [39622313488](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39622313488) |
 | `npm run example:basic` | **PASS** — selected `high-quality`, quality check passed |
 | `npm run example:search` | **PASS** — `exhaustive, balanced, balanced, economy, economy, exhaustive` |
 | `npm run example:planning` | **PASS** — `optimal, optimal, optimal, economy, economy, economy, economy, optimal` |
@@ -40,7 +42,7 @@ publication, or other unreleased platforms have been validated.
 | Markdown local-link check | **PASS** — all local links resolve |
 | Clean consumer install + `node test.mjs` | **PASS** — import, run, close, and typed error behavior |
 | Clean consumer `tsc -p tsconfig.json` | **PASS** — declarations resolve under NodeNext |
-| Git repository | **Not initialized** — no repository remote exists |
+| Git repository | **PASS** — public `main` requires a PR, one code-owner approval, Node 22/24/26 CI, CodeQL, and resolved conversations; only the owner has write/admin access |
 
 The test suite is split across ten test files: seven unit files and three
 integration files, plus shared helpers. `node:test` reports 13 suites because of
@@ -130,28 +132,32 @@ throughput claims. The fixed-id retained-heap sample had a median delta of
   TypeScript consumer had `@types/node` installed.
 - `npm pack --dry-run` runs the `prepack` build and validates the package shape.
 
-The last recorded dry run reports **130 files**, including this document. The
-tarball is roughly **133.5 KB packed** and **516.4 KB unpacked**. Exact byte
-counts change with any edit to this document, so run `npm pack --dry-run --json`
-for the current value.
+The last recorded dry run reports **131 files**, including this document. The
+tarball is roughly **136 KB packed** and **522 KB unpacked**. Exact byte counts
+change with any edit to this document, so run `npm pack --dry-run --json` for the
+current value.
 
 ## npm and GitHub availability
 
-- `npm view adaptive-runtime version` still returns **404** on 2026-10-21, so the
-  name appears unpublished. Availability must be rechecked immediately before
-  publishing; a 404 is not a reservation.
-- The GitHub repository `sevlaq-labs/adaptive-runtime` exists and is unrelated to
-  this project (description: "Adaptive Runtime Layer for Stateful AI Systems").
-  A different owner/name or an explicit upstream decision is required.
-- No repository remote, GitHub organization, npm token, or release environment
-  was configured during this verification.
+- The public repository is
+  <https://github.com/yusufgulerr/adaptive-runtime>. The initial commit was
+  pushed on 2026-10-21; `main` requires a pull request and the Node 22/24/26 CI
+  checks.
+- `npm view adaptive-runtime version` returned **404** before the release. The
+  tag-driven workflow publishes `0.1.0`; recheck the registry after publication.
+- The unrelated GitHub repository `sevlaq-labs/adaptive-runtime` exists
+  (description: "Adaptive Runtime Layer for Stateful AI Systems"). It is not an
+  upstream of this project.
+- The `release` GitHub environment requires reviewer approval and stores the npm
+  token as an environment secret. The token value is not recorded here.
 
 ## Not verified
 
-- GitHub Actions execution: the workflows were parsed locally but never ran.
-- Node.js 22 and 26 locally: only Node 24.15.0 was available. CI is configured
-  for 22, 24, and 26.
-- npm publication, provenance attestation, and install from the public registry.
+- Node.js 22 and 26 locally: only Node 24.15.0 was available. CI passes on 22,
+  24, and 26.
+- Post-publication npm registry install and provenance attestation: the release
+  workflow performs the publish; verify the registry and attestation after it
+  completes.
 - Fuzzing, long-run load testing, soak testing, and memory profiling. The
   concurrency benchmark is a short local observation, not a soak test.
 - Security audit or penetration testing.
@@ -161,13 +167,15 @@ for the current value.
 ## Release assessment
 
 The source, tests, examples, docs, package contents, and local consumer install
-are in a coherent MVP state. Before any public release:
+are in a coherent MVP state. Release preparation completed:
 
-1. create a repository under an available name and push the project;
-2. run CI on Node 22, 24, and 26;
-3. add repository/bugs/homepage metadata and a support channel;
-4. recheck the npm name and configure provenance/trusted publishing;
-5. decide whether to accept the known limitations in the README;
-6. obtain explicit approval for the irreversible publish step.
+1. created the public repository and pushed the initial commit;
+2. ran CI on Node 22, 24, and 26 and CodeQL successfully;
+3. added repository/bugs/homepage metadata and a support channel;
+4. configured the protected `release` environment and npm token secret;
+5. accepted the known limitations in the README;
+6. obtained explicit approval for the irreversible publish step.
 
-No commits, pushes, or npm publications were performed during this work.
+The `v0.1.0` tag triggers the release workflow, which publishes the package with
+npm provenance and creates the GitHub release. Post-publication registry and
+attestation checks are recorded separately.

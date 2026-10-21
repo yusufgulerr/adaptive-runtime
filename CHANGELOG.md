@@ -6,6 +6,10 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) after 1.0.
 
 ## [Unreleased]
 
+No changes yet.
+
+## [0.1.0] — 2026-10-21
+
 ### Added
 
 - TypeScript ESM runtime with `createAdaptiveRuntime`, zero runtime dependencies,
@@ -47,12 +51,9 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) after 1.0.
 
 ### Notes
 
-- Version 0.1.0 is implemented and locally verified but **not published**.
-- No repository remote exists yet; CI, CodeQL, and the release workflow have not
-  executed on GitHub.
+- Version 0.1.0 is the first public release.
+- The public repository, CI, CodeQL, and tag-driven release workflow are
+  established; CI passes on Node.js 22, 24, and 26.
+- The package is published with npm provenance.
 - The runtime is not a sandbox and does not enforce OS resource limits.
 - Public API and decision reason codes may change during 0.x.
-
-## [0.1.0] — not released
-
-Initial MVP work is captured under `Unreleased` until the first publication.

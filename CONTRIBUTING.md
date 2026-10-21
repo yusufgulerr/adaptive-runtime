@@ -15,6 +15,18 @@ correctness and clarity before performance or feature count.
 - For security vulnerabilities, follow [SECURITY.md](SECURITY.md), not the public
   issue tracker.
 
+## Roles and access
+
+Adaptive Runtime is a single-maintainer project. Public contributors do not need
+write access: fork the repository, create a branch in your fork, and open a pull
+request. Only [@yusufgulerr](https://github.com/yusufgulerr) has write/admin
+access and can approve external pull requests. Do not ask for write access for a
+one-off change.
+
+All changes to `main` require a pull request, the owner's code-owner approval,
+the Node 22/24/26 CI checks, and CodeQL. See [GOVERNANCE.md](GOVERNANCE.md) for
+the full role and access policy.
+
 ## Development setup
 
 Requirements: Node.js 22 or newer and npm.
@@ -84,11 +96,13 @@ code should not lower coverage materially.
 
 ## Commit and pull request guidelines
 
+- Open pull requests from a fork; direct pushes to `main` are blocked.
 - Keep commits focused; one logical change per commit.
 - Use an imperative subject line, for example `fix: preserve budget state on cached reads`.
 - Explain **why** in the body, not just what changed.
 - Reference related issues.
 - Fill out the pull request template, including verification commands and output.
+- Keep the branch up to date and resolve review conversations before merging.
 - Do not include generated `dist/` output, unless a release process explicitly requires it.
 - Do not commit secrets, tokens, local paths, or editor state.
 
@@ -109,7 +123,7 @@ Maintainers evaluate:
 
 Review is best effort. The project does not currently offer a response SLA.
 
-## Release process (maintainers)
+## Release process (owner only)
 
 1. Ensure `main` is green in CI.
 2. Update `CHANGELOG.md` and the version in `package.json`.

@@ -214,9 +214,10 @@ injects code into consumer processes.
 - CodeQL and Dependabot workflows are provided.
 - The release workflow is manual/tag-driven and intended to use npm provenance.
 
-**Residual risk: medium.** No workflow has executed remotely yet, the repository
-is not published, and no release has been signed or attested. Verify the package
-provenance and integrity before production use.
+**Residual risk: medium.** CI and CodeQL have executed successfully on the public
+repository. The release workflow publishes with npm provenance, but the runtime
+has not been independently audited. Verify the package provenance and integrity
+before production use.
 
 ### T11. Time-of-check/time-of-use changes
 
