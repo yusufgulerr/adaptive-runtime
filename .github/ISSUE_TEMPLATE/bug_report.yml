@@ -30,24 +30,51 @@ body:
       placeholder: "Windows 11, Ubuntu 24.04, macOS 15"
     validations:
       required: true
-  - type: textarea
-    id: description
+  - type: dropdown
+    id: area
     attributes:
-      label: What happened?
-      description: A clear description of the actual behavior.
+      label: Affected area
+      options:
+        - Policy and selection
+        - Signals and providers
+        - Lifecycle, timeout, or abort
+        - Observability and events
+        - Packaging and releases
+        - Documentation and examples
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What happened? Include the exact error name, code, and message.
     validations:
       required: true
   - type: textarea
     id: expected
     attributes:
-      label: What did you expect?
+      label: Expected behavior
+      description: What did you expect instead, and why?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Numbered steps that start from a clean checkout or install.
+      placeholder: |
+        1. Install ...
+        2. Configure ...
+        3. Run ...
+        4. Observe ...
     validations:
       required: true
   - type: textarea
     id: reproduction
     attributes:
       label: Minimal reproduction
-      description: Include code, policy, providers, and steps. Keep it as small as possible.
+      description: Include the smallest policy, provider, and strategy code that triggers the issue.
       render: ts
     validations:
       required: true
@@ -55,8 +82,15 @@ body:
     id: metadata
     attributes:
       label: Decision metadata and logs
-      description: Redact secrets and personal data. Include error name, code, message, and cause.
+      description: Redact secrets and personal data. Include reason codes, budgets, and signal statuses.
       render: text
+    validations:
+      required: false
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Related issues, recent changes, workarounds, or environment details.
     validations:
       required: false
   - type: checkboxes

@@ -59,10 +59,10 @@ representative at an online or offline event.
 ## Enforcement
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
-reported to the community leaders responsible for enforcement through the
-repository hosting platform's private reporting features once the repository is
-published. Until a private channel exists, do not publish sensitive details in a
-public issue; open a minimal issue requesting a private contact channel.
+reported privately to the maintainer through GitHub
+([@yusufgulerr](https://github.com/yusufgulerr)). If you cannot reach a private
+channel, open a minimal issue requesting one; do not publish sensitive details,
+screenshots, or personal information in the public issue.
 
 All complaints will be reviewed and investigated promptly and fairly.
 

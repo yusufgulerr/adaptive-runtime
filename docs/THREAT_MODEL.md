@@ -215,9 +215,9 @@ injects code into consumer processes.
 - The release workflow is manual/tag-driven and intended to use npm provenance.
 
 **Residual risk: medium.** CI and CodeQL have executed successfully on the public
-repository. The release workflow publishes with npm provenance, but the runtime
-has not been independently audited. Verify the package provenance and integrity
-before production use.
+repository. The release workflow is configured to publish with npm provenance,
+but npm publication is still pending and the runtime has not been independently
+audited. Verify the package provenance and integrity before production use.
 
 ### T11. Time-of-check/time-of-use changes
 

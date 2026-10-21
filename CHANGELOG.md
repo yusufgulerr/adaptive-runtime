@@ -51,9 +51,10 @@ No changes yet.
 
 ### Notes
 
-- Version 0.1.0 is the first public release.
+- Version 0.1.0 is the first public source release.
 - The public repository, CI, CodeQL, and tag-driven release workflow are
   established; CI passes on Node.js 22, 24, and 26.
-- The package is published with npm provenance.
+- The release workflow is configured to publish with npm provenance; npm
+  registry publication is still pending.
 - The runtime is not a sandbox and does not enforce OS resource limits.
 - Public API and decision reason codes may change during 0.x.

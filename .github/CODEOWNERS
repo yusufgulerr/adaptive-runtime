@@ -1,3 +1,13 @@
-# All files are owned by the project maintainer.
-# The owner is the only approver for changes to protected branches.
+# All paths require the project owner's review.
+# Keep this file aligned with GOVERNANCE.md and docs/GITHUB_SETTINGS.md.
 * @yusufgulerr
+
+# Critical release, security, and runtime surfaces.
+/.github/ @yusufgulerr
+/src/errors/ @yusufgulerr
+/src/policy/ @yusufgulerr
+/src/providers/ @yusufgulerr
+/src/runtime/ @yusufgulerr
+/src/signals/ @yusufgulerr
+/src/types/ @yusufgulerr
+/docs/ @yusufgulerr

@@ -1,5 +1,18 @@
 # Adaptive Runtime
 
+<p align="center">
+  <a href="https://github.com/yusufgulerr/adaptive-runtime/actions/workflows/ci.yml">
+    <img alt="CI" src="https://github.com/yusufgulerr/adaptive-runtime/actions/workflows/ci.yml/badge.svg?branch=main">
+  </a>
+  <a href="LICENSE">
+    <img alt="License: Apache-2.0" src="https://img.shields.io/github/license/yusufgulerr/adaptive-runtime">
+  </a>
+  <img alt="PRs welcome" src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg">
+  <a href="https://github.com/yusufgulerr/adaptive-runtime/commits/main">
+    <img alt="Last commit" src="https://img.shields.io/github/last-commit/yusufgulerr/adaptive-runtime">
+  </a>
+</p>
+
 A small, dependency-free TypeScript runtime that selects between **your own**
 algorithmic strategies using explicit resource signals and policy.
 
@@ -8,8 +21,10 @@ strategies with declared quality and cost tiers. The runtime reads the signals
 you supply, applies a deterministic policy, and runs exactly one strategy with
 inspectable metadata explaining the choice.
 
-> **Status: v0.1.0 MVP.** Published on npm as `adaptive-runtime`. It has not
-> been hardened for production traffic. See
+> **Status: v0.1.0 source release.** The public repository is live and
+> CI/CodeQL pass. npm publication is still pending; do not assume
+> `npm install adaptive-runtime` resolves until the registry release is verified.
+> This MVP has not been hardened for production traffic. See
 > [Status and limitations](#status-and-limitations).
 
 ## Why
@@ -46,12 +61,33 @@ included in CI so the next LTS is exercised, but the locally verified runtime is
 
 ## Installation
 
+### From the repository (current)
+
+```bash
+git clone https://github.com/yusufgulerr/adaptive-runtime.git
+cd adaptive-runtime
+npm ci
+npm run build
+```
+
+The package is ESM-only and requires Node.js 22 or newer. For development, run
+`npm ci` and use the commands in [Development](#development).
+
+### From npm (after publication)
+
 ```bash
 npm install adaptive-runtime
 ```
 
-The package is ESM-only and requires Node.js 22 or newer. For a local checkout,
-run `npm install` and use the development commands below.
+`npm view adaptive-runtime version` currently returns 404. The registry command
+becomes valid only after the first tag-driven release completes and is verified.
+
+## Configuration
+
+Adaptive Runtime does not read environment variables and has no `.env` contract.
+Configure strategies, providers, budgets, and policy explicitly in code with
+`createAdaptiveRuntime` and `definePolicy`. Keep application secrets in your own
+environment; `.env` files are ignored by this repository.
 
 ## Quick start
 
@@ -301,10 +337,10 @@ cost was approximately:
 
 | Mode | µs/run | Relative to direct |
 | --- | ---: | ---: |
-| Direct call | 0.254 | 1.00x |
-| Runtime, static policy | 2.759 | 10.86x |
-| Runtime, adaptive, fresh read | 6.708 | 26.40x |
-| Runtime, adaptive, cached read | 3.071 | 12.09x |
+| Direct call | 0.304 | 1.00x |
+| Runtime, static policy | 3.282 | 10.79x |
+| Runtime, adaptive, fresh read | 7.966 | 26.20x |
+| Runtime, adaptive, cached read | 3.551 | 11.68x |
 
 These numbers measure runtime overhead on one machine, not total application
 throughput. A separate concurrency/memory observation is in
@@ -344,7 +380,8 @@ examples/      runnable examples
 tests/         unit and integration tests
 benchmarks/    local overhead micro-benchmark
 docs/          architecture, API, API design, provider/observability guides,
-               cookbook, migration guide, ADRs, roadmap
+               cookbook, migration guide, release runbook, GitHub settings,
+               ADRs, roadmap
 ```
 
 ## Status and limitations
@@ -361,16 +398,26 @@ has not been fuzzed, load-tested, or audited. Known limitations:
   selection even if the queued caller aborts; cancellation is observed when the
   lock is released.
 - Decision state is per process and in memory; it is not persisted or coordinated.
-- The package is published on npm, and CI/CodeQL pass on the public repository at
-  <https://github.com/yusufgulerr/adaptive-runtime>.
+- The public source repository is at
+  <https://github.com/yusufgulerr/adaptive-runtime>; CI and CodeQL pass there.
+  npm publication is pending. See [docs/VERIFICATION.md](docs/VERIFICATION.md)
+  for the current release evidence.
 
 See [docs/ROADMAP.md](docs/ROADMAP.md) and [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
+
+## Security
+
+Do not report vulnerabilities in a public issue. Use the repository's private
+**Security → Report a vulnerability** flow and read [SECURITY.md](SECURITY.md).
+The runtime is not a sandbox; treat strategies and providers as trusted code.
 
 ## Contributing
 
 Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md),
 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md), and [SECURITY.md](SECURITY.md). Project
 roles, review rules, and access policy are in [GOVERNANCE.md](GOVERNANCE.md).
+Repository settings and the exact review gate are documented in
+[docs/GITHUB_SETTINGS.md](docs/GITHUB_SETTINGS.md).
 
 ## License
 

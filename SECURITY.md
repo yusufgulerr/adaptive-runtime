@@ -2,9 +2,10 @@
 
 ## Supported versions
 
-Version **0.1.0** is the first public release. No version is currently supported
-for production use. The latest 0.x minor line will receive security fixes on a
-best-effort basis; older lines may require an upgrade.
+Version **0.1.0** is the first public source release. npm publication is still
+pending. No version is currently supported for production use. The latest 0.x
+minor line will receive security fixes on a best-effort basis; older lines may
+require an upgrade.
 
 | Version | Supported |
 | --- | --- |
@@ -15,12 +16,14 @@ best-effort basis; older lines may require an upgrade.
 
 **Do not open a public issue with exploit details.**
 
-Use **Security → Report a vulnerability** in the repository. That creates a
-private discussion visible only to maintainers and the reporter.
+Private vulnerability reporting is enabled. Use
+[**Security → Report a vulnerability**](https://github.com/yusufgulerr/adaptive-runtime/security/advisories/new)
+in the repository. That creates a private discussion visible only to maintainers
+and the reporter.
 
-If private advisories are not yet available, open a minimal public issue asking
-for a private contact channel. Do not include reproduction steps, payloads,
-tokens, or affected downstream users in that issue.
+If the private form is unavailable, open a minimal public issue asking for a
+private contact channel. Do not include reproduction steps, payloads, tokens, or
+affected downstream users in that issue.
 
 Please include, in the private report:
 
@@ -76,9 +79,10 @@ The [threat model](docs/THREAT_MODEL.md) explains these boundaries in detail.
 
 ## Dependency and release security
 
-- The published package has no runtime dependencies.
+- The package has no runtime dependencies.
 - Development dependencies are locked by `package-lock.json`.
 - CI runs CodeQL and Dependabot is configured for npm and GitHub Actions.
-- Releases are tag-driven and published with npm provenance.
-- CI and CodeQL pass on the public repository. Verify the npm provenance
-  attestation and pin versions before production use.
+- The release workflow is tag-driven and configured to publish with npm
+  provenance.
+- CI and CodeQL pass on the public repository. After publication, verify the npm
+  provenance attestation and pin versions before production use.

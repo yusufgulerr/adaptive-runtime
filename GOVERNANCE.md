@@ -64,11 +64,13 @@ a request made only in an issue comment.
 - Only the owner creates release tags.
 - Tags matching `v*` are protected: creation, update, and deletion are restricted
   to the repository administrator role.
-- The `release` GitHub environment requires owner approval and stores the npm
-  token as an environment secret.
-- The tag-driven workflow runs the full checks, publishes with npm provenance, and
-  creates the GitHub release.
+- The `release` GitHub environment requires owner approval. `NPM_TOKEN` must be
+  stored as an environment secret before the first publish.
+- The tag-driven workflow runs the full checks and is configured to publish with
+  npm provenance and create the GitHub release.
 - Publishing from a local dirty working tree is not permitted.
+- The complete repository-settings checklist is in
+  [docs/GITHUB_SETTINGS.md](docs/GITHUB_SETTINGS.md).
 
 ## Security and repository settings
 
