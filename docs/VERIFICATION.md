@@ -158,15 +158,19 @@ Queried with `gh api` on 2026-10-21:
 | Security | Private vulnerability reporting, secret scanning, push protection, Dependabot alerts, and automated security fixes enabled |
 | Release environment | `release`, required reviewer `@yusufgulerr`, tag deployment policy |
 
-Remote workflow evidence for the current remote `main`:
+Remote workflow evidence:
 
 | Workflow | Result |
 | --- | --- |
-| CI | **PASS** — run [39626683262](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39626683262) |
-| CodeQL | **PASS** — run [39626682970](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39626682970) |
+| CI on `main` baseline | **PASS** — run [39626683262](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39626683262) |
+| CodeQL on `main` baseline | **PASS** — run [39626682970](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39626682970) |
+| CI on PR #6 (Node 22/24/26 plus Windows/macOS) | **PASS** — run [39636395046](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39636395046) |
+| CodeQL on PR #6 | **PASS** — run [39636395012](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39636395012) |
+| Dependency Review on PR #6 | **PASS** — run [39636395231](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39636395231) |
 
-The workflow changes in this working tree (cross-platform CI, Dependency Review,
-OIDC release) have not been pushed yet, so their remote execution is pending.
+The cross-platform and Dependency Review workflows executed successfully on
+PR [#6](https://github.com/yusufgulerr/adaptive-runtime/pull/6). The OIDC release
+workflow has not executed because no `v*` tag exists; publishing remains pending.
 
 ## Release status
 
@@ -184,17 +188,17 @@ and clean-consumer checks pass.
 ## Not verified
 
 - Node.js 22 and 26 locally: only Node 24.15.0 was available. Remote CI has passed
-  on 22, 24, and 26 for the pushed remote state; the new cross-platform workflow
-  has not run yet.
-- The new Dependency Review workflow and OIDC release path have not executed
-  remotely.
+  on 22, 24, and 26, including the Windows and macOS jobs on PR #6.
+- The OIDC release path has not executed because no release tag exists. Its first
+  real execution is the approved publish step.
 - Post-publication npm registry install and provenance attestation: the release
   workflow performs the publish; verify the registry and attestation after it
   completes.
 - Fuzzing, long-run load testing, soak testing, and memory profiling. The
   concurrency benchmark is a short local observation, not a soak test.
 - Security audit or penetration testing.
-- Local behavior on Linux, macOS, browsers, Deno, Bun, or worker-thread isolation.
+- Behavior beyond the CI checks on macOS, and any behavior on browsers, Deno,
+  Bun, or worker-thread isolation.
 - Benchmark behavior under real provider I/O or multi-core scaling.
 
 ## Release assessment
@@ -210,7 +214,8 @@ consumer installs are coherent for 0.1.0. Release preparation completed:
    features;
 5. configured the protected `release` environment and OIDC release workflow;
 6. bounded per-operation state, split the policy core, and added subpath exports;
-7. verified the full local gate, package tarball, and consumer imports.
+7. verified the full local gate, package tarball, and consumer imports;
+8. verified Linux, Windows, macOS, CodeQL, and Dependency Review on PR #6.
 
 The source repository is public and verified. The npm publish, `v0.1.0` tag, and
 GitHub release are **pending**. Publishing requires explicit owner approval. Once
