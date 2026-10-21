@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   ConfigurationError,
+  FallbackStrategyError,
   MissingSignalError,
   NoEligibleStrategyError,
   OperationAbortedError,
@@ -13,9 +14,18 @@ import {
   StrategyExecutionError,
 } from "../../src/errors/index.js";
 import { createAdaptiveRuntime } from "../../src/runtime/runtime.js";
+import {
+  validateOperation,
+  validateOperationId,
+  validateOptionalAbortSignal,
+  validateProviderTimeout,
+  validateStrategies,
+  validateTimeout,
+} from "../../src/runtime/validate.js";
 import type { Policy } from "../../src/types/policy.js";
 import type { ResourceSignal, SignalProvider } from "../../src/types/signals.js";
 import type { Strategy } from "../../src/types/strategy.js";
+import { errorMessage, toError } from "../../src/utils/errors.js";
 import { FakeClock } from "../helpers/fake-clock.js";
 import { FunctionSignalProvider, okSignal, SequenceSignalProvider } from "../helpers/providers.js";
 
@@ -722,5 +732,284 @@ describe("AdaptiveRuntime", () => {
     assert.equal((await second).value, "survivor");
     assert.equal(reads, 1);
     await runtime.close();
+  });
+
+  it("removes all retained state and stats for one operation", async () => {
+    const clock = new FakeClock();
+    const runtime = createAdaptiveRuntime({
+      clock,
+      providers: [fixedProvider(10)],
+      policy: policy(),
+    });
+    const strategies = basicStrategies();
+    await runtime.run({ operationId: "remove-me", input: 1, strategies });
+    runtime.pinStrategy("remove-me", "high");
+    runtime.setAdaptationEnabled("remove-me", false);
+    assert.notEqual(runtime.getDecision("remove-me"), null);
+    assert.equal(runtime.getStats("remove-me").runs, 1);
+
+    assert.equal(runtime.removeOperation("remove-me"), true);
+    assert.equal(runtime.getDecision("remove-me"), null);
+    assert.equal(runtime.getStats("remove-me").runs, 0);
+    assert.equal(runtime.removeOperation("remove-me"), false);
+    assert.throws(() => runtime.removeOperation("   "), ConfigurationError);
+
+    await runtime.close();
+    assert.throws(() => runtime.removeOperation("remove-me"), RuntimeClosedError);
+  });
+
+  it("resets one operation's stats or every operation's stats", async () => {
+    const clock = new FakeClock();
+    const runtime = createAdaptiveRuntime({
+      clock,
+      providers: [fixedProvider(10)],
+      policy: policy(),
+    });
+    const strategies = basicStrategies();
+    await runtime.run({ operationId: "stats-a", input: 1, strategies });
+    await runtime.run({ operationId: "stats-a", input: 2, strategies });
+    await runtime.run({ operationId: "stats-b", input: 3, strategies });
+
+    runtime.resetStats("stats-a");
+    assert.equal(runtime.getStats("stats-a").runs, 0);
+    assert.equal(runtime.getStats("stats-a").successes, 0);
+    assert.equal(runtime.getStats("stats-b").runs, 1);
+    assert.notEqual(runtime.getDecision("stats-a"), null);
+
+    runtime.resetStats();
+    assert.equal(runtime.getStats("stats-b").runs, 0);
+    assert.notEqual(runtime.getDecision("stats-b"), null);
+
+    await runtime.close();
+    assert.throws(() => runtime.resetStats(), RuntimeClosedError);
+    assert.throws(() => runtime.resetStats("stats-a"), RuntimeClosedError);
+  });
+
+  it("evicts the least-recently-used operation when maxTrackedOperations is exceeded", async () => {
+    const clock = new FakeClock();
+    const runtime = createAdaptiveRuntime({
+      clock,
+      providers: [fixedProvider(10)],
+      policy: policy({ maxTrackedOperations: 2 }),
+    });
+    const strategies = basicStrategies();
+    await runtime.run({ operationId: "lru-a", input: 1, strategies });
+    await runtime.run({ operationId: "lru-b", input: 2, strategies });
+
+    assert.notEqual(runtime.getDecision("lru-a"), null);
+    await runtime.run({ operationId: "lru-c", input: 3, strategies });
+
+    assert.notEqual(runtime.getDecision("lru-a"), null);
+    assert.equal(runtime.getDecision("lru-b"), null);
+    assert.equal(runtime.getStats("lru-b").runs, 0);
+    assert.notEqual(runtime.getDecision("lru-c"), null);
+    await runtime.close();
+  });
+
+  it("never evicts pinned operations while enforcing the tracking bound", async () => {
+    const clock = new FakeClock();
+    const runtime = createAdaptiveRuntime({
+      clock,
+      providers: [fixedProvider(10)],
+      policy: policy({ maxTrackedOperations: 1 }),
+    });
+    const strategies = basicStrategies();
+    runtime.pinStrategy("pinned-keep", "high");
+    await runtime.run({ operationId: "pinned-keep", input: 1, strategies });
+    await runtime.run({ operationId: "pinned-other", input: 2, strategies });
+
+    assert.notEqual(runtime.getDecision("pinned-keep"), null);
+    assert.equal(runtime.getDecision("pinned-other"), null);
+
+    runtime.unpinStrategy("pinned-keep");
+    const afterUnpin = await runtime.run({
+      operationId: "pinned-keep",
+      input: 3,
+      strategies,
+    });
+    assert.equal(afterUnpin.metadata.strategyId, "high");
+    assert.equal(afterUnpin.metadata.decision.kind, "retained");
+    await runtime.close();
+  });
+
+  it("re-applies the tracking bound when a pin is released", async () => {
+    const clock = new FakeClock();
+    const runtime = createAdaptiveRuntime({
+      clock,
+      providers: [fixedProvider(10)],
+      policy: policy({ maxTrackedOperations: 1 }),
+    });
+    const strategies = basicStrategies();
+    runtime.pinStrategy("pin-release-a", "high");
+    runtime.pinStrategy("pin-release-b", "high");
+    await runtime.run({ operationId: "pin-release-a", input: 1, strategies });
+    await runtime.run({ operationId: "pin-release-b", input: 2, strategies });
+
+    assert.notEqual(runtime.getDecision("pin-release-a"), null);
+    assert.notEqual(runtime.getDecision("pin-release-b"), null);
+
+    runtime.unpinStrategy("pin-release-a");
+    assert.equal(runtime.getDecision("pin-release-a"), null);
+    assert.notEqual(runtime.getDecision("pin-release-b"), null);
+    await runtime.close();
+  });
+
+  it("refuses to remove an operation during an active selection", async () => {
+    const clock = new FakeClock();
+    let release: (() => void) | undefined;
+    const provider = new FunctionSignalProvider({
+      read: () => {
+        return new Promise<readonly ResourceSignal[]>((resolve) => {
+          release = () => resolve([okSignal(SIGNAL, 10, clock.now())]);
+        });
+      },
+    });
+    const runtime = createAdaptiveRuntime({
+      clock,
+      providers: [provider],
+      policy: policy(),
+    });
+    const pending = runtime.run({
+      operationId: "busy-operation",
+      input: 1,
+      strategies: basicStrategies(),
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    assert.equal(runtime.removeOperation("busy-operation"), false);
+    release?.();
+    await pending;
+    assert.equal(runtime.removeOperation("busy-operation"), true);
+    await runtime.close();
+  });
+
+  it("describes both branches of typed error messages", () => {
+    assert.match(new NoEligibleStrategyError("op", undefined).message, /no quality floor/);
+    assert.match(new NoEligibleStrategyError("op", 2).message, /quality floor 2/);
+    assert.match(new PinnedStrategyError("op", "s", "not-found").message, /not defined/);
+    assert.match(new PinnedStrategyError("op", "s", "not-applicable").message, /not applicable/);
+    assert.match(new FallbackStrategyError("op", "s", "not-found").message, /not defined/);
+    assert.match(new FallbackStrategyError("op", "s", "not-applicable").message, /not applicable/);
+
+    const plain = new StrategyExecutionError("op", "s", {} as never, 1, "plain failure");
+    assert.match(plain.message, /plain failure/);
+    const wrapped = new StrategyExecutionError("op", "s", {} as never, 1, new Error("cause text"));
+    assert.match(wrapped.message, /cause text/);
+  });
+});
+
+describe("operation validation", () => {
+  const strategies = basicStrategies();
+
+  it("rejects malformed operation containers, signals, and timeouts", () => {
+    assert.throws(() => validateOperation(null), ConfigurationError);
+    assert.throws(
+      () =>
+        validateOperation({
+          operationId: "bad-signal",
+          input: 1,
+          strategies,
+          signal: null as unknown as AbortSignal,
+        }),
+      ConfigurationError,
+    );
+    assert.throws(
+      () =>
+        validateOperation({
+          operationId: "bad-signal",
+          input: 1,
+          strategies,
+          signal: {} as AbortSignal,
+        }),
+      ConfigurationError,
+    );
+    assert.throws(
+      () =>
+        validateOperation({
+          operationId: "bad-timeout",
+          input: 1,
+          strategies,
+          timeoutMs: Number.NaN,
+        }),
+      ConfigurationError,
+    );
+    assert.throws(
+      () =>
+        validateOperation({
+          operationId: "bad-timeout",
+          input: 1,
+          strategies,
+          timeoutMs: -1,
+        }),
+      ConfigurationError,
+    );
+  });
+
+  it("covers identifier, signal, timeout, and provider-timeout helpers", () => {
+    assert.equal(validateOperationId("  trimmed  "), "trimmed");
+    assert.throws(() => validateOperationId("   "), ConfigurationError);
+    assert.throws(() => validateOperationId(42), ConfigurationError);
+    assert.equal(validateOptionalAbortSignal(undefined), undefined);
+    assert.equal(validateTimeout(undefined), undefined);
+    assert.equal(validateTimeout(5), 5);
+    assert.throws(() => validateTimeout(0), ConfigurationError);
+    assert.equal(validateProviderTimeout(undefined), 1000);
+    assert.equal(validateProviderTimeout(0), 0);
+    assert.throws(() => validateProviderTimeout(-1), ConfigurationError);
+    assert.throws(() => validateProviderTimeout(Number.POSITIVE_INFINITY), ConfigurationError);
+  });
+
+  it("rejects malformed strategy declarations", () => {
+    assert.throws(() => validateStrategies("not-an-array"), ConfigurationError);
+    assert.throws(() => validateStrategies([]), ConfigurationError);
+    assert.throws(() => validateStrategies([null]), ConfigurationError);
+    assert.throws(
+      () => validateStrategies([strategy("dup", 1, () => ""), strategy("dup", 2, () => "")]),
+      ConfigurationError,
+    );
+    assert.throws(() => validateStrategies([{ id: "no-run", qualityTier: 1 }]), ConfigurationError);
+    assert.throws(
+      () =>
+        validateStrategies([
+          { id: "bad-cost", qualityTier: 1, costTier: Number.NaN, run: () => "" },
+        ]),
+      ConfigurationError,
+    );
+    assert.throws(
+      () =>
+        validateStrategies([
+          { id: "bad-quality", qualityTier: 1, checkQuality: "no" as never, run: () => "" },
+        ]),
+      ConfigurationError,
+    );
+    assert.throws(
+      () =>
+        validateStrategies([
+          { id: "bad-applicability", qualityTier: 1, isApplicable: "no" as never, run: () => "" },
+        ]),
+      ConfigurationError,
+    );
+  });
+
+  it("rejects malformed runtime construction options", () => {
+    assert.throws(() => createAdaptiveRuntime({ clock: {} as never }), ConfigurationError);
+    assert.throws(() => createAdaptiveRuntime({ providers: {} as never }), ConfigurationError);
+    assert.throws(
+      () => createAdaptiveRuntime({ policy: { maxTrackedOperations: 0 } }),
+      ConfigurationError,
+    );
+    assert.throws(() => createAdaptiveRuntime(null as never), ConfigurationError);
+  });
+
+  it("normalizes and truncates error messages safely", () => {
+    assert.equal(errorMessage(new Error("short")), "short");
+    assert.equal(errorMessage("plain"), "plain");
+    const truncated = errorMessage("x".repeat(1001));
+    assert.equal(truncated.length, 1001);
+    assert.ok(truncated.endsWith("…"));
+
+    const original = new Error("kept");
+    assert.equal(toError(original), original);
+    assert.equal(toError("converted").message, "converted");
   });
 });

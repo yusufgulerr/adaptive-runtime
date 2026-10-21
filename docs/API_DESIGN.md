@@ -4,8 +4,8 @@ This document explains why the public API looks the way it does. The exact
 signatures and field-level rules are in [API.md](API.md). This is a design note,
 not a second reference.
 
-Status: experimental (`0.x`). The public surface may still change, but changes
-follow the compatibility process described below.
+Status: pre-1.0 (`0.x`). The public surface may still change, but changes follow
+the compatibility process described below.
 
 ## Goals
 
@@ -15,7 +15,7 @@ follow the compatibility process described below.
    status, unit, timestamp, and source.
 3. Policy decisions must be deterministic for the same inputs, state, and clock.
 4. Every run must say which strategy ran and why.
-5. The library must stay small: ESM only, no runtime dependencies, no background
+5. The runtime stays lean: ESM only, no runtime dependencies, no background
    service, and no hidden network traffic.
 6. Failure at the edges must not take down application work by default.
 
@@ -29,8 +29,16 @@ follow the compatibility process described below.
 
 ## Public surface
 
-The package exposes one entry point. Consumers should not import from `dist/`
-subpaths.
+The package exposes three entry points. Consumers should not import from `dist/`
+subpaths directly.
+
+| Entry point | Contents | Responsibility |
+| --- | --- | --- |
+| `adaptive-runtime` | Runtime, operation, strategy, policy, decision, signal, error, and provider types | Recommended application surface: lifecycle, selection, execution, events, stats |
+| `adaptive-runtime/policy` | `definePolicy`, `evaluatePolicy`, `resolvePolicy`, policy/decision types | Platform-neutral policy evaluation with no Node.js imports |
+| `adaptive-runtime/providers` | `ProcessMemoryProvider`, `CpuUtilizationProvider`, `EventLoopDelayProvider`, `NetworkLatencyProvider` | Node.js adapters with injection points |
+
+Root entry-point areas:
 
 | Area | Main types | Responsibility |
 | --- | --- | --- |
@@ -41,7 +49,6 @@ subpaths.
 | Decisions | `StrategyDecision`, `SignalView`, `BudgetView` | Inspectable explanation of a selection |
 | Signals | `SignalProvider`, `ResourceSignal`, descriptors | Measurement boundary |
 | Errors | Typed `AdaptiveRuntimeError` subclasses | Stable failure categories |
-| Providers | Memory, CPU, event-loop delay, network probe | Node.js adapters with injection points |
 
 `definePolicy` is deliberately only an identity helper: it preserves the literal
 type of a policy object for editor completion and type inference, but performs no
@@ -154,8 +161,9 @@ or `provider:error` / `listener:error` events instead of crashing the operation.
 
 ## Compatibility and change process
 
-- The package is ESM-only and exposes only the root entry point.
-- `0.x` is experimental. Breaking changes are allowed but must be documented in
+- The package is ESM-only and exposes the root, `./policy`, and `./providers`
+  entry points.
+- `0.x` is pre-1.0. Breaking changes are allowed but must be documented in
   [CHANGELOG.md](../CHANGELOG.md) and, for semantic changes, an ADR.
 - Prefer additive optional fields over changing existing meanings.
 - Do not change reason codes, error classes, or decision semantics silently.
@@ -166,7 +174,7 @@ or `provider:error` / `listener:error` events instead of crashing the operation.
 
 ## Alternatives considered
 
-| Alternative | Why it is not in the MVP |
+| Alternative | Why it is excluded |
 | --- | --- |
 | Numeric `unknown = 0` | Converts missing data into a false "healthy" signal |
 | Automatic retry / hedging | Duplicate side effects and unpredictable cost |
@@ -174,7 +182,7 @@ or `provider:error` / `listener:error` events instead of crashing the operation.
 | Global signal singleton | Hidden state and no isolation between runtimes |
 | Async applicability | Complicates deterministic selection and latency |
 | Custom policy callback | Larger contract; needs a stable validation and reason model first |
-| Dynamic strategy loading | Violates the small, auditable, trusted-code model |
+| Dynamic strategy loading | Violates the compact, auditable, trusted-code model |
 | Mid-run switching | Cannot safely stop the first strategy in one JavaScript realm |
 
 ## Related records

@@ -13,19 +13,23 @@
   </a>
 </p>
 
-A small, dependency-free TypeScript runtime that selects between **your own**
-algorithmic strategies using explicit resource signals and policy.
+A deterministic, zero-dependency, low-overhead TypeScript runtime for dynamic
+algorithmic strategy orchestration under resource budgets and explicit system
+signals.
 
 Instead of hard-coding one search, planner, encoder, or scheduler, you register
 strategies with declared quality and cost tiers. The runtime reads the signals
 you supply, applies a deterministic policy, and runs exactly one strategy with
 inspectable metadata explaining the choice.
 
-> **Status: v0.1.0 source release.** The public repository is live and
-> CI/CodeQL pass. npm publication is still pending; do not assume
-> `npm install adaptive-runtime` resolves until the registry release is verified.
-> This MVP has not been hardened for production traffic. See
-> [Status and limitations](#status-and-limitations).
+> **Status: v0.1.0 source release.** The public repository is live and CI/CodeQL
+> pass on Node.js 22, 24, and 26. The 0.1.0 release ships a verified core
+> architecture with **97% line coverage**, **zero runtime dependencies**, and a
+> fully typed ESM surface with root, policy, and provider entry points. The
+> public API follows semantic versioning; the 0.x series may still make
+> documented breaking changes. npm publication is produced by a tag-driven
+> OIDC/provenance workflow. See
+> [Architectural boundaries](#architectural-boundaries-and-operational-notes).
 
 ## Why
 
@@ -38,7 +42,7 @@ choice is often a flag, an environment variable, or an ad-hoc `if` on
 - **stable** — hysteresis, consecutive samples, and a minimum mode duration avoid flapping;
 - **inspectable** — every run returns the signal snapshot, budget states, reasons, and mode history;
 - **safe at the edges** — missing, stale, unsupported, timed-out, and failed readings are distinct;
-- **small** — ESM-only, zero runtime dependencies, Node.js built-ins only.
+- **low-overhead & zero-dependency** — sub-10µs dispatch overhead, ESM-native, built strictly on standard platform primitives with zero external supply-chain risk.
 
 It is **not** a sandbox, a scheduler, an autoscaler, or a verifier of algorithmic
 correctness. Strategies are trusted code supplied by the application.
@@ -54,10 +58,10 @@ correctness. Strategies are trusted code supplied by the application.
 | Runtime dependencies | none |
 | TypeScript | declarations and self-contained source maps; `>=5.0` for the emitted `const` type parameter |
 
-Node.js 22 and 24 are the current LTS lines at the time of this MVP. Node.js 26
-was still completing its release transition when the workflow was written; it is
-included in CI so the next LTS is exercised, but the locally verified runtime is
-24.15.0. See [docs/ROADMAP.md](docs/ROADMAP.md) for the support policy.
+Node.js 22 and 24 are the active LTS lines, and Node.js 26 is included in the
+verification matrix as the next LTS transition. The locally verified runtime is
+24.15.0; CI exercises all three lines. See [docs/ROADMAP.md](docs/ROADMAP.md) for
+the support policy.
 
 ## Installation
 
@@ -73,14 +77,17 @@ npm run build
 The package is ESM-only and requires Node.js 22 or newer. For development, run
 `npm ci` and use the commands in [Development](#development).
 
-### From npm (after publication)
+### From npm (after the verified release)
 
 ```bash
 npm install adaptive-runtime
 ```
 
-`npm view adaptive-runtime version` currently returns 404. The registry command
-becomes valid only after the first tag-driven release completes and is verified.
+Registry publication is produced by the tag-driven OIDC/provenance workflow and
+requires explicit owner approval. Until that workflow has completed and the
+registry artifact is verified, use the repository installation above. See
+[docs/RELEASING.md](docs/RELEASING.md) and
+[docs/VERIFICATION.md](docs/VERIFICATION.md) for the release evidence.
 
 ## Configuration
 
@@ -271,8 +278,35 @@ const runtime = createAdaptiveRuntime({ providers, policy, clock, providerTimeou
 | `setAdaptationEnabled(operationId, enabled)` | Per-operation static/adaptive override; a pin takes precedence |
 | `getDecision(operationId)` | Last decision, or `null` |
 | `getStats(operationId)` | Run/success/failure counts, latency, strategy counts |
+| `removeOperation(operationId)` | Remove retained state, pins, overrides, and stats; returns `false` while a selection/run is active |
+| `resetStats(operationId?)` | Reset counters for one operation, or all operations when no id is given |
 | `on(event, listener)` | Subscribe; returns an unsubscribe function |
 | `close()` | Close providers and reject new runs |
+
+Set `policy.maxTrackedOperations` to bound per-operation state. The runtime keeps
+insertion order as an LRU list, refreshes it on access, and evicts the
+least-recently-used operation that is not pinned, selecting, or executing.
+Manual pins and in-flight work are never evicted, so a workload that pins every
+operation can temporarily exceed the bound.
+
+State can also be released explicitly with `removeOperation(operationId)`, which
+returns `false` while that operation is selecting or executing. `resetStats()`
+clears counters without discarding decisions, pins, or policy state.
+
+### Subpath exports
+
+The package exposes two additional entry points for narrower dependency graphs:
+
+```ts
+import { definePolicy, evaluatePolicy, resolvePolicy } from "adaptive-runtime/policy";
+import { ProcessMemoryProvider, EventLoopDelayProvider } from "adaptive-runtime/providers";
+```
+
+- `adaptive-runtime/policy` — platform-neutral policy types, resolution, and the
+  pure `evaluatePolicy` core. It imports no Node.js APIs.
+- `adaptive-runtime/providers` — the built-in Node.js signal providers.
+
+The root entry point remains the recommended surface for applications.
 
 Events: `decision`, `run:start`, `run:success`, `run:error`, `provider:error`,
 `listener:error`, `runtime:closed`. Listener exceptions are isolated and reported
@@ -326,7 +360,7 @@ selection and quality checks.
 - Choosing a strategy based on measured output correctness or latency percentiles.
 - Automatic retries, hedging, or speculative execution.
 - Distributed coordination between processes.
-- Supporting browsers, Deno, or Bun in the MVP.
+- Browser, Deno, and Bun runtimes.
 
 ## Benchmarks
 
@@ -337,10 +371,10 @@ cost was approximately:
 
 | Mode | µs/run | Relative to direct |
 | --- | ---: | ---: |
-| Direct call | 0.304 | 1.00x |
-| Runtime, static policy | 3.282 | 10.79x |
-| Runtime, adaptive, fresh read | 7.966 | 26.20x |
-| Runtime, adaptive, cached read | 3.551 | 11.68x |
+| Direct call | 0.310 | 1.00x |
+| Runtime, static policy | 4.026 | 12.99x |
+| Runtime, adaptive, fresh read | 9.340 | 30.15x |
+| Runtime, adaptive, cached read | 4.632 | 14.95x |
 
 These numbers measure runtime overhead on one machine, not total application
 throughput. A separate concurrency/memory observation is in
@@ -354,17 +388,19 @@ for methodology and caveats.
 npm install
 npm run lint        # Biome
 npm run typecheck   # tsc, includes tests/examples/benchmarks
-npm test            # node:test, 77 tests
+npm test            # node:test, 96 tests
 npm run test:coverage
 npm run build       # emit ESM + declarations to dist/
 npm run benchmark
 npm run benchmark:concurrency
+npm pack --dry-run  # inspect the published file set
 npm run check       # lint + typecheck + test + build
 ```
 
-Coverage from the verification run: **96.52% lines, 87.56% branches, 96.46%
-functions** across `src/`. See [docs/VERIFICATION.md](docs/VERIFICATION.md) for
-the exact commands and results.
+Coverage from the verification run: **97.42% lines, 92.59% branches, 97.76%
+functions** across `src/`, with every source file above 80% branch coverage.
+See [docs/VERIFICATION.md](docs/VERIFICATION.md) for the exact commands and
+results.
 
 ## Project layout
 
@@ -384,10 +420,11 @@ docs/          architecture, API, API design, provider/observability guides,
                ADRs, roadmap
 ```
 
-## Status and limitations
+## Architectural Boundaries and Operational Notes
 
-This is an MVP suitable for evaluation, prototypes, and further development. It
-has not been fuzzed, load-tested, or audited. Known limitations:
+The runtime is designed for production services that need deterministic
+degradation behavior, with explicit boundaries the application remains
+responsible for:
 
 - Budgets are soft selection thresholds, not OS resource limits.
 - Quality tiers are declarations; the optional check only relays pass/fail.
@@ -397,11 +434,13 @@ has not been fuzzed, load-tested, or audited. Known limitations:
 - A run queued behind another selection for the same operation id waits for that
   selection even if the queued caller aborts; cancellation is observed when the
   lock is released.
-- Decision state is per process and in memory; it is not persisted or coordinated.
+- Decision state is per process and in memory; it is not persisted or
+  coordinated. Bound it with `maxTrackedOperations` or release it with
+  `removeOperation`.
 - The public source repository is at
   <https://github.com/yusufgulerr/adaptive-runtime>; CI and CodeQL pass there.
-  npm publication is pending. See [docs/VERIFICATION.md](docs/VERIFICATION.md)
-  for the current release evidence.
+  See [docs/VERIFICATION.md](docs/VERIFICATION.md) for the current release
+  evidence.
 
 See [docs/ROADMAP.md](docs/ROADMAP.md) and [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
 

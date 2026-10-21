@@ -1,8 +1,9 @@
 # Contributing
 
-Thank you for considering a contribution. This project aims to stay small,
-predictable, and easy to audit. Discussions and pull requests should optimize for
-correctness and clarity before performance or feature count.
+Thank you for considering a contribution. This project prioritizes predictable
+behavior, a minimal dependency surface, and auditable code. Discussions and pull
+requests should optimize for correctness and clarity before performance or
+feature count.
 
 ## Before you start
 
@@ -181,7 +182,8 @@ Maintainers evaluate:
 5. Documentation and changelog.
 6. Performance only when measured and attributable.
 
-Review is best effort. The project does not currently offer a response SLA.
+Reviews are mandatory for every change. Review latency depends on maintainer
+availability; the quality gate itself is not optional.
 
 ## Release process (owner only)
 

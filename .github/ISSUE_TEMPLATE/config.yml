@@ -3,6 +3,9 @@ contact_links:
   - name: Report a security vulnerability
     url: https://github.com/yusufgulerr/adaptive-runtime/security/advisories/new
     about: Report vulnerabilities privately. Do not open a public issue with exploit details.
+  - name: Ask a question in Discussions
+    url: https://github.com/yusufgulerr/adaptive-runtime/discussions
+    about: Ask usage questions and discuss design ideas with the community.
   - name: Read the documentation
     url: https://github.com/yusufgulerr/adaptive-runtime#readme
     about: Start with the README, API reference, cookbook, and provider guide.

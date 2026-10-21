@@ -7,6 +7,23 @@ This is the repository-specific settings and access checklist for
 Only the owner changes these settings. Any change should be made through a pull
 request that updates this file, `GOVERNANCE.md`, or both.
 
+## Repository profile
+
+| Item | Value |
+| --- | --- |
+| Description | `Deterministic, resource-aware adaptive execution runtime for TypeScript and Node.js — dynamically orchestrating algorithmic strategies via explicit resource signals, budgets, and hysteresis policies.` |
+| Homepage | `https://github.com/yusufgulerr/adaptive-runtime#readme` |
+| Topics | `adaptive-runtime`, `nodejs`, `typescript`, `policy-engine`, `resource-management`, `graceful-degradation`, `load-shedding`, `hysteresis`, `resilience`, `observability`, `performance`, `quality-of-service`, `zero-dependencies`, `esm` |
+| Discussions | Enabled |
+| Wiki | Not used; documentation lives in `docs/` |
+| Issues | Enabled; blank issues disabled, forms only |
+
+The 28 repository labels cover the issue/PR taxonomy: `type:*`, `area:*`,
+`priority:*`, plus `status:needs-triage`, `good first issue`,
+`help wanted`, `dependencies`, `documentation`, `accessibility`, and the
+GitHub default labels. Keep label names stable; templates and saved searches
+reference them.
+
 ## Access model
 
 | Item | Required state |
@@ -60,6 +77,55 @@ equivalent `pull_request`, `required_status_checks`, `non_fast_forward`,
 the only bypass actor. Do not enable both mechanisms at the same time unless you
 have verified how their requirements combine.
 
+Reference ruleset payload (OpenSSF-aligned; not applied today because branch
+protection already enforces the same gate):
+
+```json
+{
+  "name": "Protect main",
+  "target": "branch",
+  "enforcement": "active",
+  "conditions": {
+    "ref_name": { "include": ["~DEFAULT_BRANCH"], "exclude": [] }
+  },
+  "bypass_actors": [
+    { "actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always" }
+  ],
+  "rules": [
+    { "type": "deletion" },
+    { "type": "non_fast_forward" },
+    { "type": "required_linear_history" },
+    {
+      "type": "pull_request",
+      "parameters": {
+        "required_approving_review_count": 1,
+        "dismiss_stale_reviews_on_push": true,
+        "require_code_owner_review": true,
+        "require_last_push_approval": true,
+        "required_review_thread_resolution": true,
+        "allowed_merge_methods": ["squash"]
+      }
+    },
+    {
+      "type": "required_status_checks",
+      "parameters": {
+        "strict_required_status_checks_policy": true,
+        "required_status_checks": [
+          { "context": "Node 22" },
+          { "context": "Node 24" },
+          { "context": "Node 26" },
+          { "context": "Analyze JavaScript/TypeScript" }
+        ]
+      }
+    }
+  ]
+}
+```
+
+Apply it with `gh api --method POST repos/yusufgulerr/adaptive-runtime/rulesets
+--input ruleset.json` only after disabling the overlapping branch protection
+rule. Verify the resulting `required_status_checks` contexts before relying on it.
+
 ## Protect release tags
 
 Use **Settings → Rules → Rulesets → New tag ruleset**. The repository currently has
@@ -103,9 +169,16 @@ Use **Settings → Actions → General**:
 | Allow GitHub Actions to create or approve pull requests | Disabled |
 | Fork pull request workflows | Require approval for all external contributors |
 
-The workflows declare the minimum permissions they need. The release workflow is
-the only workflow that requests `contents: write` and `id-token: write`, and it is
-gated by the `release` environment.
+The workflows declare the minimum permissions they need. CI adds a cross-platform
+job on Windows and macOS without changing the required Linux check names. The
+release workflow is the only workflow that requests `contents: write` and
+`id-token: write`, and it is gated by the `release` environment.
+
+`.github/workflows/dependency-review.yml` runs
+`actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48`
+(v4.9.0) on every pull request and fails on high-severity vulnerable dependency
+changes. It has `contents: read` and `pull-requests: write` (for the summary
+comment) and does not run on tags.
 
 Do not add a third-party action without an explicit owner decision, a pinned SHA,
 and a review of its permissions.
@@ -130,11 +203,15 @@ Use **Settings → Environments → release**:
 
 - Required reviewer: `@yusufgulerr`
 - Prevent self-review: **off** (the owner is the only reviewer)
-- Environment secret: `NPM_TOKEN`, added only after npm authentication
 - Deployment branches and tags: tags matching `v*`
+- Trusted publishing: npm publisher `yusufgulerr` / repository `adaptive-runtime`
+  / workflow `release.yml` / environment `release`
+- Environment secret: `NPM_TOKEN` only if the OIDC fallback is required; never add
+  it to repository-wide secrets
 
-The `release` environment is the irreversible publish gate. Do not add the npm
-token to repository-wide secrets. See [RELEASING.md](RELEASING.md) for the
+The `release` environment is the irreversible publish gate. OIDC trusted
+publishing needs no long-lived npm token: the job requests `id-token: write` and
+npm verifies the workflow identity. See [RELEASING.md](RELEASING.md) for the
 runbook and [VERIFICATION.md](VERIFICATION.md) for the current publication status.
 
 ## Verify from the command line
@@ -152,6 +229,9 @@ gh api repos/yusufgulerr/adaptive-runtime/actions/permissions
 gh api repos/yusufgulerr/adaptive-runtime/actions/permissions/workflow
 gh api repos/yusufgulerr/adaptive-runtime/actions/permissions/fork-pr-contributor-approval
 gh api repos/yusufgulerr/adaptive-runtime/automated-security-fixes
+gh api repos/yusufgulerr/adaptive-runtime/vulnerability-alerts
+gh api repos/yusufgulerr/adaptive-runtime/topics
+gh api repos/yusufgulerr/adaptive-runtime --jq '{description, homepage, has_discussions}'
 ```
 
 Never print `NPM_TOKEN`, npm auth tokens, or private vulnerability reports in a

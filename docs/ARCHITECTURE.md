@@ -1,8 +1,9 @@
 # Architecture
 
-Adaptive Runtime is deliberately small: a pure policy core surrounded by an
-orchestration layer that owns provider lifecycle, execution, and observability.
-There are no runtime dependencies and no background scheduler.
+Adaptive Runtime is organized around a pure policy core surrounded by an
+orchestration layer that owns provider lifecycle, execution, bounded operation
+state, and observability. There are no runtime dependencies and no background
+scheduler.
 
 ## Component map
 
@@ -31,9 +32,13 @@ There are no runtime dependencies and no background scheduler.
 
 | Path | Responsibility |
 | --- | --- |
-| `src/runtime/runtime.ts` | Public orchestration, operation validation, serialization, pins, stats, events |
-| `src/policy/engine.ts` | Pure selection and budget state machine |
+| `src/runtime/runtime.ts` | Public orchestration, operation validation, serialization, LRU state, pins, stats, events |
+| `src/policy/engine.ts` | Pure policy orchestration and decision assembly |
+| `src/policy/budgets.ts` | Budget hysteresis and consecutive-sample transitions |
+| `src/policy/candidates.ts` | Candidate filtering, clamping, and deterministic tie-breaking |
+| `src/policy/stability.ts` | Minimum mode duration and pending-candidate streaks |
 | `src/policy/resolve.ts` | Policy defaults and construction-time validation |
+| `src/policy/index.ts` | Platform-neutral `adaptive-runtime/policy` entry point |
 | `src/signals/collector.ts` | Provider start/close, snapshot cache, timeouts, reading validation |
 | `src/runtime/executor.ts` | Exactly-once strategy invocation, timeout and abort races |
 | `src/runtime/emitter.ts` | Typed events with listener isolation |
@@ -41,9 +46,10 @@ There are no runtime dependencies and no background scheduler.
 | `src/providers/` | Node-specific measurements |
 | `src/types/` | Public contracts |
 
-The policy engine imports only types and errors. It does not import `node:*`,
-providers, the runtime, or any I/O. This makes selection testable with plain
-objects and a fake clock.
+The policy modules import only types, errors, and each other. They do not import
+`node:*`, providers, the runtime, or any I/O. This makes selection testable with
+plain objects and a fake clock, and lets `adaptive-runtime/policy` load in
+non-Node tooling that understands ESM.
 
 ## Run sequence
 
@@ -240,7 +246,32 @@ Removing the abort listener is also done in `finally`.
   are isolated.
 
 The runtime does not bound concurrency. Callers that need admission control must
-provide it.
+provide it. It can bound retained per-operation state instead; see below.
+
+## Bounded operation state
+
+Operation-keyed maps (`#states`, `#decisions`, `#pins`,
+`#adaptationOverrides`, `#stats`, `#locks`, and the active-run counter) grow with
+the number of distinct operation ids. `Policy.maxTrackedOperations` bounds them.
+
+- The default is `null` (unbounded). A configured value must be a positive safe
+  integer.
+- Retained operation records form an LRU list. Reading a decision or stats,
+  selecting, pinning, and updating stats all refresh recency.
+- When an insert would exceed the bound, the least-recently-used operation that
+  is not pinned, selecting, or executing is evicted. That operation loses its
+  decision, stats, policy state, and adaptation override. Pins prevent eviction,
+  so an evicted operation never loses a pin.
+- If every retained operation is protected, the runtime temporarily exceeds the
+  bound. It never evicts active or pinned work to satisfy the limit.
+- `removeOperation(id)` performs the same cleanup explicitly and returns `false`
+  while that operation is selecting or executing.
+- `resetStats(id?)` clears counters without discarding decisions, pins, or policy
+  state. Resetting one operation retains its LRU entry; resetting all removes
+  entries that no longer own any state.
+
+Eviction is deterministic: the LRU order is the insertion/refresh order, and no
+clock or sampling influences it.
 
 ## Lifecycle
 
@@ -290,7 +321,8 @@ change a result.
 | Cooperative cancellation | Works with plain JS promises | Cannot stop uncooperative work |
 | Error readings instead of throwing | Resilient to telemetry failures | Failures can be silent unless observed |
 | No retries | Predictable attempt counts and side effects | Applications must implement their own retry policy |
-| Zero dependencies | Small supply chain and install footprint | Some utilities are implemented locally |
+| Zero dependencies | Minimal supply chain and install footprint | Some utilities are implemented locally |
+| Bounded LRU state | Predictable memory under high-cardinality ids | Least-recently-used state can be discarded |
 
 ## Extension points
 

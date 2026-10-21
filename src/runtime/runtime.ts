@@ -74,6 +74,8 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
   readonly #adaptationOverrides = new Map<string, boolean>();
   readonly #stats = new StatsRegistry();
   readonly #locks = new Map<string, Promise<unknown>>();
+  readonly #tracked = new Map<string, true>();
+  readonly #activeRuns = new Map<string, number>();
   #closed = false;
   #closePromise: Promise<void> | null = null;
 
@@ -107,8 +109,9 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
       throw new OperationAbortedError(operationId, userSignal.reason);
     }
 
-    this.#stats.begin(operationId);
     const runStartedAt = this.#clock.now();
+    this.#stats.begin(operationId);
+    this.#beginActiveRun(operationId);
     let decision: StrategyDecision | undefined;
 
     try {
@@ -178,17 +181,25 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
         durationMs,
       });
       throw error;
+    } finally {
+      this.#endActiveRun(operationId);
     }
   }
 
   pinStrategy(operationId: string, strategyId: string): void {
     this.#ensureOpen();
-    this.#pins.set(validateOperationId(operationId), validateOperationId(strategyId, "strategyId"));
+    const id = validateOperationId(operationId);
+    this.#pins.set(id, validateOperationId(strategyId, "strategyId"));
+    this.#trackOperation(id);
+    this.#enforceTrackingLimit();
   }
 
   unpinStrategy(operationId: string): void {
     this.#ensureOpen();
-    this.#pins.delete(validateOperationId(operationId));
+    const id = validateOperationId(operationId);
+    this.#pins.delete(id);
+    this.#pruneTracked(id);
+    this.#enforceTrackingLimit();
   }
 
   setAdaptationEnabled(operationId: string, enabled: boolean): void {
@@ -196,15 +207,56 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
     if (typeof enabled !== "boolean") {
       throw new ConfigurationError("enabled must be a boolean.");
     }
-    this.#adaptationOverrides.set(validateOperationId(operationId), enabled);
+    const id = validateOperationId(operationId);
+    this.#adaptationOverrides.set(id, enabled);
+    this.#trackOperation(id);
+    this.#enforceTrackingLimit();
   }
 
   getDecision(operationId: string): StrategyDecision | null {
-    return this.#decisions.get(validateOperationId(operationId)) ?? null;
+    const id = validateOperationId(operationId);
+    const decision = this.#decisions.get(id) ?? null;
+    if (this.#hasOperationRecord(id)) {
+      this.#trackOperation(id);
+    }
+    return decision;
   }
 
   getStats(operationId: string): RuntimeStats {
-    return this.#stats.get(validateOperationId(operationId));
+    const id = validateOperationId(operationId);
+    const stats = this.#stats.get(id);
+    if (this.#hasOperationRecord(id)) {
+      this.#trackOperation(id);
+    }
+    return stats;
+  }
+
+  removeOperation(operationId: string): boolean {
+    this.#ensureOpen();
+    const id = validateOperationId(operationId);
+    if (this.#locks.has(id) || this.#activeRuns.has(id)) {
+      return false;
+    }
+    let removed = false;
+    removed = this.#states.delete(id) || removed;
+    removed = this.#decisions.delete(id) || removed;
+    removed = this.#pins.delete(id) || removed;
+    removed = this.#adaptationOverrides.delete(id) || removed;
+    removed = this.#stats.remove(id) || removed;
+    this.#tracked.delete(id);
+    return removed;
+  }
+
+  resetStats(operationId?: string): void {
+    this.#ensureOpen();
+    if (operationId === undefined) {
+      this.#stats.clear();
+      this.#pruneAllTracked();
+      return;
+    }
+    const id = validateOperationId(operationId);
+    this.#stats.reset(id);
+    this.#pruneTracked(id);
   }
 
   on<K extends RuntimeEventName>(
@@ -285,6 +337,7 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
       );
       this.#states.set(operationId, evaluation.state);
       this.#decisions.set(operationId, evaluation.decision);
+      this.#trackOperation(operationId);
       this.#emitter.emit("decision", { decision: evaluation.decision });
       return { decision: evaluation.decision };
     });
@@ -391,6 +444,83 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
         this.#locks.delete(operationId);
       }
     });
+  }
+
+  #hasOperationRecord(operationId: string): boolean {
+    return (
+      this.#states.has(operationId) ||
+      this.#decisions.has(operationId) ||
+      this.#pins.has(operationId) ||
+      this.#adaptationOverrides.has(operationId) ||
+      this.#stats.has(operationId)
+    );
+  }
+
+  /** Refreshes LRU order by reinserting the id at the newest position. */
+  #trackOperation(operationId: string): void {
+    this.#tracked.delete(operationId);
+    if (this.#hasOperationRecord(operationId)) {
+      this.#tracked.set(operationId, true);
+    }
+  }
+
+  #pruneTracked(operationId: string): void {
+    if (!this.#hasOperationRecord(operationId)) {
+      this.#tracked.delete(operationId);
+    }
+  }
+
+  #pruneAllTracked(): void {
+    for (const operationId of [...this.#tracked.keys()]) {
+      this.#pruneTracked(operationId);
+    }
+  }
+
+  #beginActiveRun(operationId: string): void {
+    this.#activeRuns.set(operationId, (this.#activeRuns.get(operationId) ?? 0) + 1);
+    this.#trackOperation(operationId);
+    this.#enforceTrackingLimit();
+  }
+
+  #endActiveRun(operationId: string): void {
+    const active = this.#activeRuns.get(operationId) ?? 1;
+    if (active <= 1) {
+      this.#activeRuns.delete(operationId);
+    } else {
+      this.#activeRuns.set(operationId, active - 1);
+    }
+    this.#trackOperation(operationId);
+    this.#enforceTrackingLimit();
+  }
+
+  /**
+   * Evicts least-recently-used operations when the configured bound is
+   * exceeded. Active selections, in-flight runs, and explicit pins are never
+   * evicted; the bound can therefore be exceeded when every tracked operation
+   * is pinned or active.
+   */
+  #enforceTrackingLimit(): void {
+    const limit = this.#policy.maxTrackedOperations;
+    if (limit === null || this.#tracked.size <= limit) {
+      return;
+    }
+    for (const operationId of [...this.#tracked.keys()]) {
+      if (this.#tracked.size <= limit) {
+        break;
+      }
+      if (
+        this.#locks.has(operationId) ||
+        this.#activeRuns.has(operationId) ||
+        this.#pins.has(operationId)
+      ) {
+        continue;
+      }
+      this.#states.delete(operationId);
+      this.#decisions.delete(operationId);
+      this.#adaptationOverrides.delete(operationId);
+      this.#stats.remove(operationId);
+      this.#tracked.delete(operationId);
+    }
   }
 }
 

@@ -2,14 +2,12 @@
 
 ## Supported versions
 
-Version **0.1.0** is the first public source release. npm publication is still
-pending. No version is currently supported for production use. The latest 0.x
-minor line will receive security fixes on a best-effort basis; older lines may
-require an upgrade.
+Version **0.1.0** is the current release line. Security fixes are issued for the
+latest 0.x minor line; older lines require an upgrade.
 
 | Version | Supported |
 | --- | --- |
-| 0.1.x | Evaluation only, no production support |
+| 0.1.x | Yes |
 | < 0.1 | Not released |
 
 ## Reporting a vulnerability
@@ -35,8 +33,7 @@ Please include, in the private report:
 
 ## What to expect
 
-This is a volunteer project without a bug bounty or a guaranteed response time.
-Maintainers will make a best effort to:
+There is no bug bounty and no guaranteed response time. Maintainers will:
 
 1. acknowledge a report within a reasonable period;
 2. reproduce and assess severity;
@@ -72,7 +69,9 @@ The [threat model](docs/THREAT_MODEL.md) explains these boundaries in detail.
 
 - Treat strategies and providers as trusted code. The runtime is not a sandbox.
 - Set operation and provider timeouts.
-- Apply application-level concurrency limits and bound the number of operation ids.
+- Apply application-level concurrency limits.
+- Set `policy.maxTrackedOperations` or call `removeOperation` to bound retained
+  per-operation state.
 - Never place secrets in signal `details`, provider `error`, or quality `detail`.
 - Verify package provenance and pin versions in production.
 - Redact telemetry before exporting it to third parties.
@@ -81,8 +80,9 @@ The [threat model](docs/THREAT_MODEL.md) explains these boundaries in detail.
 
 - The package has no runtime dependencies.
 - Development dependencies are locked by `package-lock.json`.
-- CI runs CodeQL and Dependabot is configured for npm and GitHub Actions.
-- The release workflow is tag-driven and configured to publish with npm
-  provenance.
-- CI and CodeQL pass on the public repository. After publication, verify the npm
-  provenance attestation and pin versions before production use.
+- CI runs CodeQL, and Dependabot is configured for npm and GitHub Actions.
+- Dependency Review blocks pull requests that introduce vulnerable dependencies.
+- The release workflow is tag-driven, uses npm trusted publishing (OIDC) with
+  provenance, and keeps a token fallback only for accounts that cannot use OIDC.
+- CI and CodeQL pass on the public repository. Verify the npm provenance
+  attestation and pin versions in production.

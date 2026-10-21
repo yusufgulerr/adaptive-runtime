@@ -6,7 +6,7 @@
 
 ## Context
 
-The MVP is a Node.js library that must be easy to audit, install, and embed. It
+The runtime is a Node.js library that must be easy to audit, install, and embed. It
 needs published type declarations, modern async support, and predictable package
 resolution. The project starts from an empty repository with no legacy consumers.
 Potential consumers use TypeScript or plain JavaScript.
@@ -40,7 +40,7 @@ Positive:
 Negative:
 
 - CommonJS consumers must use dynamic `import()` or an ESM-capable loader.
-- No browser or Deno support in the MVP.
+- No browser or Deno support in the initial release.
 - Some utility code is written locally instead of delegated.
 - Node 22+ excludes older LTS lines.
 

@@ -35,6 +35,21 @@ function requireNonEmptyString(value: string, name: string): string {
   return value;
 }
 
+function requireCanonicalIdentifier(value: string, name: string): string {
+  const identifier = requireNonEmptyString(value, name);
+  if (identifier !== identifier.trim()) {
+    throw new ConfigurationError(`${name} must not have leading or trailing whitespace.`);
+  }
+  return identifier;
+}
+
+function requirePositiveSafeInteger(value: number, name: string): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) {
+    throw new ConfigurationError(`${name} must be a positive safe integer.`);
+  }
+  return value;
+}
+
 function resolveBudget(
   rule: BudgetRule,
   index: number,
@@ -43,8 +58,8 @@ function resolveBudget(
   if (rule === null || typeof rule !== "object") {
     throw new ConfigurationError(`budgets[${index}] must be an object.`);
   }
-  const id = requireNonEmptyString(rule.id, `budgets[${index}].id`);
-  const signal = requireNonEmptyString(rule.signal, `budgets[${index}].signal`);
+  const id = requireCanonicalIdentifier(rule.id, `budgets[${index}].id`);
+  const signal = requireCanonicalIdentifier(rule.signal, `budgets[${index}].signal`);
   const limit = requireFinite(rule.limit, `budgets[${index}].limit`);
   const recoverBelow =
     rule.recoverBelow === undefined
@@ -130,7 +145,7 @@ export function resolvePolicy(input: Policy | undefined): ResolvedPolicy {
   const fallbackStrategyId =
     policy.fallbackStrategyId === undefined
       ? undefined
-      : requireNonEmptyString(policy.fallbackStrategyId, "policy.fallbackStrategyId");
+      : requireCanonicalIdentifier(policy.fallbackStrategyId, "policy.fallbackStrategyId");
   if (missingSignalBehavior === "fallback" && fallbackStrategyId === undefined) {
     throw new ConfigurationError(
       'policy.missingSignalBehavior is "fallback" but policy.fallbackStrategyId is not set.',
@@ -146,6 +161,11 @@ export function resolvePolicy(input: Policy | undefined): ResolvedPolicy {
   if (typeof adaptationEnabled !== "boolean") {
     throw new ConfigurationError("policy.adaptationEnabled must be a boolean.");
   }
+
+  const maxTrackedOperations =
+    policy.maxTrackedOperations === undefined || policy.maxTrackedOperations === null
+      ? null
+      : requirePositiveSafeInteger(policy.maxTrackedOperations, "policy.maxTrackedOperations");
 
   const seenBudgetIds = new Set<string>();
   const budgets: ResolvedBudgetRule[] = [];
@@ -170,5 +190,6 @@ export function resolvePolicy(input: Policy | undefined): ResolvedPolicy {
     adaptationEnabled,
     qualityCheck,
     budgets,
+    maxTrackedOperations,
   };
 }

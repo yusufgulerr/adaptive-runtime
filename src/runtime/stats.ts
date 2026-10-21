@@ -25,6 +25,10 @@ function emptyStats(): MutableStats {
 export class StatsRegistry {
   readonly #stats = new Map<string, MutableStats>();
 
+  has(operationId: string): boolean {
+    return this.#stats.has(operationId);
+  }
+
   begin(operationId: string): void {
     const stats = this.#get(operationId);
     stats.runs += 1;
@@ -72,6 +76,20 @@ export class StatsRegistry {
         stats.durationSamples === 0 ? null : stats.totalDurationMs / stats.durationSamples,
       strategyRuns: Object.fromEntries(stats.strategyRuns),
     };
+  }
+
+  reset(operationId: string): void {
+    if (this.#stats.has(operationId)) {
+      this.#stats.set(operationId, emptyStats());
+    }
+  }
+
+  clear(): void {
+    this.#stats.clear();
+  }
+
+  remove(operationId: string): boolean {
+    return this.#stats.delete(operationId);
   }
 
   #get(operationId: string): MutableStats {

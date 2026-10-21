@@ -1,6 +1,7 @@
 # Migrating from a manual fast/slow flag
 
-> **Status:** Adaptive Runtime 0.1.0 is experimental and has not been published.
+> **Status:** Adaptive Runtime 0.1.0 is the current release line. Registry
+> publication is produced by the tag-driven OIDC workflow.
 > This guide describes adopting the runtime from a local checkout. It does not
 > describe upgrading a published package, because no published package exists
 > yet. See [Status and limitations](../README.md#status-and-limitations).
@@ -225,7 +226,7 @@ precedence.
 There is no published 0.x release today, so there is no released upgrade matrix
 or deprecation window to cite. The project's stated policy for the 0.x line is:
 
-- **0.x is experimental.** Breaking changes are allowed, but they must be
+- **0.x is pre-1.0.** Breaking changes are allowed, but they must be
   documented in [CHANGELOG.md](../CHANGELOG.md) and, for semantic changes, in an
   ADR.
 - **Prefer additive optional fields** over changing the meaning of existing

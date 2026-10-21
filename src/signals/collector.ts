@@ -45,6 +45,9 @@ function requireNonEmpty(value: unknown, label: string): string {
   if (typeof value !== "string" || value.trim().length === 0) {
     throw new ConfigurationError(`${label} must be a non-empty string.`);
   }
+  if (value !== value.trim()) {
+    throw new ConfigurationError(`${label} must not have leading or trailing whitespace.`);
+  }
   return value;
 }
 
