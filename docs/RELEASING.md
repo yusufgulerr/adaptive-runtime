@@ -12,13 +12,17 @@ treated as an owner-only operation. The current publication status is tracked in
 - The version in `package.json` matches the intended tag.
 - `CHANGELOG.md`, README, and docs are updated for the version.
 - The npm account is authenticated and the registry name is available.
-- `NPM_TOKEN` exists as an environment secret on the `release` environment.
+- npm trusted publishing (OIDC) is configured for `yusufgulerr/adaptive-runtime`
+  and `.github/workflows/release.yml`. This is the primary path and needs no npm
+  token.
+- If the registry or account cannot use OIDC, an `NPM_TOKEN` environment secret is
+  configured on the `release` environment as a fallback.
 - The `release` environment requires the owner's approval.
 - The owner has explicitly approved publishing this version.
 
 Do not put `NPM_TOKEN` in repository-wide secrets, a committed `.npmrc`, a shell
-history, or a pull request comment. Use an environment secret and rotate it if it
-is exposed.
+history, or a pull request comment. Prefer OIDC. Use an environment secret only
+for the fallback path and rotate it if it is exposed.
 
 ## 1. Prepare the release pull request
 
@@ -38,9 +42,10 @@ is exposed.
 
 5. Inspect the package file list and confirm that no secrets, tests, examples,
    benchmarks, coverage, or local state are included.
-6. Open a pull request, wait for Node 22/24/26 and CodeQL, and merge it through the
-   protected `main` branch. The owner uses the documented admin bypass only for
-   their own pull request because GitHub does not allow self-approval.
+6. Open a pull request, wait for Node 22/24/26, CodeQL, and Dependency Review, and
+   merge it through the protected `main` branch. The owner uses the documented
+   admin bypass only for their own pull request because GitHub does not allow
+   self-approval.
 
 ## 2. Confirm the registry state
 
@@ -83,8 +88,12 @@ Never force-push or move a published tag.
    - verifies the tag matches `package.json`;
    - runs `npm run check` and coverage;
    - runs `npm pack --dry-run`;
-   - publishes with `npm publish --provenance --access public`;
+   - publishes with `npm publish --provenance --access public`, preferring OIDC
+     trusted publishing and falling back to `NPM_TOKEN` only when it is set;
    - creates the GitHub release with generated notes.
+
+   The release job does not use the npm download cache; it always resolves the
+   registry metadata fresh.
 
 Do not approve the environment until the tag and version are confirmed.
 
@@ -119,8 +128,9 @@ run, and clean-consumer result in [VERIFICATION.md](VERIFICATION.md).
 - **After publish:** do not rewrite the tag. If the package is broken, publish a
   new patch version with a fix. Use `npm deprecate` to warn consumers. Unpublish
   only when npm's policy allows it and the owner explicitly approves.
-- **Compromised token:** revoke the npm token immediately, replace the
-  environment secret, and review the npm account's audit log.
+- **Compromised token:** revoke the npm token immediately, remove or replace the
+  environment secret, and review the npm account's audit log. If OIDC was used,
+  review the trusted-publisher configuration and the workflow run.
 - **Failed post-publish check:** open an incident issue without secrets, document
   the impact, and publish a corrected patch version.
 
@@ -128,9 +138,10 @@ run, and clean-consumer result in [VERIFICATION.md](VERIFICATION.md).
 
 - [ ] Version, changelog, and docs are consistent.
 - [ ] `npm ci`, `npm run check`, coverage, benchmark, and `npm pack` pass.
-- [ ] `main` is green on Node 22/24/26 and CodeQL.
+- [ ] `main` is green on Node 22/24/26, CodeQL, and Dependency Review.
 - [ ] `npm view adaptive-runtime version` is 404 or the intended version is new.
-- [ ] `NPM_TOKEN` is present only in the `release` environment.
+- [ ] npm trusted publishing (OIDC) is configured; `NPM_TOKEN` is set only if the
+      fallback is required and only in the `release` environment.
 - [ ] The owner approved the irreversible publish.
 - [ ] The `release` environment deployment was approved.
 - [ ] Registry, provenance, GitHub release, and clean-consumer checks pass.

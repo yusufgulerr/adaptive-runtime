@@ -130,9 +130,10 @@ the other.
 **Mitigation:** `operationId` is documented as the state key. The runtime cannot
 infer intent.
 
-**Residual risk: medium.** Use stable, workload-specific ids. Do not put
-high-cardinality user input in ids without a plan for memory growth; state is
-never evicted.
+**Residual risk: medium.** Use stable, workload-specific ids. Avoid
+high-cardinality user input in ids; if it is unavoidable, set
+`maxTrackedOperations` and call `removeOperation` for finished work. Eviction
+bounds memory but discards that operation's history.
 
 ### T6. Unbounded concurrency and memory growth
 
@@ -143,11 +144,15 @@ listeners grow memory and degrade latency.
 
 - Per-operation selection locks are deleted when settled.
 - Snapshots hold one reading per declared signal.
+- `maxTrackedOperations` bounds operation-keyed state with LRU eviction;
+  `removeOperation` releases an operation explicitly.
+- `resetStats` clears counters without touching policy state.
 - `close()` releases providers and the cached snapshot.
 
-**Residual risk: medium.** There is no max-concurrency setting and no eviction of
-per-operation state or stats. Admission control belongs to the caller. Long-lived
-processes with unbounded operation ids should periodically recreate the runtime.
+**Residual risk: medium.** There is no max-concurrency setting, and pinned or
+active operations are never evicted, so the bound can be exceeded. Admission
+control and pin hygiene belong to the caller. Long-lived processes with
+unbounded operation ids should still monitor memory and retire stale pins.
 
 ### T7. Shared in-flight read abort
 
@@ -210,14 +215,16 @@ injects code into consumer processes.
 
 - Zero runtime dependencies reduces install-time surface.
 - Dev dependencies are pinned by `package-lock.json`.
-- CI runs lint, typecheck, tests, coverage, and build.
-- CodeQL and Dependabot workflows are provided.
-- The release workflow is manual/tag-driven and intended to use npm provenance.
+- CI runs lint, typecheck, tests, coverage, build, and package inspection on
+  Linux, Windows, and macOS.
+- CodeQL, Dependabot, and Dependency Review workflows are configured.
+- The release workflow is tag-driven and publishes through npm trusted publishing
+  (OIDC) with provenance; a token fallback exists for accounts without OIDC.
 
 **Residual risk: medium.** CI and CodeQL have executed successfully on the public
-repository. The release workflow is configured to publish with npm provenance,
-but npm publication is still pending and the runtime has not been independently
-audited. Verify the package provenance and integrity before production use.
+repository. npm publication is still pending and the runtime has not been
+independently audited. Verify the package provenance and integrity before
+production use.
 
 ### T11. Time-of-check/time-of-use changes
 
@@ -245,7 +252,8 @@ run remains acceptable if conditions change.
 
 - [ ] Treat strategies as trusted code; isolate untrusted algorithms in a worker
       or separate process.
-- [ ] Use stable, low-cardinality `operationId` values and bound the number of ids.
+- [ ] Use stable, low-cardinality `operationId` values and set
+      `maxTrackedOperations` or call `removeOperation` for finished work.
 - [ ] Apply application-level concurrency limits.
 - [ ] Keep provider reads cheap and honor `context.signal`.
 - [ ] Redact `details`, `error`, and quality `detail` before external export.

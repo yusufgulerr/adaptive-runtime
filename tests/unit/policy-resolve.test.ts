@@ -31,6 +31,7 @@ describe("resolvePolicy", () => {
     assert.equal(resolved.adaptationEnabled, true);
     assert.equal(resolved.qualityCheck, "report");
     assert.deepEqual(resolved.budgets, []);
+    assert.equal(resolved.maxTrackedOperations, null);
   });
 
   it("fills budget defaults from the policy sample count", () => {
@@ -59,6 +60,12 @@ describe("resolvePolicy", () => {
     assert.match(invalid({ qualityCheck: "warn" }).message, /report.*error/);
     assert.match(invalid({ missingSignalBehavior: "wait" }).message, /must be one of/);
     assert.match(invalid({ minQualityTier: 3, maxQualityTier: 2 }).message, /must not exceed/);
+    assert.match(invalid({ maxTrackedOperations: 0 }).message, /positive safe integer/);
+    assert.match(invalid({ maxTrackedOperations: 1.5 }).message, /positive safe integer/);
+    assert.match(
+      invalid({ maxTrackedOperations: Number.MAX_SAFE_INTEGER + 1 }).message,
+      /positive safe integer/,
+    );
   });
 
   it("rejects invalid budget rules", () => {
@@ -96,6 +103,31 @@ describe("resolvePolicy", () => {
         fallbackStrategyId: "economy",
       }).fallbackStrategyId,
       "economy",
+    );
+  });
+
+  it("accepts a tracking bound and rejects malformed budget objects and padded ids", () => {
+    assert.equal(resolvePolicy({ maxTrackedOperations: 5 }).maxTrackedOperations, 5);
+    assert.equal(resolvePolicy({ maxTrackedOperations: null }).maxTrackedOperations, null);
+    assert.match(invalid({ budgets: [null] }).message, /must be an object/);
+    assert.match(
+      invalid({ budgets: [{ id: "b", signal: "", limit: 1 }] }).message,
+      /non-empty string/,
+    );
+    assert.match(
+      invalid({ budgets: [{ id: " b", signal: "s", limit: 1 }] }).message,
+      /leading or trailing whitespace/,
+    );
+    assert.match(
+      invalid({ budgets: [{ id: "b", signal: "s ", limit: 1 }] }).message,
+      /leading or trailing whitespace/,
+    );
+    assert.match(
+      invalid({
+        missingSignalBehavior: "fallback",
+        fallbackStrategyId: " safe ",
+      }).message,
+      /leading or trailing whitespace/,
     );
   });
 });

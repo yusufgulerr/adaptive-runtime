@@ -11,21 +11,30 @@ import type {
   SignalView,
   StrategyDecision,
 } from "../types/decision.js";
-import type { ResolvedBudgetRule, ResolvedPolicy } from "../types/policy.js";
-import type { ResourceSignal, SignalStatus } from "../types/signals.js";
+import type { ResolvedPolicy } from "../types/policy.js";
+import type { ResourceSignal } from "../types/signals.js";
+import {
+  type BudgetState,
+  buildBudgetViews,
+  buildSignalViews,
+  evaluateBudgets,
+  type ResolvedReading,
+  resolveReading,
+} from "./budgets.js";
+import {
+  chooseAtOrBelow,
+  clampTargetQualityTier,
+  computeBaseQualityTier,
+  filterAutomaticCandidates,
+  findApplicable,
+  hasCandidate,
+  pickHighest,
+  type StrategyCandidate,
+} from "./candidates.js";
+import { evaluateStabilityGate } from "./stability.js";
 
-export interface StrategyCandidate {
-  readonly id: string;
-  readonly qualityTier: number;
-  readonly costTier?: number;
-  readonly applicable: boolean;
-}
-
-export interface BudgetState {
-  readonly engaged: boolean;
-  readonly aboveStreak: number;
-  readonly belowStreak: number;
-}
+export type { BudgetState } from "./budgets.js";
+export type { StrategyCandidate } from "./candidates.js";
 
 export interface PolicyState {
   readonly initialized: boolean;
@@ -54,19 +63,6 @@ export interface PolicyEvaluation {
   readonly decision: StrategyDecision;
 }
 
-interface ResolvedReading {
-  readonly status: SignalStatus | "missing";
-  readonly unit?: SignalView["unit"];
-  readonly value?: number;
-  readonly observedAt?: number;
-  readonly ageMs?: number;
-  readonly detail?: string;
-}
-
-function defaultBudgetState(): BudgetState {
-  return { engaged: false, aboveStreak: 0, belowStreak: 0 };
-}
-
 export function createInitialPolicyState(): PolicyState {
   return {
     initialized: false,
@@ -78,114 +74,6 @@ export function createInitialPolicyState(): PolicyState {
     pendingStreak: 0,
     lastSampleSequence: null,
   };
-}
-
-function resolveReading(
-  reading: ResourceSignal | undefined,
-  now: number,
-  maxSignalAgeMs: number,
-): ResolvedReading {
-  if (reading === undefined) {
-    return { status: "missing", detail: "No provider returned this signal." };
-  }
-
-  if (reading.status !== "ok") {
-    return {
-      status: reading.status,
-      unit: reading.unit,
-      observedAt: reading.observedAt,
-      ageMs: Math.max(0, now - reading.observedAt),
-      detail: reading.error,
-    };
-  }
-
-  const ageMs = Math.max(0, now - reading.observedAt);
-  if (ageMs > maxSignalAgeMs) {
-    return {
-      status: "stale",
-      unit: reading.unit,
-      value: reading.value,
-      observedAt: reading.observedAt,
-      ageMs,
-      detail: `Reading is ${ageMs} ms old; maxSignalAgeMs is ${maxSignalAgeMs}.`,
-    };
-  }
-
-  if (!Number.isFinite(reading.value)) {
-    return {
-      status: "error",
-      unit: reading.unit,
-      observedAt: reading.observedAt,
-      ageMs,
-      detail: "Reading value is not finite.",
-    };
-  }
-
-  return {
-    status: "ok",
-    unit: reading.unit,
-    value: reading.value,
-    observedAt: reading.observedAt,
-    ageMs,
-  };
-}
-
-function buildSignalViews(
-  readings: ReadonlyMap<string, ResourceSignal>,
-  resolutions: ReadonlyMap<string, ResolvedReading>,
-  budgets: readonly ResolvedBudgetRule[],
-  now: number,
-  maxSignalAgeMs: number,
-): readonly SignalView[] {
-  const names = new Set<string>([...readings.keys(), ...budgets.map((rule) => rule.signal)]);
-  const views: SignalView[] = [];
-  for (const name of [...names].sort()) {
-    const resolution =
-      resolutions.get(name) ?? resolveReading(readings.get(name), now, maxSignalAgeMs);
-    views.push({
-      name,
-      unit: resolution.unit,
-      status: resolution.status,
-      value: resolution.value,
-      observedAt: resolution.observedAt,
-      ageMs: resolution.ageMs,
-      detail: resolution.detail,
-    });
-  }
-  return views;
-}
-
-function compareCandidates(left: StrategyCandidate, right: StrategyCandidate): number {
-  if (left.qualityTier !== right.qualityTier) {
-    return right.qualityTier - left.qualityTier;
-  }
-  const leftCost = left.costTier ?? Number.POSITIVE_INFINITY;
-  const rightCost = right.costTier ?? Number.POSITIVE_INFINITY;
-  if (leftCost !== rightCost) {
-    return leftCost - rightCost;
-  }
-  // Code-unit comparison, not localeCompare: selection must be locale-independent.
-  return left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
-}
-
-function chooseAtOrBelow(
-  candidates: readonly StrategyCandidate[],
-  targetTier: number,
-): StrategyCandidate | undefined {
-  return candidates
-    .filter((candidate) => candidate.qualityTier <= targetTier)
-    .sort(compareCandidates)[0];
-}
-
-function findApplicable(
-  strategies: readonly StrategyCandidate[],
-  strategyId: string,
-): StrategyCandidate | undefined {
-  return strategies.find((strategy) => strategy.id === strategyId && strategy.applicable);
-}
-
-function hasCandidate(strategies: readonly StrategyCandidate[], strategyId: string): boolean {
-  return strategies.some((strategy) => strategy.id === strategyId);
 }
 
 function decisionFor(
@@ -265,60 +153,14 @@ export function evaluatePolicy(
     input.sampleSequence === null ||
     state.lastSampleSequence !== input.sampleSequence;
 
-  const nextBudgets: Record<string, BudgetState> = {};
-  for (const rule of policy.budgets) {
-    nextBudgets[rule.id] = { ...(state.budgets[rule.id] ?? defaultBudgetState()) };
-  }
+  const { nextBudgets, missing, engagedNow, recoveredNow } = evaluateBudgets(
+    state,
+    resolutions,
+    policy,
+    fresh,
+  );
 
   const reasons: DecisionReason[] = [];
-  const missing: Array<{ rule: ResolvedBudgetRule; resolution: ResolvedReading }> = [];
-  const engagedNow = new Set<string>();
-  const recoveredNow = new Set<string>();
-
-  for (const rule of policy.budgets) {
-    const resolution = resolutions.get(rule.signal) ?? { status: "missing" as const };
-    if (resolution.status !== "ok") {
-      missing.push({ rule, resolution });
-      continue;
-    }
-
-    const budget = nextBudgets[rule.id] ?? defaultBudgetState();
-    if (!fresh) {
-      continue;
-    }
-
-    const value = resolution.value ?? Number.NaN;
-    if (!state.initialized) {
-      const engaged = value > rule.limit;
-      nextBudgets[rule.id] = {
-        engaged,
-        aboveStreak: 0,
-        belowStreak: 0,
-      };
-      if (engaged) {
-        engagedNow.add(rule.id);
-      }
-      continue;
-    }
-
-    if (budget.engaged) {
-      const belowStreak = value < rule.recoverBelow ? budget.belowStreak + 1 : 0;
-      if (belowStreak >= rule.consecutiveSamples) {
-        nextBudgets[rule.id] = { engaged: false, aboveStreak: 0, belowStreak: 0 };
-        recoveredNow.add(rule.id);
-      } else {
-        nextBudgets[rule.id] = { ...budget, belowStreak };
-      }
-    } else {
-      const aboveStreak = value > rule.limit ? budget.aboveStreak + 1 : 0;
-      if (aboveStreak >= rule.consecutiveSamples) {
-        nextBudgets[rule.id] = { engaged: true, aboveStreak: 0, belowStreak: 0 };
-        engagedNow.add(rule.id);
-      } else {
-        nextBudgets[rule.id] = { ...budget, aboveStreak };
-      }
-    }
-  }
 
   for (const rule of policy.budgets) {
     const resolution = resolutions.get(rule.signal);
@@ -383,34 +225,11 @@ export function evaluatePolicy(
     policy.maxSignalAgeMs,
   );
 
-  const budgetViews: BudgetView[] = policy.budgets.map((rule) => {
-    const resolution = resolutions.get(rule.signal) ?? { status: "missing" as const };
-    const budget = nextBudgets[rule.id] ?? defaultBudgetState();
-    return {
-      id: rule.id,
-      signal: rule.signal,
-      engaged: budget.engaged,
-      status: resolution.status,
-      value: resolution.status === "ok" ? resolution.value : undefined,
-      ageMs: resolution.ageMs,
-      limit: rule.limit,
-      recoverBelow: rule.recoverBelow,
-      tierReduction: rule.tierReduction,
-    };
-  });
+  const budgetViews = buildBudgetViews(nextBudgets, resolutions, policy);
 
-  const declaredMaxQualityTier = Math.max(...input.strategies.map((s) => s.qualityTier));
-  const baseQualityTier =
-    policy.maxQualityTier === undefined
-      ? declaredMaxQualityTier
-      : Math.min(declaredMaxQualityTier, policy.maxQualityTier);
+  const baseQualityTier = computeBaseQualityTier(input.strategies, policy.maxQualityTier);
 
-  const automaticCandidates = input.strategies.filter(
-    (strategy) =>
-      strategy.applicable &&
-      (policy.minQualityTier === undefined || strategy.qualityTier >= policy.minQualityTier) &&
-      (policy.maxQualityTier === undefined || strategy.qualityTier <= policy.maxQualityTier),
-  );
+  const automaticCandidates = filterAutomaticCandidates(input.strategies, policy);
 
   const missingFallbackNames =
     policy.missingSignalBehavior === "fallback" &&
@@ -514,7 +333,7 @@ export function evaluatePolicy(
   }
 
   if (!input.adaptationEnabled) {
-    const candidate = [...automaticCandidates].sort(compareCandidates)[0];
+    const candidate = pickHighest(automaticCandidates);
     if (candidate === undefined) {
       throw new NoEligibleStrategyError(input.operationId, policy.minQualityTier);
     }
@@ -563,31 +382,29 @@ export function evaluatePolicy(
     });
   }
 
-  if (policy.minQualityTier !== undefined && targetQualityTier < policy.minQualityTier) {
-    targetQualityTier = policy.minQualityTier;
+  const poolTiers = automaticCandidates.map((strategy) => strategy.qualityTier);
+  const clamp = clampTargetQualityTier(targetQualityTier, policy.minQualityTier, poolTiers);
+  targetQualityTier = clamp.targetQualityTier;
+
+  if (clamp.floorApplied !== null) {
     reasons.push({
       code: "quality-floor-clamped",
-      message: `Target tier raised to the configured quality floor (${policy.minQualityTier}).`,
-      details: { minQualityTier: policy.minQualityTier },
+      message: `Target tier raised to the configured quality floor (${clamp.floorApplied}).`,
+      details: { minQualityTier: clamp.floorApplied },
     });
   }
 
-  const poolTiers = automaticCandidates.map((strategy) => strategy.qualityTier);
-  const minPoolTier = Math.min(...poolTiers);
-  const maxPoolTier = Math.max(...poolTiers);
-  if (targetQualityTier < minPoolTier) {
-    targetQualityTier = minPoolTier;
+  if (clamp.poolMinApplied !== null) {
     reasons.push({
       code: "target-tier-clamped",
-      message: `Target tier raised to the lowest available tier (${minPoolTier}); no strategy is available below it.`,
-      details: { minPoolTier },
+      message: `Target tier raised to the lowest available tier (${clamp.poolMinApplied}); no strategy is available below it.`,
+      details: { minPoolTier: clamp.poolMinApplied },
     });
-  } else if (targetQualityTier > maxPoolTier) {
-    targetQualityTier = maxPoolTier;
+  } else if (clamp.poolMaxApplied !== null) {
     reasons.push({
       code: "target-tier-clamped",
-      message: `Target tier lowered to the highest available tier (${maxPoolTier}).`,
-      details: { maxPoolTier },
+      message: `Target tier lowered to the highest available tier (${clamp.poolMaxApplied}).`,
+      details: { maxPoolTier: clamp.poolMaxApplied },
     });
   }
 
@@ -702,14 +519,22 @@ export function evaluatePolicy(
     );
   }
 
-  const pendingStreak = state.pendingStrategyId === candidate.id ? state.pendingStreak + 1 : 1;
-  const elapsed = input.now - state.modeSince;
+  const stability = evaluateStabilityGate(
+    state,
+    candidate.id,
+    input.now,
+    policy.minimumModeDurationMs,
+    policy.consecutiveSamples,
+  );
 
-  if (elapsed < policy.minimumModeDurationMs) {
+  if (stability.blocked === "minimum-mode-duration") {
     reasons.push({
       code: "minimum-mode-duration",
       message: `Keeping "${state.currentStrategyId}" until minimumModeDurationMs (${policy.minimumModeDurationMs}) elapses.`,
-      details: { elapsedMs: elapsed, minimumModeDurationMs: policy.minimumModeDurationMs },
+      details: {
+        elapsedMs: stability.elapsedMs,
+        minimumModeDurationMs: policy.minimumModeDurationMs,
+      },
     });
     return decisionFor(
       input,
@@ -728,16 +553,16 @@ export function evaluatePolicy(
       signalViews,
       budgetViews,
       nextBudgets,
-      candidate.id,
-      pendingStreak,
+      stability.pendingStrategyId,
+      stability.pendingStreak,
     );
   }
 
-  if (pendingStreak < policy.consecutiveSamples) {
+  if (stability.blocked === "candidate-stability") {
     reasons.push({
       code: "candidate-stability",
-      message: `Candidate "${candidate.id}" needs ${policy.consecutiveSamples} consecutive fresh samples; observed ${pendingStreak}.`,
-      details: { candidateStrategyId: candidate.id, pendingStreak },
+      message: `Candidate "${candidate.id}" needs ${policy.consecutiveSamples} consecutive fresh samples; observed ${stability.pendingStreak}.`,
+      details: { candidateStrategyId: candidate.id, pendingStreak: stability.pendingStreak },
     });
     return decisionFor(
       input,
@@ -756,8 +581,8 @@ export function evaluatePolicy(
       signalViews,
       budgetViews,
       nextBudgets,
-      candidate.id,
-      pendingStreak,
+      stability.pendingStrategyId,
+      stability.pendingStreak,
     );
   }
 

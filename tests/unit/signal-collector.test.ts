@@ -250,6 +250,20 @@ describe("SignalCollector", () => {
       read: () => [],
     };
     assert.throws(() => makeCollector([emptySignals]), ConfigurationError);
+
+    const paddedId: SignalProvider = {
+      id: " padded ",
+      signals: [{ name: "test.value", unit: "bytes" }],
+      read: () => [],
+    };
+    assert.throws(() => makeCollector([paddedId]), ConfigurationError);
+
+    const paddedSignal: SignalProvider = {
+      id: "padded-signal",
+      signals: [{ name: " padded.signal ", unit: "bytes" }],
+      read: () => [],
+    };
+    assert.throws(() => makeCollector([paddedSignal]), ConfigurationError);
   });
 
   it("rejects promptly when the caller aborts a hanging provider read", async () => {

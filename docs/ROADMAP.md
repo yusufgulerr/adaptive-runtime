@@ -1,10 +1,10 @@
 # Roadmap
 
 This roadmap describes intent, not commitments or dates. Priorities may change
-with feedback and evidence. The 0.1.0 MVP is implemented and locally verified but
-has not been published.
+with feedback and evidence. The 0.1.0 release is implemented and verified; npm
+publication is prepared through the tag-driven workflow.
 
-## 0.1.0 — MVP (current)
+## 0.1.0 — Foundation (current)
 
 Delivered:
 
@@ -24,20 +24,28 @@ Delivered:
 - Built-in providers: process memory, process CPU, event-loop delay, network latency probe.
 - Cooperative operation timeout and abort handling.
 - Typed events, per-operation decisions, and stats.
+- Bounded per-operation state: `maxTrackedOperations` LRU eviction,
+  `removeOperation`, and `resetStats`.
+- Modular policy core (`budgets`, `candidates`, `stability`, coordinating
+  `engine`) with a platform-neutral `adaptive-runtime/policy` subpath.
+- `adaptive-runtime/providers` subpath and a minimal published file set.
+- Cross-platform CI (Linux, Windows, macOS), Dependency Review, and OIDC trusted
+  publishing.
 - Examples, unit and integration tests, benchmark, documentation, and GitHub templates.
 - Apache-2.0 license and community/governance files.
 
 Not done in 0.1.0:
 
-- Published API stability guarantees. Treat 0.x as experimental.
+- Published API stability guarantees. Treat 0.x as pre-1.0.
 - Fuzzing, long-run load testing, soak testing, or an independent security audit.
 
 ## 0.2.0 — Operational confidence
 
 Goals:
 
-1. **Publish a repeatable release.** Add repository metadata, run CI on the
-   supported matrix, publish with provenance, and attach a changelog.
+1. **Publish a repeatable release.** Repository metadata and the supported CI
+   matrix are in place; publish with OIDC provenance and attach a changelog after
+   owner approval.
 2. **Provider resilience follow-up.** **Delivered locally:** cancellation-storm
    stress tests and a close-during-in-flight test are in
    `tests/unit/shared-read-stress.test.ts`; provider-authoring guidance is in
@@ -58,39 +66,38 @@ Exit criteria:
 - Coverage thresholds enforced in CI (lines/branches/functions >= 80).
 - No known correctness issue in policy transitions or provider lifecycle.
 - A published package can be installed in a clean project and imported using
-  only the documented entry point.
+  only the documented entry points.
 
 ## Maintainability and technical debt
 
 These are known, non-blocking issues. None changes the documented 0.1.0
 semantics, and the existing tests cover the current behavior.
 
-1. **Per-operation state is never evicted (highest priority).** `#states`,
-   `#decisions`, `#pins`, `#adaptationOverrides`, and `#locks` in
-   `src/runtime/runtime.ts`, plus the stats map in `src/runtime/stats.ts`, grow
-   with the number of distinct operation ids. This is documented in
-   [THREAT_MODEL.md](THREAT_MODEL.md) (T5/T6). Add an explicit
-   `removeOperation(operationId)` API, a maximum tracked-operation limit, or a TTL
-   policy with tests and documentation.
-2. **The policy engine is one large pure function (medium).**
-   `src/policy/engine.ts` is 785 lines. Split budget transitions, candidate
-   selection, and stability transitions into named helpers while preserving the
-   public `evaluatePolicy` contract and the existing tests.
-3. **A few files are below the per-file coverage target (medium).** The global
-   gate is 80%, but `runtime/validate.ts`, `providers/event-loop-delay.ts`, and
-   `providers/process-memory.ts` have lower branch coverage. Add focused branch
-   tests or introduce a per-file threshold once the suite is ready.
-4. **Post-publish verification is manual (medium).** The release workflow proves
-   the publish command ran, not that the registry serves a installable package.
+Resolved in 0.1.0:
+
+1. **Per-operation state growth.** `Policy.maxTrackedOperations` now bounds all
+   operation-keyed maps with LRU eviction, and `removeOperation(operationId)`
+   releases state explicitly. Pinned and active operations are never evicted.
+   See [ADR 0006](adr/0006-bounded-operation-state-and-subpath-exports.md).
+2. **Monolithic policy engine.** `src/policy/engine.ts` now coordinates
+   `budgets.ts`, `candidates.ts`, and `stability.ts` while preserving the
+   `evaluatePolicy` contract.
+3. **Per-file coverage.** Every `src/**` file is above 80% branch coverage; the
+   lowest is 81.20% (`signals/collector.ts`).
+4. **Inconsistent identifier validation.** `operationId` is trimmed; strategy,
+   provider, signal, budget, and fallback identifiers reject surrounding
+   whitespace. The rule is documented in [API.md](API.md).
+
+Open:
+
+5. **Post-publish verification is manual (medium).** The release workflow proves
+   the publish command ran, not that the registry serves an installable package.
    After the first successful manual release, add a post-publish job that retries
    registry propagation, checks the version and integrity, and performs a clean
    consumer import.
-5. **No benchmark regression tracking (low).** Benchmarks are intentionally not a
+6. **No benchmark regression tracking (low).** Benchmarks are intentionally not a
    CI gate because they are noisy on shared runners. Record a trend over time
    before considering a loose, non-blocking threshold.
-6. **Identifier validation is inconsistent (low).** `validateOperationId` trims
-   whitespace, while provider ids, signal names, and budget ids do not. Decide
-   whether identifiers are trimmed or rejected consistently and document it.
 7. **Provider start failure is permanent (low).** `SignalCollector` records a
    failed `start()` and emits error readings without retrying. Keep this behavior
    or add an explicit retry/backoff policy; either way, document it for provider
@@ -143,7 +150,7 @@ remain application responsibilities.
 | --- | --- | --- |
 | Node.js 22 | LTS | Supported |
 | Node.js 24 | LTS (maintenance from 2026-10-20) | Supported |
-| Node.js 26 | Transitioning to LTS on 2026-10-28 | In CI; documented as newer/experimental until validated |
+| Node.js 26 | Transitioning to LTS on 2026-10-28 | In CI; supported for the transitional line |
 | Node.js < 22 | End-of-life | Not supported |
 
 `engines.node` is `>=22.0.0`. The package uses only stable Node APIs:

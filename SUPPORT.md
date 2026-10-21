@@ -2,7 +2,7 @@
 
 ## Documentation first
 
-- [README](README.md) — overview, quick start, selection semantics, limitations.
+- [README](README.md) — overview, quick start, selection semantics, and boundaries.
 - [API reference](docs/API.md) — types, methods, errors, events, defaults.
 - [Architecture](docs/ARCHITECTURE.md) — internal design and concurrency model.
 - [Threat model](docs/THREAT_MODEL.md) — trust boundaries and non-goals.
@@ -11,8 +11,8 @@
 
 ## Questions and bugs
 
-- **Usage questions / design discussion:** use the usage question issue form.
-  GitHub Discussions is not enabled yet.
+- **Usage questions / design discussion:** use GitHub Discussions or the usage
+  question issue form.
 - **Bug reports:** use the bug report issue form and include a minimal
   reproduction, Node version, package version, and expected/actual behavior.
 - **Feature requests:** use the feature request issue form and describe the
@@ -35,8 +35,8 @@ Do not include secrets, tokens, customer data, or unredacted production logs.
 
 ## Scope and expectations
 
-Support is best effort, provided by volunteers. There is no SLA, paid support, or
-guaranteed response time. The project does not currently provide:
+Support is provided by the maintainer as capacity allows. There is no paid
+support tier or guaranteed response time. The project does not provide:
 
 - production incident support;
 - consulting or integration services;

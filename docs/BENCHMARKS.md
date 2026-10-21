@@ -65,16 +65,16 @@ Median per sequential run:
 
 | Mode | µs/run | Relative to direct | Samples (µs/run) |
 | --- | ---: | ---: | --- |
-| Direct call | 0.254 | 1.00x | 0.29, 0.26, 0.26, 0.25, 0.25, 0.25, 0.25 |
-| Runtime, static policy | 2.759 | 10.86x | 3.74, 3.00, 2.71, 2.76, 2.75, 2.56, 2.79 |
-| Runtime, adaptive (fresh read) | 6.708 | 26.40x | 8.32, 7.56, 6.77, 6.58, 6.44, 6.71, 6.51 |
-| Runtime, adaptive (cached read) | 3.071 | 12.09x | 3.45, 3.07, 3.03, 2.85, 3.16, 3.08, 2.94 |
+| Direct call | 0.310 | 1.00x | 0.34, 0.31, 0.31, 0.29, 0.29, 0.30, 0.75 |
+| Runtime, static policy | 4.026 | 12.99x | 4.77, 4.10, 3.85, 4.03, 3.98, 3.68, 10.16 |
+| Runtime, adaptive (fresh read) | 9.340 | 30.15x | 10.56, 9.50, 8.93, 9.25, 10.19, 9.34, 9.34 |
+| Runtime, adaptive (cached read) | 4.632 | 14.95x | 4.63, 4.79, 4.21, 4.23, 4.50, 4.71, 10.10 |
 
 Approximate added overhead relative to direct call:
 
-- static policy: ~2.5 µs per run;
-- adaptive with a fresh in-memory read: ~6.5 µs per run;
-- adaptive with a cached snapshot: ~2.8 µs per run.
+- static policy: ~3.7 µs per run;
+- adaptive with a fresh in-memory read: ~9.0 µs per run;
+- adaptive with a cached snapshot: ~4.3 µs per run.
 
 The adaptive fresh mode includes the ref-counted shared-read bookkeeping: a
 per-read abort controller, waiter accounting, and abort-aware waiting. A runtime
@@ -102,20 +102,20 @@ Distinct operation ids (selection is not serialized across workers):
 
 | Worker loops | Median runs/s | Samples (runs/s) |
 | ---: | ---: | --- |
-| 1 | 305,920 | 225,636; 305,920; 315,460 |
-| 4 | 255,918 | 252,620; 255,918; 309,979 |
-| 16 | 275,210 | 246,241; 308,752; 275,210 |
-| 64 | 319,274 | 238,375; 319,274; 332,276 |
+| 1 | 170,599 | 170,599; 136,472; 216,779 |
+| 4 | 235,214 | 184,110; 235,214; 242,602 |
+| 16 | 211,623 | 133,485; 211,623; 252,326 |
+| 64 | 227,254 | 175,916; 229,212; 227,254 |
 
 Same operation id (selection queues on the per-operation lock; this is a
 distinct scenario, not a pass/fail comparison):
 
 | Worker loops | Median runs/s | Samples (runs/s) |
 | ---: | ---: | --- |
-| 1 | 259,936 | 233,368; 328,318; 259,936 |
-| 4 | 286,161 | 286,161; 279,112; 326,398 |
-| 16 | 327,601 | 299,799; 351,757; 327,601 |
-| 64 | 302,623 | 291,526; 318,341; 302,623 |
+| 1 | 202,236 | 163,988; 202,236; 220,937 |
+| 4 | 233,649 | 233,649; 249,206; 203,082 |
+| 16 | 210,796 | 190,029; 210,796; 241,662 |
+| 64 | 199,153 | 199,153; 236,039; 175,981 |
 
 This is a single-threaded event-loop workload. Levels above 1 measure scheduling
 and interleaving, not multi-core scaling. Runs/s includes the fixed strategy work,
@@ -127,21 +127,21 @@ selection lock and the event loop is still single-threaded.
 
 With 64 concurrent distinct operations and a provider that resolves on a later
 macrotask, the run observed 64 in-flight `run()` calls, **1 provider read**, and
-3.56 ms elapsed. Sharing is opportunistic; the script prints the count and does
+3.31 ms elapsed. Sharing is opportunistic; the script prints the count and does
 not assert an exact value.
 
 ### Retained heap
 
 The script uses a fixed set of 64 operation ids, concurrency 64, 10,000 runs per
-sample, and 3 samples. The median `heapUsed` delta was **+27.7 KiB**
-(**+2.83 B/run**); samples were +27.7 KiB, +260.2 KiB, and +2.3 KiB. GC timing,
+sample, and 3 samples. The median `heapUsed` delta was **+18.4 KiB**
+(**+1.89 B/run**); samples were +43.7 KiB, +18.4 KiB, and +9.3 KiB. GC timing,
 JIT, and process state make this noisy, and negative values are possible. It is
 not a leak test and does not exercise unbounded operation-id cardinality.
 
 ## Interpretation
 
 - The runtime is designed for operations that take **microseconds to seconds**,
-  not for inner-loop primitives. At ~6.7 µs overhead, a 1 ms operation pays ~0.7%.
+  not for inner-loop primitives. At ~9.3 µs overhead, a 1 ms operation pays ~0.93%.
 - Fresh signal reads roughly double overhead relative to a cached snapshot. Use a
   non-zero `evaluationIntervalMs` when provider reads are expensive.
 - Sequential overhead is not throughput. Concurrent runs add promise scheduling

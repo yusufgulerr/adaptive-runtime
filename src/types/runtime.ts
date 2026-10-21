@@ -32,6 +32,17 @@ export interface AdaptiveRuntime {
   setAdaptationEnabled(operationId: string, enabled: boolean): void;
   getDecision(operationId: string): StrategyDecision | null;
   getStats(operationId: string): RuntimeStats;
+  /**
+   * Removes all retained state and stats for one operation. Returns false when
+   * a selection or run is in flight for that operation; the active work is not
+   * disturbed. Returns true when at least one record was removed.
+   */
+  removeOperation(operationId: string): boolean;
+  /**
+   * Resets counters for one operation, or all operations when no id is given.
+   * Retained decisions, pins, and overrides are not removed.
+   */
+  resetStats(operationId?: string): void;
   on<K extends RuntimeEventName>(event: K, listener: RuntimeEventListener<K>): () => void;
   /**
    * Stops providers and rejects new runs. Callers should let in-flight runs

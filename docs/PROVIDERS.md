@@ -19,7 +19,8 @@ interface SignalProvider {
 }
 ```
 
-- `id` is stable and unique within a runtime.
+- `id` is stable, unique within a runtime, and has no leading or trailing
+  whitespace. Signal names follow the same rule.
 - `signals` declares every name and unit the provider may return.
 - `start()` is called lazily, once, before the first read.
 - `read()` may be synchronous or asynchronous and must return an array of readings.
@@ -51,7 +52,7 @@ Rules that matter:
   descriptor. That rejects the whole provider read.
 - `error` and `details` are exported to events and decisions. Never put secrets,
   tokens, raw user input, or full URLs in them.
-- `confidence` is informational in the MVP and does not currently alter policy.
+- `confidence` is informational in the current policy and does not alter selection.
 
 ## Lifecycle and failure handling
 

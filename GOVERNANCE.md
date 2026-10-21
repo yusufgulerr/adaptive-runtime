@@ -7,9 +7,9 @@ Adaptive Runtime is a single-maintainer open-source project owned by
 may fork it, open an issue, or submit a pull request. Only the owner has write or
 admin access.
 
-This is intentionally conservative for an experimental 0.x package. It keeps the
-release path, security settings, and dependency updates under one accountable
-maintainer while still allowing public review and contribution.
+This model is intentionally conservative for the 0.x line. It keeps the release
+path, security settings, and dependency updates under one accountable maintainer
+while still allowing public review and contribution.
 
 ## Roles
 
@@ -43,7 +43,8 @@ push, approval, or release rights.
   approval.
 
 The owner reviews for correctness, deterministic behavior, test quality, API
-surface, documentation, and security. Review is best effort; there is no SLA.
+surface, documentation, and security. Review is mandatory for every change;
+scheduling depends on maintainer availability.
 
 ## Becoming a maintainer
 
@@ -64,10 +65,11 @@ a request made only in an issue comment.
 - Only the owner creates release tags.
 - Tags matching `v*` are protected: creation, update, and deletion are restricted
   to the repository administrator role.
-- The `release` GitHub environment requires owner approval. `NPM_TOKEN` must be
-  stored as an environment secret before the first publish.
-- The tag-driven workflow runs the full checks and is configured to publish with
-  npm provenance and create the GitHub release.
+- The `release` GitHub environment requires owner approval.
+- The tag-driven workflow runs the full checks and publishes through npm trusted
+  publishing (OIDC) with provenance. An optional `NPM_TOKEN` environment secret
+  provides a fallback for registries or accounts that cannot use OIDC.
+- Dependency Review runs on every pull request.
 - Publishing from a local dirty working tree is not permitted.
 - The complete repository-settings checklist is in
   [docs/GITHUB_SETTINGS.md](docs/GITHUB_SETTINGS.md).

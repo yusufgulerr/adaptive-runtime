@@ -1,6 +1,7 @@
 # Cookbook
 
-> **Status:** Adaptive Runtime 0.1.0 is experimental and has not been published.
+> **Status:** Adaptive Runtime 0.1.0 is the current release line. Registry
+> publication is produced by the tag-driven OIDC workflow.
 > These patterns target the API in [API.md](API.md) and run against a local
 > checkout. See [Installation](../README.md#installation) for the local install
 > command. If a snippet and the API reference disagree, the reference wins.

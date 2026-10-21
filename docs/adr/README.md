@@ -5,6 +5,7 @@
 - [0003 — One attempt, no automatic retries, cooperative cancellation](0003-single-attempt-cooperative-cancellation.md)
 - [0004 — Explicit signal statuses and provider isolation](0004-explicit-signals-provider-isolation.md)
 - [0005 — Ref-counted shared provider reads](0005-ref-counted-shared-reads.md)
+- [0006 — Bounded operation state and subpath exports](0006-bounded-operation-state-and-subpath-exports.md)
 
 ## Decision map
 
@@ -18,6 +19,7 @@ duplicating records:
 | Execution, retries, and cancellation | [0003](0003-single-attempt-cooperative-cancellation.md) |
 | Signal provider model and unavailable data | [0004](0004-explicit-signals-provider-isolation.md) |
 | Shared provider reads and ref-counted abort | [0005](0005-ref-counted-shared-reads.md) |
+| Bounded state, modular policy core, and subpaths | [0006](0006-bounded-operation-state-and-subpath-exports.md) |
 
 New decisions use the same structure: status, date, context, decision,
 consequences, alternatives, and follow-up. A decision that changes public

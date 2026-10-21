@@ -6,7 +6,46 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) after 1.0.
 
 ## [Unreleased]
 
-No changes yet.
+### Added
+
+- `Policy.maxTrackedOperations`: bounds all operation-keyed state with
+  deterministic LRU eviction. Pinned, selecting, and executing operations are
+  never evicted.
+- `runtime.removeOperation(operationId)`: releases an operation's policy state,
+  decision, pin, adaptation override, and stats; returns `false` while the
+  operation is selecting or executing.
+- `runtime.resetStats(operationId?)`: clears counters and latency samples for one
+  operation or all operations without discarding decisions, pins, or policy state.
+- `adaptive-runtime/policy` subpath: platform-neutral policy types,
+  `definePolicy`, `resolvePolicy`, `createInitialPolicyState`, and
+  `evaluatePolicy`.
+- `adaptive-runtime/providers` subpath: the four built-in Node.js providers and
+  their signal-name constants.
+- Dependency Review workflow pinned to
+  `actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48`.
+- Cross-platform CI job on Windows and macOS.
+- ADR 0006 documenting bounded operation state and subpath exports.
+
+### Changed
+
+- Split the policy core into `budgets.ts`, `candidates.ts`, `stability.ts`, and a
+  coordinating `engine.ts`. `evaluatePolicy` semantics and the public contract are
+  unchanged; `src/policy/` remains free of Node.js imports.
+- Identifier validation is consistent: `operationId` is trimmed, while strategy,
+  provider, signal, budget, and fallback identifiers reject leading or trailing
+  whitespace.
+- The release workflow uses npm trusted publishing (OIDC) with provenance and an
+  optional `NPM_TOKEN` fallback; the npm cache is disabled for release jobs.
+- Published package contents are limited to `dist`, `README.md`, `LICENSE`, and
+  `NOTICE`.
+- Expanded branch coverage for providers, runtime validation, and public subpath
+  integration to 96 tests and 97.42% line / 92.59% branch / 97.76% function
+  coverage.
+
+### Fixed
+
+- Per-operation maps no longer grow without bound when `maxTrackedOperations` is
+  configured.
 
 ## [0.1.0] — 2026-10-21
 
@@ -38,7 +77,7 @@ No changes yet.
   integration test covering success, provider-error, and strategy-error paths.
 - Documentation: README, API reference, API design notes, provider authoring
   guide, observability guide, architecture, threat model, roadmap, benchmarks,
-  verification, migration/upgrade guide, cookbook, and five ADRs.
+  verification, migration/upgrade guide, cookbook, and six ADRs.
 - Apache-2.0 license, contribution guide, code of conduct, security policy,
   support guide, issue forms, pull request template, Dependabot, CI, CodeQL, and
   release workflow definitions.

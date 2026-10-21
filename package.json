@@ -1,7 +1,7 @@
 {
   "name": "adaptive-runtime",
   "version": "0.1.0",
-  "description": "A small runtime that selects between developer-provided algorithmic strategies using explicit resource signals and policy.",
+  "description": "Deterministic, resource-aware adaptive execution runtime for TypeScript and Node.js — dynamically orchestrating algorithmic strategies via explicit resource signals, budgets, and hysteresis policies.",
   "license": "Apache-2.0",
   "author": "The Adaptive Runtime Contributors",
   "repository": {
@@ -21,33 +21,42 @@
       "import": "./dist/index.js",
       "default": "./dist/index.js"
     },
+    "./policy": {
+      "types": "./dist/policy/index.d.ts",
+      "import": "./dist/policy/index.js",
+      "default": "./dist/policy/index.js"
+    },
+    "./providers": {
+      "types": "./dist/providers/index.d.ts",
+      "import": "./dist/providers/index.js",
+      "default": "./dist/providers/index.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
     "dist",
-    "docs",
     "README.md",
     "LICENSE",
-    "NOTICE",
-    "CHANGELOG.md",
-    "CONTRIBUTING.md",
-    "CODE_OF_CONDUCT.md",
-    "SECURITY.md",
-    "SUPPORT.md",
-    "GOVERNANCE.md"
+    "NOTICE"
   ],
   "sideEffects": false,
   "engines": {
     "node": ">=22.0.0"
   },
   "keywords": [
-    "adaptive",
-    "runtime",
-    "resource-aware",
-    "policy",
+    "adaptive-runtime",
+    "resource-management",
+    "policy-engine",
+    "graceful-degradation",
+    "load-shedding",
+    "hysteresis",
+    "resilience",
+    "quality-of-service",
+    "observability",
     "performance",
     "typescript",
-    "nodejs"
+    "nodejs",
+    "zero-dependencies"
   ],
   "publishConfig": {
     "access": "public"

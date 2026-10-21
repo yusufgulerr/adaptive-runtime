@@ -47,6 +47,13 @@ export interface Policy {
   /** "report" records a failed quality check; "error" fails the run. */
   readonly qualityCheck?: "report" | "error";
   readonly budgets?: readonly BudgetRule[];
+  /**
+   * Maximum number of operation ids whose policy state, decisions, pins,
+   * overrides, and stats are retained. Least-recently-used unlocked and
+   * unpinned operations are evicted first. Defaults to `null` (unbounded).
+   * Must be a positive safe integer when set.
+   */
+  readonly maxTrackedOperations?: number | null;
 }
 
 export interface ResolvedBudgetRule {
@@ -70,4 +77,5 @@ export interface ResolvedPolicy {
   readonly adaptationEnabled: boolean;
   readonly qualityCheck: "report" | "error";
   readonly budgets: readonly ResolvedBudgetRule[];
+  readonly maxTrackedOperations: number | null;
 }

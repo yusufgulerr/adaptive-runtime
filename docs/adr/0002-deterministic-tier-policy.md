@@ -51,9 +51,9 @@ Negative:
 ## Alternatives considered
 
 - **Weighted score:** requires calibrated weights, hides trade-offs, and is harder
-  to explain. Rejected for the MVP.
+  to explain. Rejected for the initial release.
 - **Learned model:** needs outcome data, risks non-determinism, and is far outside
-  the MVP scope.
+  the initial release scope.
 - **Custom selector:** maximum flexibility but no stable semantics or shared
   observability. Deferred to a future opt-in hook with strict validation.
 

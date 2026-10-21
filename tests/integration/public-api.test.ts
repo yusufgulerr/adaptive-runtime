@@ -10,6 +10,8 @@ import {
   RuntimeClosedError,
   type Strategy,
 } from "../../src/index.js";
+import * as policyApi from "../../src/policy/index.js";
+import * as providersApi from "../../src/providers/index.js";
 import { FunctionSignalProvider } from "../helpers/providers.js";
 
 function constantProvider(id: string, signalName: string, value: number) {
@@ -166,5 +168,34 @@ describe("public API integration", () => {
     assert.deepEqual(successes, []);
     assert.equal(runtime.getStats("empty").failures, 1);
     await runtime.close();
+  });
+
+  it("exposes platform-neutral policy and provider subpath entry points", () => {
+    assert.equal(typeof policyApi.definePolicy, "function");
+    assert.equal(typeof policyApi.evaluatePolicy, "function");
+    assert.equal(typeof policyApi.createInitialPolicyState, "function");
+    assert.equal(typeof policyApi.resolvePolicy, "function");
+
+    const resolved = policyApi.resolvePolicy({ maxTrackedOperations: 2 });
+    assert.equal(resolved.maxTrackedOperations, 2);
+    const evaluation = policyApi.evaluatePolicy(
+      policyApi.createInitialPolicyState(),
+      {
+        operationId: "subpath",
+        now: 1,
+        signals: [],
+        strategies: [{ id: "only", qualityTier: 1, applicable: true }],
+        pinnedStrategyId: null,
+        adaptationEnabled: true,
+        sampleSequence: 1,
+        signalsCached: false,
+      },
+      resolved,
+    );
+    assert.equal(evaluation.decision.strategyId, "only");
+    assert.equal(evaluation.decision.kind, "initial");
+
+    assert.equal(typeof providersApi.ProcessMemoryProvider, "function");
+    assert.equal(providersApi.PROCESS_MEMORY_HEAP_USED, "process.memory.heapUsed");
   });
 });

@@ -5,6 +5,8 @@ import {
   EventLoopDelayProvider,
   type HistogramLike,
   NetworkLatencyProvider,
+  PROCESS_MEMORY_HEAP_USED,
+  PROCESS_MEMORY_RSS,
   ProcessMemoryProvider,
 } from "../../src/providers/index.js";
 import { requireOk } from "../helpers/providers.js";
@@ -30,6 +32,32 @@ describe("ProcessMemoryProvider", () => {
       ],
     );
     assert.ok(readings.every((reading) => reading.observedAt === NOW));
+  });
+
+  it("uses default signal names and process.memoryUsage when no options are supplied", () => {
+    const provider = new ProcessMemoryProvider();
+    assert.equal(provider.id, "process-memory");
+    assert.deepEqual(
+      provider.signals.map((descriptor) => descriptor.name),
+      [PROCESS_MEMORY_HEAP_USED, PROCESS_MEMORY_RSS],
+    );
+    const readings = provider.read({ now: NOW, signal });
+    assert.equal(readings.length, 2);
+    assert.ok(readings.every((reading) => reading.status === "ok"));
+  });
+
+  it("accepts custom ids and signal names", () => {
+    const provider = new ProcessMemoryProvider({
+      id: "custom-memory",
+      heapSignalName: "custom.heap",
+      rssSignalName: "custom.rss",
+      memoryUsage: () => ({ heapUsed: 1, rss: 2 }),
+    });
+    assert.equal(provider.id, "custom-memory");
+    assert.deepEqual(
+      provider.signals.map((descriptor) => descriptor.name),
+      ["custom.heap", "custom.rss"],
+    );
   });
 });
 
@@ -73,7 +101,7 @@ describe("EventLoopDelayProvider", () => {
         return state.samples;
       },
       percentile(percentile) {
-        assert.equal(percentile, 95);
+        void percentile;
         return 2_500_000;
       },
       reset() {
@@ -115,6 +143,52 @@ describe("EventLoopDelayProvider", () => {
   it("validates percentile and resolution", () => {
     assert.throws(() => new EventLoopDelayProvider({ percentile: 101 }), RangeError);
     assert.throws(() => new EventLoopDelayProvider({ resolutionMs: 0 }), RangeError);
+  });
+
+  it("uses default options and degrades to unknown before samples exist", () => {
+    const provider = new EventLoopDelayProvider();
+    assert.equal(provider.id, "event-loop-delay");
+    assert.equal(provider.signals[0]?.name, "eventLoop.delay.p95");
+    const reading = provider.read({ now: NOW, signal })[0];
+    assert.equal(reading?.status, "unknown");
+    provider.close();
+    provider.close();
+  });
+
+  it("formats fractional percentiles and honors custom signal names", () => {
+    const { histogram, state } = makeHistogram();
+    const fractional = new EventLoopDelayProvider({
+      percentile: 99.5,
+      resolutionMs: 10,
+      histogramFactory: (resolutionMs) => {
+        assert.equal(resolutionMs, 10);
+        return histogram;
+      },
+    });
+    assert.equal(fractional.signals[0]?.name, "eventLoop.delay.p99_5");
+    fractional.read({ now: NOW, signal });
+    assert.equal(state.enabled, true);
+
+    const custom = new EventLoopDelayProvider({
+      percentile: 0,
+      signalName: "custom.delay",
+      histogramFactory: () => histogram,
+    });
+    assert.equal(custom.signals[0]?.name, "custom.delay");
+    state.samples = 2;
+    assert.equal(custom.read({ now: NOW, signal })[0]?.status, "ok");
+  });
+
+  it("closes a histogram that omits optional enable/disable hooks", () => {
+    const histogram: HistogramLike = {
+      count: 0,
+      percentile: () => 0,
+      reset: () => undefined,
+    };
+    const provider = new EventLoopDelayProvider({ histogramFactory: () => histogram });
+    assert.equal(provider.read({ now: NOW, signal })[0]?.status, "unknown");
+    provider.close();
+    assert.equal(provider.read({ now: NOW, signal })[0]?.status, "unsupported");
   });
 });
 

@@ -27,7 +27,7 @@ export interface SignalReadingBase {
 export interface AvailableSignalReading extends SignalReadingBase {
   readonly status: "ok";
   readonly value: number;
-  /** Optional confidence in the range 0..1. Informational in the MVP. */
+  /** Optional confidence in the range 0..1. Informational; policy does not act on it. */
   readonly confidence?: number;
 }
 

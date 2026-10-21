@@ -1,7 +1,8 @@
 # API reference
 
-Package entry point: `adaptive-runtime` (ESM only). In this repository, examples
-and tests import from `src/index.ts`.
+Package entry points: `adaptive-runtime`, `adaptive-runtime/policy`, and
+`adaptive-runtime/providers` (ESM only). In this repository, examples and tests
+import from `src/index.ts`.
 
 ```ts
 import {
@@ -14,7 +15,9 @@ import {
 } from "adaptive-runtime";
 ```
 
-All types are exported from the same entry point unless noted otherwise.
+All types are exported from the root entry point unless noted otherwise. The
+`/policy` and `/providers` subpaths expose the platform-neutral policy surface
+and the built-in Node.js providers respectively.
 
 ## `createAdaptiveRuntime(options?)`
 
@@ -33,7 +36,7 @@ interface CreateRuntimeOptions {
 | Option | Default | Notes |
 | --- | --- | --- |
 | `policy` | all defaults | See [`Policy`](#policy) |
-| `providers` | `[]` | Provider ids and signal names must be unique |
+| `providers` | `[]` | Provider ids and signal names must be unique and have no surrounding whitespace |
 | `clock` | system clock | `now()` and `setTimeout()` |
 | `providerTimeoutMs` | `1000` | Applies to one provider read; `0` disables |
 
@@ -70,6 +73,8 @@ interface AdaptiveRuntime {
   setAdaptationEnabled(operationId: string, enabled: boolean): void;
   getDecision(operationId: string): StrategyDecision | null;
   getStats(operationId: string): RuntimeStats;
+  removeOperation(operationId: string): boolean;
+  resetStats(operationId?: string): void;
   on<K extends RuntimeEventName>(event: K, listener: RuntimeEventListener<K>): () => void;
   close(): Promise<void>;
 }
@@ -128,6 +133,23 @@ interface RuntimeStats {
 `runs` counts started runs, including runs that fail during selection.
 `strategyRuns` increments when a strategy is selected, before execution. Latency
 samples include successful runs and failures that occurred after selection.
+Reading stats refreshes the operation's LRU position.
+
+### `removeOperation(operationId)
+
+Removes the operation's policy state, decision, pin, adaptation override, and
+stats. Returns `true` when at least one record existed and `false` when the
+operation had no retained state. Returns `false` without removing anything while
+the operation is selecting or executing. Throws `RuntimeClosedError` after
+`close()` and `ConfigurationError` for an invalid id.
+
+### `resetStats(operationId?)`
+
+Clears the counters and latency samples for one operation, or for all operations
+when called without an id. Decisions, pins, adaptation overrides, and policy
+state are retained. Resetting one operation leaves any other state it owns
+intact, so its LRU entry remains; resetting all operations removes entries that
+no longer own any state. Throws `RuntimeClosedError` after `close()`.
 
 ### `on(event, listener)`
 
@@ -187,6 +209,7 @@ interface Strategy<TInput, TOutput> {
 
 | Field | Semantics |
 | --- | --- |
+| `id` | Non-empty, unique per operation; no leading or trailing whitespace. |
 | `qualityTier` | Finite number; higher is declared better. The runtime does not verify this. |
 | `costTier` | Optional finite number; lower wins ties at the same quality tier. |
 | `isApplicable` | Synchronous filter. Must return a boolean; a throw becomes `StrategyApplicabilityError`. |
@@ -244,6 +267,7 @@ interface Policy {
   readonly adaptationEnabled?: boolean;
   readonly qualityCheck?: "report" | "error";
   readonly budgets?: readonly BudgetRule[];
+  readonly maxTrackedOperations?: number | null;
 }
 ```
 
@@ -255,11 +279,12 @@ interface Policy {
 | `consecutiveSamples` | `2` | Positive integer |
 | `minQualityTier` | unset | Finite; cannot exceed `maxQualityTier` |
 | `maxQualityTier` | unset | Finite |
-| `fallbackStrategyId` | unset | Non-empty; required when behavior is `"fallback"` |
+| `fallbackStrategyId` | unset | Non-empty, no surrounding whitespace; required when behavior is `"fallback"` |
 | `missingSignalBehavior` | `"hold"` | One of the four literals |
 | `adaptationEnabled` | `true` | Boolean |
 | `qualityCheck` | `"report"` | `"report"` or `"error"` |
 | `budgets` | `[]` | Unique budget ids |
+| `maxTrackedOperations` | `null` | `null` or a positive safe integer |
 
 ### `BudgetRule`
 
@@ -276,15 +301,23 @@ interface BudgetRule {
 
 | Field | Default | Constraints |
 | --- | --- | --- |
-| `id` | required | Non-empty, unique |
-| `signal` | required | Non-empty; need not be currently provided |
+| `id` | required | Non-empty, unique, no surrounding whitespace |
+| `signal` | required | Non-empty, no surrounding whitespace; need not be currently provided |
 | `limit` | required | Finite |
 | `recoverBelow` | `limit` | Finite, `<= limit` |
 | `tierReduction` | `1` | Positive integer |
 | `consecutiveSamples` | policy value | Positive integer |
 
 A budget is a **selection threshold**, not an operating-system limit. Multiple
-engaged budgets sum their `tierReduction` values.
+engaged budgets sum their `tierReduction` values. Budget, signal, strategy,
+provider, and fallback identifiers must not have leading or trailing whitespace;
+`operationId` is trimmed. Use stable identifiers without surrounding whitespace.
+
+`maxTrackedOperations` bounds retained per-operation state with LRU eviction.
+Pinned operations and operations that are selecting or executing are never
+evicted, so the bound can be exceeded temporarily. Eviction discards the
+operation's decision, stats, policy state, and adaptation override. Releasing a
+pin immediately re-applies the bound.
 
 Boundary and initial-sample behavior is described in the
 [README](../README.md#budget-boundaries).
@@ -550,9 +583,15 @@ durations to zero but does not repair a backwards clock.
 
 The package exports:
 
-- `createAdaptiveRuntime`, `definePolicy`, and all public types listed above;
-- the four providers and their signal-name constants;
-- all error classes.
+- root (`adaptive-runtime`): `createAdaptiveRuntime`, `definePolicy`, the four
+  providers, their signal-name constants, all public types, and all error
+  classes;
+- `adaptive-runtime/policy`: policy types and defaults, `definePolicy`,
+  `resolvePolicy`, `createInitialPolicyState`, `evaluatePolicy`, and the
+  decision/state types needed to call it;
+- `adaptive-runtime/providers`: the four built-in providers and their signal-name
+  constants.
 
-Internal modules (`src/policy`, `src/runtime`, `src/signals`) are not importable as
-package subpaths; only the root entry point (`dist/index.js`) is exported.
+Internal modules (`src/runtime`, `src/signals`, `src/policy/*` implementation
+files) are not importable as package subpaths. The policy entry point is
+platform-neutral and does not import `node:*`.

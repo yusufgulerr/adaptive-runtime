@@ -11,7 +11,7 @@ Common runtime designs include automatic retries, fallback execution, hedging, o
 mid-run strategy switches. Each adds hidden side effects: duplicate writes,
 multiplied load, ambiguous results, and unpredictable cost.
 
-The MVP targets operations where a single attempt has meaningful side effects and
+The runtime targets operations where a single attempt has meaningful side effects and
 where the caller should remain in control.
 
 ## Decision
