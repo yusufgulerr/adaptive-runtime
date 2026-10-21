@@ -1,0 +1,78 @@
+{
+  "name": "adaptive-runtime",
+  "version": "0.1.0",
+  "description": "A small runtime that selects between developer-provided algorithmic strategies using explicit resource signals and policy.",
+  "license": "Apache-2.0",
+  "author": "The Adaptive Runtime Contributors",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yusufgulerr/adaptive-runtime.git"
+  },
+  "homepage": "https://github.com/yusufgulerr/adaptive-runtime#readme",
+  "bugs": {
+    "url": "https://github.com/yusufgulerr/adaptive-runtime/issues"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "docs",
+    "README.md",
+    "LICENSE",
+    "NOTICE",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "CODE_OF_CONDUCT.md",
+    "SECURITY.md",
+    "SUPPORT.md"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "keywords": [
+    "adaptive",
+    "runtime",
+    "resource-aware",
+    "policy",
+    "performance",
+    "typescript",
+    "nodejs"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.check.json",
+    "lint": "biome check src tests examples benchmarks",
+    "format": "biome check --write src tests examples benchmarks",
+    "test": "node --import tsx --test \"tests/unit/*.test.ts\" \"tests/integration/*.test.ts\"",
+    "test:coverage": "node --import tsx --experimental-test-coverage --test-coverage-include=\"src/**\" --test-coverage-lines=80 --test-coverage-functions=80 --test-coverage-branches=80 --test \"tests/unit/*.test.ts\" \"tests/integration/*.test.ts\"",
+    "example:basic": "tsx examples/basic/index.ts",
+    "example:search": "tsx examples/resource-aware-search/index.ts",
+    "example:planning": "tsx examples/resource-pressure-planning/index.ts",
+    "example:quick-start": "tsx examples/quick-start/quick-start.ts",
+    "example:observability": "tsx examples/observability/index.ts",
+    "benchmark": "node --expose-gc --import tsx benchmarks/runtime-overhead.ts",
+    "benchmark:concurrency": "node --expose-gc --import tsx benchmarks/concurrency.ts",
+    "check": "npm run lint && npm run typecheck && npm test && npm run build",
+    "prepack": "npm run build",
+    "prepublishOnly": "npm run check"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.2.0",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
+  }
+}

@@ -1,0 +1,58 @@
+name: Feature request
+description: Propose a new capability or a change in behavior.
+title: "[feature]: "
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the problem before the proposed API. This project prioritizes
+        determinism, explicit semantics, and a small surface area.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you unable to do today? Include the operational or correctness impact.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the API or behavior. Note defaults and error semantics.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds, other designs, or reasons not to add this to the library.
+    validations:
+      required: false
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Policy and selection
+        - Signals and providers
+        - Lifecycle, timeout, or abort
+        - Observability and events
+        - Packaging and releases
+        - Documentation and examples
+        - Other
+    validations:
+      required: true
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Project constraints
+      options:
+        - label: The proposal can remain deterministic for the same inputs and state.
+          required: true
+        - label: The proposal does not require adding a runtime dependency without an ADR.
+          required: true
+        - label: The proposal does not rely on forcibly cancelling synchronous JavaScript.
+          required: true
+        - label: I searched existing issues and discussions first.
+          required: true

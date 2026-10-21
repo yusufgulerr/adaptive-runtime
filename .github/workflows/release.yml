@@ -1,0 +1,58 @@
+name: Release
+
+# Tag-driven only. Publishing is an irreversible external side effect and must be
+# approved through the protected "release" environment before this job runs.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish to npm and create GitHub release
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: npm
+          registry-url: https://registry.npmjs.org
+      - name: Install
+        run: npm ci
+      - name: Full verification
+        run: npm run check
+      - name: Coverage gate
+        run: npm run test:coverage
+      - name: Inspect package contents
+        run: npm pack --dry-run
+      - name: Verify tag matches package version
+        run: |
+          set -euo pipefail
+          package_version="$(node -p "require('./package.json').version")"
+          if [ "${GITHUB_REF_NAME}" != "v${package_version}" ]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match package version v${package_version}" >&2
+            exit 1
+          fi
+      - name: Publish with provenance
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Create GitHub release
+        run: gh release create "${GITHUB_REF_NAME}" --generate-notes --verify-tag
+        env:
+          GH_TOKEN: ${{ github.token }}
