@@ -33,7 +33,8 @@
     "CONTRIBUTING.md",
     "CODE_OF_CONDUCT.md",
     "SECURITY.md",
-    "SUPPORT.md"
+    "SUPPORT.md",
+    "GOVERNANCE.md"
   ],
   "sideEffects": false,
   "engines": {

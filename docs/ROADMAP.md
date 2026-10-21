@@ -29,8 +29,8 @@ Delivered:
 
 Not done in 0.1.0:
 
-- npm publication, repository remote, CI execution, or a signed release.
 - Published API stability guarantees. Treat 0.x as experimental.
+- Fuzzing, long-run load testing, soak testing, or an independent security audit.
 
 ## 0.2.0 — Operational confidence
 

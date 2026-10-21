@@ -2,9 +2,9 @@
 
 ## Supported versions
 
-The project is at **0.1.0 and has not been published**. No version is currently
-supported for production use. Once releases begin, the latest 0.x minor line will
-receive security fixes on a best-effort basis; older lines may require an upgrade.
+Version **0.1.0** is the first public release. No version is currently supported
+for production use. The latest 0.x minor line will receive security fixes on a
+best-effort basis; older lines may require an upgrade.
 
 | Version | Supported |
 | --- | --- |
@@ -79,6 +79,6 @@ The [threat model](docs/THREAT_MODEL.md) explains these boundaries in detail.
 - The published package has no runtime dependencies.
 - Development dependencies are locked by `package-lock.json`.
 - CI runs CodeQL and Dependabot is configured for npm and GitHub Actions.
-- Releases are intended to be tag-driven and published with npm provenance.
-- The repository is public, but npm publication and remote CI verification are
-  still pending; do not assume those controls are active yet.
+- Releases are tag-driven and published with npm provenance.
+- CI and CodeQL pass on the public repository. Verify the npm provenance
+  attestation and pin versions before production use.

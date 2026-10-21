@@ -12,6 +12,12 @@
 - Never add fake repository URLs, badges, maintainer identities, tokens, or
   secrets. Never commit `.env`, credentials, local state, `node_modules`, `dist`,
   or coverage output.
+- Only `@yusufgulerr` has write/admin access. External contributions use forks and
+  pull requests. Do not grant write, triage, admin, deploy-key, or GitHub App
+  access without explicit user approval.
+- Do not bypass required reviews for external pull requests. The owner's admin
+  bypass is only for the owner's own pull requests, because GitHub does not allow
+  self-approval.
 
 ## Current position
 
@@ -68,5 +74,6 @@ not expectations.
 - `npm view adaptive-runtime version` returned 404 on 2026-10-21; the name was
   not reserved at that time.
 - An unrelated public repository named `sevlaq-labs/adaptive-runtime` exists.
-- `origin` is `https://github.com/yusufgulerr/adaptive-runtime.git`; the
-  repository is public and empty until the initial push.
+- `origin` is `https://github.com/yusufgulerr/adaptive-runtime.git`; the initial
+  commit is pushed. `main` requires a pull request, one code-owner approval, Node
+  22/24/26 CI, and CodeQL. Only `@yusufgulerr` has write/admin access.

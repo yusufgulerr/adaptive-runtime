@@ -8,8 +8,9 @@ strategies with declared quality and cost tiers. The runtime reads the signals
 you supply, applies a deterministic policy, and runs exactly one strategy with
 inspectable metadata explaining the choice.
 
-> **Status: v0.1.0 MVP.** The package is not published yet and has not been
-> hardened for production traffic. See [Status and limitations](#status-and-limitations).
+> **Status: v0.1.0 MVP.** Published on npm as `adaptive-runtime`. It has not
+> been hardened for production traffic. See
+> [Status and limitations](#status-and-limitations).
 
 ## Why
 
@@ -45,17 +46,12 @@ included in CI so the next LTS is exercised, but the locally verified runtime is
 
 ## Installation
 
-The package is **not yet published to npm**. From a checkout:
-
-```bash
-npm install /absolute/path/to/adaptive-runtime
-```
-
-After a release, the intended command is:
-
 ```bash
 npm install adaptive-runtime
 ```
+
+The package is ESM-only and requires Node.js 22 or newer. For a local checkout,
+run `npm install` and use the development commands below.
 
 ## Quick start
 
@@ -354,7 +350,7 @@ docs/          architecture, API, API design, provider/observability guides,
 ## Status and limitations
 
 This is an MVP suitable for evaluation, prototypes, and further development. It
-has not been published, fuzzed, load-tested, or audited. Known limitations:
+has not been fuzzed, load-tested, or audited. Known limitations:
 
 - Budgets are soft selection thresholds, not OS resource limits.
 - Quality tiers are declarations; the optional check only relays pass/fail.
@@ -365,15 +361,16 @@ has not been published, fuzzed, load-tested, or audited. Known limitations:
   selection even if the queued caller aborts; cancellation is observed when the
   lock is released.
 - Decision state is per process and in memory; it is not persisted or coordinated.
-- The public repository exists at <https://github.com/yusufgulerr/adaptive-runtime>;
-  npm publication and remote CI execution are not established yet.
+- The package is published on npm, and CI/CodeQL pass on the public repository at
+  <https://github.com/yusufgulerr/adaptive-runtime>.
 
 See [docs/ROADMAP.md](docs/ROADMAP.md) and [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
 
 ## Contributing
 
 Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md),
-[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md), and [SECURITY.md](SECURITY.md).
+[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md), and [SECURITY.md](SECURITY.md). Project
+roles, review rules, and access policy are in [GOVERNANCE.md](GOVERNANCE.md).
 
 ## License
 
