@@ -1,5 +1,11 @@
 import { ConfigurationError } from "../errors/index.js";
-import type { BudgetRule, Policy, ResolvedBudgetRule, ResolvedPolicy } from "../types/policy.js";
+import type {
+  BudgetRule,
+  CustomPolicySelector,
+  Policy,
+  ResolvedBudgetRule,
+  ResolvedPolicy,
+} from "../types/policy.js";
 
 const DEFAULT_EVALUATION_INTERVAL_MS = 1000;
 const DEFAULT_MAX_SIGNAL_AGE_MS = 5000;
@@ -167,6 +173,14 @@ export function resolvePolicy(input: Policy | undefined): ResolvedPolicy {
       ? null
       : requirePositiveSafeInteger(policy.maxTrackedOperations, "policy.maxTrackedOperations");
 
+  let customSelector: CustomPolicySelector | null = null;
+  if (policy.customSelector !== undefined) {
+    if (typeof policy.customSelector !== "function") {
+      throw new ConfigurationError("customSelector must be a function");
+    }
+    customSelector = policy.customSelector;
+  }
+
   const seenBudgetIds = new Set<string>();
   const budgets: ResolvedBudgetRule[] = [];
   for (const [index, rule] of (policy.budgets ?? []).entries()) {
@@ -191,5 +205,6 @@ export function resolvePolicy(input: Policy | undefined): ResolvedPolicy {
     qualityCheck,
     budgets,
     maxTrackedOperations,
+    customSelector,
   };
 }
