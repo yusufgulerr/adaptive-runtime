@@ -38,7 +38,7 @@ and npm registry evidence.
 | `npm pack --dry-run` | **PASS** — package contents inspected |
 | `npm ls --omit=dev --depth=0` | **PASS** — `(empty)`; no runtime dependencies |
 | `npm audit` | **PASS** — 0 vulnerabilities (including dev dependencies) |
-| YAML parse of `.github/**/*.yml` | **PASS** — 7 files parsed with PyYAML |
+| YAML parse of `.github/**/*.yml` | **PASS** — 8 files parsed with PyYAML |
 | Markdown local-link check | **PASS** — all local links resolve |
 | Clean consumer install + `node test.mjs` | **PASS** — import, run, close, and typed error behavior |
 | Clean consumer `tsc -p tsconfig.json` | **PASS** — declarations resolve under NodeNext |
@@ -47,6 +47,20 @@ and npm registry evidence.
 The test suite is split across ten test files: seven unit files and three
 integration files, plus shared helpers. `node:test` reports 13 suites because of
 nested `describe` blocks.
+
+## Release status
+
+| Artifact | Status on 2026-10-21 |
+| --- | --- |
+| npm registry package | **NOT PUBLISHED** — `npm view adaptive-runtime version` returns 404 |
+| Git tag `v0.1.0` | **NOT CREATED** |
+| GitHub release | **NOT CREATED** |
+| `NPM_TOKEN` in the `release` environment | **NOT CONFIGURED** |
+| npm provenance attestation | **NOT AVAILABLE** until the first successful publish |
+
+The source repository is public, but the npm release is a separate, irreversible
+step. Do not describe the package as published until the registry, provenance,
+and clean-consumer checks below pass.
 
 ## Coverage
 
@@ -63,7 +77,7 @@ coverage is below 80% in a few modules (`runtime/validate.ts` 79.07%,
 `providers/event-loop-delay.ts` 74.07%, `providers/process-memory.ts` 75.00%).
 Those files still contribute to a passing global gate; no per-file threshold is
 configured. Branch coverage varied by about 0.3 percentage points across repeated
-local runs; the figures above are from the last recorded run.
+local runs; the figures above are from the recorded verification run.
 
 ## Examples
 
@@ -101,10 +115,10 @@ Command: `npm run benchmark` (Node 24.15.0, `--expose-gc`, 20,000 runs per round
 
 | Mode | Median µs/run | Relative to direct |
 | --- | ---: | ---: |
-| Direct call | 0.254 | 1.00x |
-| Runtime, static policy | 2.759 | 10.86x |
-| Runtime, adaptive (fresh in-memory read) | 6.708 | 26.40x |
-| Runtime, adaptive (cached read) | 3.071 | 12.09x |
+| Direct call | 0.304 | 1.00x |
+| Runtime, static policy | 3.282 | 10.79x |
+| Runtime, adaptive (fresh in-memory read) | 7.966 | 26.20x |
+| Runtime, adaptive (cached read) | 3.551 | 11.68x |
 
 This is sequential call overhead, not throughput or production performance.
 Timings vary between runs; see [BENCHMARKS.md](BENCHMARKS.md) for method and
@@ -132,8 +146,8 @@ throughput claims. The fixed-id retained-heap sample had a median delta of
   TypeScript consumer had `@types/node` installed.
 - `npm pack --dry-run` runs the `prepack` build and validates the package shape.
 
-The last recorded dry run reports **131 files**, including this document. The
-tarball is roughly **136 KB packed** and **522 KB unpacked**. Exact byte counts
+The last recorded dry run reports **133 files**, including this document. The
+tarball is roughly **143 KB packed** and **543 KB unpacked**. Exact byte counts
 change with any edit to this document, so run `npm pack --dry-run --json` for the
 current value.
 
@@ -143,13 +157,15 @@ current value.
   <https://github.com/yusufgulerr/adaptive-runtime>. The initial commit was
   pushed on 2026-10-21; `main` requires a pull request and the Node 22/24/26 CI
   checks.
-- `npm view adaptive-runtime version` returned **404** before the release. The
-  tag-driven workflow publishes `0.1.0`; recheck the registry after publication.
+- `npm view adaptive-runtime version` returned **404** on 2026-10-21. No tag or
+  GitHub release exists yet. The tag-driven workflow is configured to publish
+  `0.1.0` and create the release after owner approval.
 - The unrelated GitHub repository `sevlaq-labs/adaptive-runtime` exists
   (description: "Adaptive Runtime Layer for Stateful AI Systems"). It is not an
   upstream of this project.
-- The `release` GitHub environment requires reviewer approval and stores the npm
-  token as an environment secret. The token value is not recorded here.
+- The `release` GitHub environment requires reviewer approval. `NPM_TOKEN` is
+  **not yet configured**; it must be added as an environment secret before the
+  first publish. The token value is never recorded here.
 
 ## Not verified
 
@@ -171,11 +187,14 @@ are in a coherent MVP state. Release preparation completed:
 
 1. created the public repository and pushed the initial commit;
 2. ran CI on Node 22, 24, and 26 and CodeQL successfully;
-3. added repository/bugs/homepage metadata and a support channel;
-4. configured the protected `release` environment and npm token secret;
+3. added repository/bugs/homepage metadata, governance, and a support channel;
+4. configured the protected `release` environment; `NPM_TOKEN` remains pending;
 5. accepted the known limitations in the README;
-6. obtained explicit approval for the irreversible publish step.
+6. documented that publishing is irreversible and requires explicit owner
+   approval plus npm authentication.
 
-The `v0.1.0` tag triggers the release workflow, which publishes the package with
-npm provenance and creates the GitHub release. Post-publication registry and
-attestation checks are recorded separately.
+The source repository is public and verified. The npm publish, `v0.1.0` tag, and
+GitHub release are **pending**. Once created, the tag triggers the release
+workflow, which is configured to publish with npm provenance and create the GitHub
+release. Post-publication registry, provenance, and clean-consumer checks must be
+recorded here after they actually succeed.

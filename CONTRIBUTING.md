@@ -9,6 +9,8 @@ correctness and clarity before performance or feature count.
 - Read [README.md](README.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md),
   [docs/API.md](docs/API.md), [docs/PROVIDERS.md](docs/PROVIDERS.md), and
   [docs/COOKBOOK.md](docs/COOKBOOK.md).
+- Review [GOVERNANCE.md](GOVERNANCE.md) and
+  [docs/GITHUB_SETTINGS.md](docs/GITHUB_SETTINGS.md) for access and review rules.
 - Search existing issues and pull requests.
 - For a behavior change or new public API, open an issue first. Describe the use
   case, the failure mode, and how determinism is preserved.
@@ -29,15 +31,19 @@ the full role and access policy.
 
 ## Development setup
 
-Requirements: Node.js 22 or newer and npm.
+Requirements: Node.js 22 or newer and npm. `.nvmrc` pins the recommended local
+version (Node 24); CI covers Node 22, 24, and 26. No environment variables or
+`.env` file are required: all configuration is explicit in code.
 
 ```bash
-npm install
+nvm use        # optional, reads .nvmrc
+npm ci         # reproducible install from package-lock.json
 npm run check
 ```
 
 `npm run check` runs Biome, TypeScript (including tests/examples/benchmarks),
-the test suite, and the production build.
+the test suite, and the production build. Use `npm install` only when you
+intentionally need to update the lockfile.
 
 Useful commands:
 
@@ -94,17 +100,71 @@ code should not lower coverage materially.
   its signal names, units, availability rules, and resource lifecycle.
 - Use relative links so the docs work in the repository and in package previews.
 
+## Fork and branch workflow
+
+External contributors do not have write access. Use this flow:
+
+1. Fork <https://github.com/yusufgulerr/adaptive-runtime> on GitHub.
+2. Clone your fork and add the upstream remote:
+
+   ```bash
+   git clone https://github.com/<your-user>/adaptive-runtime.git
+   cd adaptive-runtime
+   git remote add upstream https://github.com/yusufgulerr/adaptive-runtime.git
+   git fetch upstream
+   ```
+
+3. Create a focused branch from `upstream/main`:
+
+   ```bash
+   git switch -c fix/preserve-budget-state upstream/main
+   ```
+
+   Use a descriptive prefix: `feat/`, `fix/`, `docs/`, `test/`, `refactor/`,
+   `perf/`, `ci/`, or `chore/`.
+
+4. Make the smallest coherent change, add tests, and run the checks.
+5. Commit with a Conventional Commit message, push to your fork, and open a pull
+   request against `main` with `Fixes #<issue>` when applicable.
+
+## Commit messages
+
+Use [Conventional Commits](https://www.conventionalcommits.org/) for every
+commit:
+
+```text
+<type>(<scope>): <imperative summary>
+
+<why this change is needed>
+```
+
+Allowed types: `feat`, `fix`, `docs`, `test`, `refactor`, `perf`, `build`, `ci`,
+`chore`, and `revert`. Useful scopes include `policy`, `runtime`, `providers`,
+`signals`, `docs`, and `ci`.
+
+Examples:
+
+```text
+fix(policy): preserve pending state on cached samples
+docs(providers): document abort behavior for custom probes
+test(runtime): cover close during an in-flight read
+```
+
 ## Commit and pull request guidelines
 
 - Open pull requests from a fork; direct pushes to `main` are blocked.
+- Every pull request needs one approval from the code owner, the Node 22/24/26
+  CI checks, and CodeQL. Resolve all review conversations before merging.
 - Keep commits focused; one logical change per commit.
-- Use an imperative subject line, for example `fix: preserve budget state on cached reads`.
+- Follow Conventional Commits, for example
+  `fix(policy): preserve budget state on cached reads`.
 - Explain **why** in the body, not just what changed.
-- Reference related issues.
+- Use `Fixes #<issue>` in the pull request when it closes an issue; otherwise
+  write `N/A` and explain the motivation.
 - Fill out the pull request template, including verification commands and output.
 - Keep the branch up to date and resolve review conversations before merging.
 - Do not include generated `dist/` output, unless a release process explicitly requires it.
-- Do not commit secrets, tokens, local paths, or editor state.
+- Do not commit `.env` files, secrets, tokens, local paths, or editor state.
 
 All contributions are accepted under the Apache License 2.0. By submitting a pull
 request, you agree that your contribution is licensed under the same terms. No
@@ -133,4 +193,6 @@ Review is best effort. The project does not currently offer a response SLA.
 5. Tag the release and publish through the release workflow with provenance.
 6. Verify a clean consumer install and import from the published tarball.
 
-No one should publish from an unverified or dirty working tree.
+The complete tag, approval, verification, and failure-handling checklist is in
+[docs/RELEASING.md](docs/RELEASING.md). No one should publish from an unverified
+or dirty working tree.

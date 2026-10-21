@@ -60,6 +60,45 @@ Exit criteria:
 - A published package can be installed in a clean project and imported using
   only the documented entry point.
 
+## Maintainability and technical debt
+
+These are known, non-blocking issues. None changes the documented 0.1.0
+semantics, and the existing tests cover the current behavior.
+
+1. **Per-operation state is never evicted (highest priority).** `#states`,
+   `#decisions`, `#pins`, `#adaptationOverrides`, and `#locks` in
+   `src/runtime/runtime.ts`, plus the stats map in `src/runtime/stats.ts`, grow
+   with the number of distinct operation ids. This is documented in
+   [THREAT_MODEL.md](THREAT_MODEL.md) (T5/T6). Add an explicit
+   `removeOperation(operationId)` API, a maximum tracked-operation limit, or a TTL
+   policy with tests and documentation.
+2. **The policy engine is one large pure function (medium).**
+   `src/policy/engine.ts` is 785 lines. Split budget transitions, candidate
+   selection, and stability transitions into named helpers while preserving the
+   public `evaluatePolicy` contract and the existing tests.
+3. **A few files are below the per-file coverage target (medium).** The global
+   gate is 80%, but `runtime/validate.ts`, `providers/event-loop-delay.ts`, and
+   `providers/process-memory.ts` have lower branch coverage. Add focused branch
+   tests or introduce a per-file threshold once the suite is ready.
+4. **Post-publish verification is manual (medium).** The release workflow proves
+   the publish command ran, not that the registry serves a installable package.
+   After the first successful manual release, add a post-publish job that retries
+   registry propagation, checks the version and integrity, and performs a clean
+   consumer import.
+5. **No benchmark regression tracking (low).** Benchmarks are intentionally not a
+   CI gate because they are noisy on shared runners. Record a trend over time
+   before considering a loose, non-blocking threshold.
+6. **Identifier validation is inconsistent (low).** `validateOperationId` trims
+   whitespace, while provider ids, signal names, and budget ids do not. Decide
+   whether identifiers are trimmed or rejected consistently and document it.
+7. **Provider start failure is permanent (low).** `SignalCollector` records a
+   failed `start()` and emits error readings without retrying. Keep this behavior
+   or add an explicit retry/backoff policy; either way, document it for provider
+   authors.
+8. **Queued abort latency is documented but real (low).** A run waiting behind
+   another selection for the same operation id is not observed until the lock is
+   released. Consider an abort-aware queue if this becomes a production issue.
+
 ## 0.3.0 — Extensibility without losing determinism
 
 Candidate work, contingent on user demand:

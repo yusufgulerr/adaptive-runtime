@@ -1,0 +1,62 @@
+name: Usage question
+description: Ask how to use the runtime, policy model, or a provider.
+title: "[question]: "
+labels: ["question", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Read README.md, docs/API.md, docs/COOKBOOK.md, and docs/PROVIDERS.md first.
+        Do not include secrets, tokens, or production data.
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: What are you trying to accomplish, and where are you stuck?
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Describe your runtime setup, policy, providers, and constraints.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Package version or commit
+      placeholder: "0.1.0 or commit SHA"
+    validations:
+      required: true
+  - type: input
+    id: node
+    attributes:
+      label: Node.js version
+      placeholder: "v24.15.0"
+    validations:
+      required: true
+  - type: textarea
+    id: tried
+    attributes:
+      label: What have you tried?
+      description: Include relevant documentation sections and workarounds.
+    validations:
+      required: false
+  - type: textarea
+    id: code
+    attributes:
+      label: Minimal code sample
+      description: Redact secrets and personal data.
+      render: ts
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and the documentation.
+          required: true
+        - label: I removed secrets, tokens, and personal data from this report.
+          required: true

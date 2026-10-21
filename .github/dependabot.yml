@@ -10,6 +10,11 @@ updates:
       timezone: "Etc/UTC"
     open-pull-requests-limit: 5
     versioning-strategy: increase
+    labels:
+      - dependencies
+    commit-message:
+      prefix: "chore"
+      include: "scope"
     groups:
       development-tooling:
         patterns:
@@ -27,6 +32,12 @@ updates:
       time: "06:15"
       timezone: "Etc/UTC"
     open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - github_actions
+    commit-message:
+      prefix: "ci"
+      include: "scope"
     groups:
       actions:
         patterns:

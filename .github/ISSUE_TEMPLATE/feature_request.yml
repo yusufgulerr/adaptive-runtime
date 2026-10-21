@@ -19,7 +19,14 @@ body:
     id: proposal
     attributes:
       label: Proposed solution
-      description: Describe the API or behavior. Note defaults and error semantics.
+      description: Describe the API or behavior. Note defaults, error semantics, and compatibility.
+    validations:
+      required: true
+  - type: textarea
+    id: impact
+    attributes:
+      label: Impact and use case
+      description: Who benefits, how often, and what happens if this is not added?
     validations:
       required: true
   - type: textarea
@@ -56,3 +63,10 @@ body:
           required: true
         - label: I searched existing issues and discussions first.
           required: true
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Links, benchmarks, prior art, or examples from other projects.
+    validations:
+      required: false

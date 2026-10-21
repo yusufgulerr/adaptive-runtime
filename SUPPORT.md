@@ -11,12 +11,12 @@
 
 ## Questions and bugs
 
-- **Usage questions / design discussion:** open an issue labeled `question`.
+- **Usage questions / design discussion:** use the usage question issue form.
   GitHub Discussions is not enabled yet.
-- **Bug reports:** use the bug issue form and include a minimal reproduction,
-  Node version, package version, and expected/actual behavior.
-- **Feature requests:** use the feature issue form and describe the problem before
-  the proposed API.
+- **Bug reports:** use the bug report issue form and include a minimal
+  reproduction, Node version, package version, and expected/actual behavior.
+- **Feature requests:** use the feature request issue form and describe the
+  problem before the proposed API.
 - **Security issues:** follow [SECURITY.md](SECURITY.md). Never post exploit
   details publicly.
 
