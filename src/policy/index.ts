@@ -13,8 +13,13 @@ export type {
 } from "../types/decision.js";
 export type {
   BudgetRule,
+  CustomPolicySelection,
+  CustomPolicySelector,
+  CustomPolicySelectorContext,
+  CustomSelectorCandidate,
   MissingSignalBehavior,
   Policy,
+  PolicyCandidate,
   ResolvedBudgetRule,
   ResolvedPolicy,
 } from "../types/policy.js";

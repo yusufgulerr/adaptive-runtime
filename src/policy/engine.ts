@@ -1,4 +1,5 @@
 import {
+  ConfigurationError,
   FallbackStrategyError,
   MissingSignalError,
   NoEligibleStrategyError,
@@ -11,7 +12,11 @@ import type {
   SignalView,
   StrategyDecision,
 } from "../types/decision.js";
-import type { ResolvedPolicy } from "../types/policy.js";
+import type {
+  CustomPolicySelectorContext,
+  CustomSelectorCandidate,
+  ResolvedPolicy,
+} from "../types/policy.js";
 import type { ResourceSignal } from "../types/signals.js";
 import {
   type BudgetState,
@@ -49,6 +54,7 @@ export interface PolicyState {
 
 export interface PolicyEvaluationInput {
   readonly operationId: string;
+  readonly operation?: string;
   readonly now: number;
   readonly signals: readonly ResourceSignal[];
   readonly strategies: readonly StrategyCandidate[];
@@ -408,9 +414,79 @@ export function evaluatePolicy(
     });
   }
 
-  const candidate = chooseAtOrBelow(automaticCandidates, targetQualityTier);
+  let candidate = chooseAtOrBelow(automaticCandidates, targetQualityTier);
   if (candidate === undefined) {
     throw new NoEligibleStrategyError(input.operationId, policy.minQualityTier);
+  }
+
+  if (policy.customSelector !== null) {
+    const selectorCandidates: CustomSelectorCandidate[] = automaticCandidates.map((c) => ({
+      candidate: {
+        id: c.id,
+        qualityTier: c.qualityTier,
+        costTier: c.costTier,
+        applicable: c.applicable,
+      },
+      estimatedCost: c.costTier ?? null,
+      estimatedLatencyMs: null,
+      id: c.id,
+      qualityTier: c.qualityTier,
+      costTier: c.costTier,
+      applicable: c.applicable,
+    }));
+
+    const signalsRecord: Record<string, ResourceSignal> = {};
+    for (const sig of input.signals) {
+      signalsRecord[sig.name] = sig;
+    }
+
+    const selectorContext: CustomPolicySelectorContext = {
+      operation: input.operation ?? input.operationId,
+      operationId: input.operationId,
+      candidates: selectorCandidates,
+      signals: signalsRecord,
+      now: input.now,
+    };
+
+    const selection = policy.customSelector(selectorContext);
+
+    if (selection !== null && selection !== undefined) {
+      const chosenStrategyId =
+        typeof selection === "string"
+          ? selection
+          : selection && typeof selection === "object"
+            ? selection.strategyId
+            : undefined;
+
+      if (typeof chosenStrategyId !== "string" || chosenStrategyId.trim().length === 0) {
+        throw new ConfigurationError(
+          `customSelector must return a valid strategyId, got "${String(chosenStrategyId)}".`,
+        );
+      }
+
+      const matchedCandidate = automaticCandidates.find((c) => c.id === chosenStrategyId);
+      if (!matchedCandidate) {
+        throw new ConfigurationError(
+          `customSelector chose strategy "${chosenStrategyId}" which is not an applicable surviving candidate within quality tier bounds.`,
+        );
+      }
+
+      candidate = matchedCandidate;
+
+      const reasonDetail =
+        typeof selection === "object" &&
+        typeof selection.reason === "string" &&
+        selection.reason.length > 0
+          ? selection.reason
+          : `Custom policy selector chose strategy "${chosenStrategyId}".`;
+
+      reasons.push({
+        code: "custom-selector",
+        message: reasonDetail,
+        detail: reasonDetail,
+        details: { strategyId: chosenStrategyId },
+      });
+    }
   }
 
   if (input.signalsCached && !fresh) {

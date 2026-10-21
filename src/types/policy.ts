@@ -1,4 +1,40 @@
+import type { SignalReading } from "./signals.js";
+
 export type MissingSignalBehavior = "hold" | "fallback" | "error" | "ignore";
+
+export interface PolicyCandidate {
+  readonly id: string;
+  readonly qualityTier: number;
+  readonly costTier?: number;
+  readonly applicable?: boolean;
+}
+
+export interface CustomSelectorCandidate {
+  readonly candidate: PolicyCandidate;
+  readonly estimatedCost: number | null;
+  readonly estimatedLatencyMs: number | null;
+  readonly id?: string;
+  readonly qualityTier?: number;
+  readonly costTier?: number;
+  readonly applicable?: boolean;
+}
+
+export interface CustomPolicySelectorContext {
+  readonly operation: string;
+  readonly operationId?: string;
+  readonly candidates: readonly CustomSelectorCandidate[];
+  readonly signals: Readonly<Record<string, SignalReading>>;
+  readonly now: number;
+}
+
+export interface CustomPolicySelection {
+  readonly strategyId: string;
+  readonly reason?: string;
+}
+
+export type CustomPolicySelector = (
+  context: CustomPolicySelectorContext,
+) => CustomPolicySelection | null | undefined;
 
 /**
  * A soft budget rule. When the signal exceeds `limit`, the policy reduces the
@@ -54,6 +90,7 @@ export interface Policy {
    * Must be a positive safe integer when set.
    */
   readonly maxTrackedOperations?: number | null;
+  readonly customSelector?: CustomPolicySelector;
 }
 
 export interface ResolvedBudgetRule {
@@ -78,4 +115,5 @@ export interface ResolvedPolicy {
   readonly qualityCheck: "report" | "error";
   readonly budgets: readonly ResolvedBudgetRule[];
   readonly maxTrackedOperations: number | null;
+  readonly customSelector: CustomPolicySelector | null;
 }

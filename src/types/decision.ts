@@ -18,11 +18,13 @@ export type DecisionReasonCode =
   | "missing-signal-hold"
   | "missing-signal-ignored"
   | "missing-signal-fallback"
-  | "cached-sample";
+  | "cached-sample"
+  | "custom-selector";
 
 export interface DecisionReason {
   readonly code: DecisionReasonCode;
   readonly message: string;
+  readonly detail?: string;
   readonly details?: Readonly<Record<string, unknown>>;
 }
 

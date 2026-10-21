@@ -38,6 +38,7 @@ export interface UnavailableSignalReading extends SignalReadingBase {
 }
 
 export type ResourceSignal = AvailableSignalReading | UnavailableSignalReading;
+export type SignalReading = ResourceSignal;
 
 export interface SignalReadContext {
   /** Clock value supplied by the runtime. Providers should use it for observedAt. */
