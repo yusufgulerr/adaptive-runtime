@@ -100,8 +100,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.check.json",
-    "lint": "biome check src tests examples benchmarks",
-    "format": "biome check --write src tests examples benchmarks",
+    "lint": "biome check src tests examples benchmarks scripts",
+    "format": "biome check --write src tests examples benchmarks scripts",
     "test": "node --import tsx --test \"tests/unit/*.test.ts\" \"tests/integration/*.test.ts\"",
     "test:coverage": "node --import tsx --experimental-test-coverage --test-coverage-include=\"src/**\" --test-coverage-lines=80 --test-coverage-functions=80 --test-coverage-branches=80 --test \"tests/unit/*.test.ts\" \"tests/integration/*.test.ts\"",
     "example:basic": "tsx examples/basic/index.ts",
@@ -112,7 +112,8 @@
     "example:edge": "tsx examples/multi-runtime-edge/index.ts",
     "benchmark": "node --expose-gc --import tsx benchmarks/runtime-overhead.ts",
     "benchmark:concurrency": "node --expose-gc --import tsx benchmarks/concurrency.ts",
-    "check": "npm run lint && npm run typecheck && npm test && npm run build",
+    "verify:exports": "node scripts/verify-package-exports.mjs",
+    "check": "npm run lint && npm run typecheck && npm test && npm run build && npm run verify:exports",
     "prepack": "npm run build",
     "prepublishOnly": "npm run check"
   },

@@ -1,0 +1,50 @@
+title: "Idea: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Propose a design idea or a new capability. Describe the problem before the
+        API, and explain how the proposal preserves deterministic selection and the
+        zero-runtime-dependency constraint.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What can you not do today, and what is the operational impact?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: Describe the behavior, defaults, error semantics, and compatibility.
+    validations:
+      required: true
+  - type: textarea
+    id: determinism
+    attributes:
+      label: Determinism and safety
+      description: How does the proposal behave with the same inputs, state, and clock? What happens when data is unavailable?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds, prior art, or reasons not to add this to the library.
+    validations:
+      required: false
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Project constraints
+      options:
+        - label: The proposal can remain deterministic for the same inputs and state.
+          required: true
+        - label: The proposal does not add a runtime dependency without an ADR.
+          required: true
+        - label: The proposal does not rely on forcibly cancelling synchronous JavaScript.
+          required: true
+        - label: I searched existing discussions, issues, and the roadmap first.
+          required: true

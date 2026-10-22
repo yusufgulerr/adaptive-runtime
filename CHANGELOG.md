@@ -33,7 +33,8 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) after 1.0.
   example with an execution budget, composite pressure score, three-tier strategy
   ladder, and Prometheus output.
 - ADRs 0007 (multi-runtime and composite providers) and 0008 (custom selector,
-  observability, and testing SDK).
+  observability, and testing SDK), plus 0009 (repository automation and
+  supply-chain hardening).
 - Source-scan portability test, entry-point integration tests, and package
   subpath assertions.
 - `Policy.maxTrackedOperations`: bounds all operation-keyed state with
@@ -51,14 +52,31 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) after 1.0.
   edge, and composite) and their signal-name constants. This barrel is mixed and
   not platform-neutral.
 - Dependency Review workflow pinned to
-  `actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48`.
+  `actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294`
+  (v5.0.0).
 - Cross-platform CI job on Windows and macOS.
+- Repository automation: `.github/release.yml` categorizes generated release
+  notes, Discussion forms cover Q&A and design ideas, an OpenSSF Scorecard
+  workflow uploads SARIF and publishes badge results, and a dependency-free PR
+  title check enforces Conventional Commits. `CITATION.cff` adds citation
+  metadata, and `.vscode/` recommends the Biome extension with format-on-save.
+- `npm run verify:exports` imports every built subpath through the package export
+  map and checks the named runtime exports; CI runs it on Linux, Windows, and
+  macOS after `npm run build`.
+- Integration coverage now uses the root `CustomPolicySelector` type, the
+  observability collector, and the testing SDK together, and validates the PR
+  title checker.
 - ADR 0006 documenting bounded operation state and subpath exports.
 - `verify-publish` release job: registry propagation retry, version, integrity,
   repository metadata, provenance attestation, and clean-consumer import checks.
 
 ### Changed
 
+- Repository settings documentation now matches the checked-in workflows and
+  issue forms: `status:needs-triage` is the triage label, Dependency Review uses
+  `actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294`
+  (v5.0.0), CodeQL action pins are labeled as v4.39.0, and `release.yml` uses the
+  same `actions/setup-node` pin as the other workflows.
 - Package version is `0.3.0`. The root entry point now re-exports the Node.js
   entry point; platform-specific modules should import `/core`, `/web`, or
   `/edge` explicitly.
@@ -66,7 +84,7 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) after 1.0.
   provider guide, observability guide, roadmap, verification record, and agent
   rules now describe the multi-runtime surface.
 - Expanded branch coverage for the new entry points, providers, testing SDK, and
-  portability checks to 251 tests and 99.08% line / 96.71% branch / 98.64%
+  portability checks to 256 tests and 99.10% line / 96.91% branch / 98.64%
   function coverage.
 - Split the policy core into `budgets.ts`, `candidates.ts`, `stability.ts`, and a
   coordinating `engine.ts`. `evaluatePolicy` semantics and the public contract are

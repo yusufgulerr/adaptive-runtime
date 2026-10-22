@@ -1,0 +1,47 @@
+title: "Q&A: "
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Ask a usage or configuration question here. For reproducible defects, use
+        the bug report issue form. Do not include secrets, tokens, customer data,
+        or unredacted production logs.
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: What are you trying to accomplish, and where are you stuck?
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Include the package version, runtime, policy, providers, and constraints.
+    validations:
+      required: true
+  - type: textarea
+    id: tried
+    attributes:
+      label: What have you tried?
+      description: Link the documentation sections or workarounds you already checked.
+    validations:
+      required: false
+  - type: textarea
+    id: code
+    attributes:
+      label: Minimal code sample
+      description: Redact secrets and personal data.
+      render: ts
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing discussions, issues, and documentation.
+          required: true
+        - label: I removed secrets, tokens, and personal data from this post.
+          required: true

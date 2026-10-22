@@ -18,11 +18,12 @@ request that updates this file, `GOVERNANCE.md`, or both.
 | Wiki | Not used; documentation lives in `docs/` |
 | Issues | Enabled; blank issues disabled, forms only |
 
-The 28 repository labels cover the issue/PR taxonomy: `type:*`, `area:*`,
-`priority:*`, plus `status:needs-triage`, `good first issue`,
-`help wanted`, `dependencies`, `documentation`, `accessibility`, and the
-GitHub default labels. Keep label names stable; templates and saved searches
-reference them.
+The repository label taxonomy covers `type:*`, `area:*`, `priority:*`, plus
+`status:needs-triage`, `good first issue`, `help wanted`, `dependencies`,
+`documentation`, `accessibility`, `skip-changelog` for release-note exclusion, and
+the GitHub default labels. Keep label names stable; templates and saved searches
+reference them. The issue forms and Discussion templates use these exact label
+spellings.
 
 ## Access model
 
@@ -55,7 +56,7 @@ described below.
 | Dismiss stale pull request approvals when new commits are pushed | Enabled |
 | Require approval of the most recent reviewable push | Enabled |
 | Require status checks to pass | Enabled |
-| Required checks | `Node 22`, `Node 24`, `Node 26`, `Analyze JavaScript/TypeScript` |
+| Required checks | `Node 22`, `Node 24`, `Node 26`, `Analyze JavaScript/TypeScript`, `PR title` |
 | Require branches to be up to date | Enabled |
 | Require conversation resolution | Enabled |
 | Require linear history | Enabled |
@@ -115,7 +116,8 @@ protection already enforces the same gate):
           { "context": "Node 22" },
           { "context": "Node 24" },
           { "context": "Node 26" },
-          { "context": "Analyze JavaScript/TypeScript" }
+          { "context": "Analyze JavaScript/TypeScript" },
+          { "context": "PR title" }
         ]
       }
     }
@@ -164,7 +166,7 @@ Use **Settings → Actions → General**:
 | Setting | Value |
 | --- | --- |
 | Actions permissions | Allow selected actions |
-| Allowed actions | GitHub-owned actions only |
+| Allowed actions | GitHub-owned actions plus the SHA-pinned `ossf/scorecard-action` |
 | Require actions to be pinned to a full-length commit SHA | Enabled |
 | Default workflow permissions | Read repository contents |
 | Allow GitHub Actions to create or approve pull requests | Disabled |
@@ -172,17 +174,72 @@ Use **Settings → Actions → General**:
 
 The workflows declare the minimum permissions they need. CI adds a cross-platform
 job on Windows and macOS without changing the required Linux check names. The
-release workflow is the only workflow that requests `contents: write` and
-`id-token: write`, and it is gated by the `release` environment.
+release workflow is the only workflow that requests `contents: write`;
+`security-events: write` is limited to CodeQL and Scorecard, and `id-token: write`
+is limited to the release workflow and the Scorecard badge publication. The
+release job is additionally gated by the `release` environment.
 
-`.github/workflows/dependency-review.yml` runs
-`actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48`
-(v4.9.0) on every pull request and fails on high-severity vulnerable dependency
-changes. It has `contents: read` and `pull-requests: write` (for the summary
-comment) and does not run on tags.
+`actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294`
+(v5.0.0) runs on every pull request and fails on high-severity vulnerable
+dependency changes. It has `contents: read` and `pull-requests: write` (for the
+summary comment) and does not run on tags.
 
 Do not add a third-party action without an explicit owner decision, a pinned SHA,
-and a review of its permissions.
+and a review of its permissions. The Scorecard workflow is the only current
+exception to the GitHub-owned-actions setting; allow `ossf/scorecard-action` by
+its full SHA in **Settings → Actions → General → Allow specified actions**.
+
+## Release notes
+
+`.github/release.yml` configures generated GitHub release notes. `gh release
+create --generate-notes` categorizes pull requests into Breaking Changes,
+Features, Bug Fixes, Performance, Documentation, Dependencies, Tooling and CI,
+and Other Changes. Add one of the matching labels before merging; use
+`skip-changelog` for changes that should not appear. The release workflow creates
+generated notes; it does not create or move tags.
+
+## Discussions templates
+
+`.github/DISCUSSION_TEMPLATE/q-a.yml` and `ideas.yml` give Q&A and design
+proposals structured fields. Discussions are enabled; the templates complement
+the issue forms rather than replacing them. Security reports still go through
+private vulnerability reporting, never a public Discussion.
+
+## Pull request titles
+
+`scripts/check-pr-title.mjs` validates the pull request title against the
+Conventional Commits format used by [CONTRIBUTING.md](../CONTRIBUTING.md). The CI
+`PR title` job runs on `pull_request` only. Add `PR title` to the required status
+checks so an invalid title blocks merge. The validator is dependency-free, limits
+the title to 100 characters, and accepts the types `feat`, `fix`, `docs`, `test`,
+`refactor`, `perf`, `build`, `ci`, `chore`, and `revert`, with an optional
+lowercase scope and an optional `!`.
+
+## OpenSSF Scorecard
+
+`.github/workflows/scorecard.yml` runs the OpenSSF Scorecard on `main`, on a weekly
+schedule, and when branch-protection settings change. It uploads SARIF to code
+scanning, keeps a five-day artifact, and publishes results to the Scorecard API so
+the README badge can render. The workflow uses `permissions: read-all` at the top
+level; only the analysis job gets `security-events: write` and
+`id-token: write`. All actions are pinned to full commit SHAs, and the analysis
+job uses only GitHub-owned actions plus `ossf/scorecard-action`.
+
+The Scorecard result appears only after the first successful run on `main`.
+Adding or changing the workflow does not prove a score; check the workflow run and
+the badge before citing a result.
+
+## Citation and editor metadata
+
+`CITATION.cff` provides the repository citation metadata shown by GitHub's **Cite
+this repository** action. `.vscode/extensions.json` recommends the Biome
+extension, and `.vscode/settings.json` enables Biome as the formatter with
+format-on-save. Both files are committed; all other `.vscode/` state remains
+ignored.
+
+There is no `.github/FUNDING.yml` because no GitHub Sponsors, Open Collective, or
+other funding account is configured. Do not add a funding file that points to an
+account the owner has not approved.
 
 ## Security features
 
@@ -228,7 +285,9 @@ gh api repos/yusufgulerr/adaptive-runtime/branches/main/protection
 gh api repos/yusufgulerr/adaptive-runtime/rulesets
 gh api repos/yusufgulerr/adaptive-runtime/actions/permissions
 gh api repos/yusufgulerr/adaptive-runtime/actions/permissions/workflow
+gh api repos/yusufgulerr/adaptive-runtime/actions/permissions/selected-actions
 gh api repos/yusufgulerr/adaptive-runtime/actions/permissions/fork-pr-contributor-approval
+gh run list --workflow=scorecard.yml --limit 1
 gh api repos/yusufgulerr/adaptive-runtime/automated-security-fixes
 gh api repos/yusufgulerr/adaptive-runtime/vulnerability-alerts
 gh api repos/yusufgulerr/adaptive-runtime/topics
@@ -243,5 +302,10 @@ terminal transcript, issue, pull request, or CI log.
 - [GitHub repository roles](https://docs.github.com/en/organizations/managing-user-access-to-your-organizations-repositories/managing-repository-roles/repository-roles-for-an-organization)
 - [About protected branches](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches)
 - [About rulesets](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/about-rulesets)
+- [Automatically generated release notes](https://docs.github.com/en/repositories/releasing-projects-on-github/automatically-generated-release-notes)
+- [About Discussions](https://docs.github.com/en/discussions)
+- [OpenSSF Scorecard](https://github.com/ossf/scorecard)
+- [OpenSSF Scorecard GitHub Action](https://github.com/ossf/scorecard-action)
+- [CITATION.cff files](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-citation-files)
 - [Managing GitHub Actions settings](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/enabling-features-for-your-repository/managing-github-actions-settings-for-a-repository)
 - [Using secrets in GitHub Actions](https://docs.github.com/en/actions/security-for-github-actions/security-guides/using-secrets-in-github-actions)

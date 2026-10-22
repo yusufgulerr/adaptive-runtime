@@ -23,12 +23,13 @@ locally before commit; remote CI for this exact tree has not run yet.
 
 | Command | Result |
 | --- | --- |
-| `npm run format` | **PASS** — 75 files checked, no fixes applied |
-| `npm run lint` | **PASS** — 75 files checked, no fixes applied |
+| `npm run format` | **PASS** — 78 files checked, no fixes applied |
+| `npm run lint` | **PASS** — 78 files checked, no fixes applied |
 | `npm run typecheck` | **PASS** — `tsc -p tsconfig.check.json` |
-| `npm test` | **PASS** — 251 tests, 44 suites, 0 failures, 0 skipped |
-| `npm run test:coverage` | **PASS** — 99.08% lines, 96.71% branches, 98.64% functions |
+| `npm test` | **PASS** — 256 tests, 45 suites, 0 failures, 0 skipped |
+| `npm run test:coverage` | **PASS** — 99.10% lines, 96.91% branches, 98.64% functions |
 | `npm run build` | **PASS** — ESM, declarations, and maps emitted to `dist/` |
+| `npm run verify:exports` | **PASS** — 10 export entries, 27 files, and 27 runtime symbols |
 | `npm run example:basic` | **PASS** — selected `high-quality`, quality check passed |
 | `npm run example:search` | **PASS** — `exhaustive, balanced, balanced, economy, economy, exhaustive` |
 | `npm run example:planning` | **PASS** — `optimal, optimal, optimal, economy, economy, economy, economy, optimal` |
@@ -37,19 +38,20 @@ locally before commit; remote CI for this exact tree has not run yet.
 | `npm run example:edge` | **PASS** — deterministic three-tier sequence and Prometheus text |
 | `npm run benchmark` | **PASS** — results below |
 | `npm run benchmark:concurrency` | **PASS** — concurrency and retained-heap observations below |
-| `npm pack --dry-run` | **PASS** — 168 files, 144.2 kB packed, 671.1 kB unpacked |
+| `npm pack --dry-run` | **PASS** — 168 files, 144.4 kB packed, 671.8 kB unpacked |
 | Clean consumer install from tarball | **PASS** — all ten documented subpaths imported; core run, web/edge reads, testing SDK, and observability collector succeeded |
 | Clean consumer TypeScript compile | **PASS** — all subpaths resolve under NodeNext with `@types/node` |
 | Portable source scan | **PASS** — zero `node:` / `process.` matches across 33 files |
 | `npm ls --omit=dev --depth=0` | **PASS** — `(empty)`; no runtime dependencies |
 | `npm audit` | **PASS** — 0 vulnerabilities (including dev dependencies) |
-| Markdown relative-link check | **PASS** — 187 Markdown files, 170 relative links, all targets exist |
+| Markdown relative-link check | **PASS** — 188 Markdown files, 175 relative links, all targets exist |
 
 The suite covers unit tests in `tests/unit/` and integration tests in
-`tests/integration/`, plus shared helpers. `node:test` reports 44 suites because
-of nested `describe` blocks. The new checks in this line include the testing SDK,
-entry-point isolation, package subpath assertions, the portability source scan,
-and deterministic edge-example assertions.
+`tests/integration/`, plus shared helpers. `node:test` reports 45 suites because
+of nested `describe` blocks. The checks in this line include the testing SDK,
+entry-point isolation, package subpath assertions, the built-package export
+verifier, the PR title validator, the portability source scan, and deterministic
+edge-example assertions.
 
 ## Coverage
 
@@ -57,8 +59,8 @@ Global result from `npm run test:coverage`:
 
 | Metric | Result | Threshold | Status |
 | --- | ---: | ---: | --- |
-| Lines | 99.08% | 80% | PASS |
-| Branches | 96.71% | 80% | PASS |
+| Lines | 99.10% | 80% | PASS |
+| Branches | 96.91% | 80% | PASS |
 | Functions | 98.64% | 80% | PASS |
 
 Every `src/**` file is above 80% branch coverage. The lowest per-file branch
@@ -67,10 +69,10 @@ results are:
 | File | Branch coverage |
 | --- | ---: |
 | `providers/cpu-utilization.ts` | 83.33% |
-| `runtime/runtime.ts` | 89.04% |
+| `runtime/runtime.ts` | 90.21% |
 | `providers/event-loop-delay.ts` | 91.18% |
 | `runtime/executor.ts` | 91.30% |
-| `observability/index.ts` | 93.37% |
+| `observability/index.ts` | 93.44% |
 
 The entry points (`core.ts`, `node.ts`, `web.ts`, `edge.ts`), the composite
 provider, the testing SDK, the observability module, the web providers, and the
@@ -160,9 +162,9 @@ results are in
 
 ## Package inspection
 
-- `npm pack --dry-run` reports **168 files**, **144.2 kB packed**, and
-  **671.1 kB unpacked**, version **0.3.0**, shasum
-  `906c79400dc0d9a9f6730b36239a9f7e019f673a`.
+- `npm pack --dry-run` reports **168 files**, **144.4 kB packed**, and
+  **671.8 kB unpacked**, version **0.3.0**, shasum
+  `a9bc5b027d1ea0dd35975112ad7db01fb84fe1ab`.
 - The tarball contains `dist/`, `README.md`, `LICENSE`, `NOTICE`, and
   `package.json`. No `src/`, `tests/`, `examples/`, `benchmarks/`, `docs/`,
   coverage, or `node_modules/` files are included.
@@ -212,15 +214,22 @@ re-queried for this local 0.3.0 run:
 | Homepage | `https://github.com/yusufgulerr/adaptive-runtime#readme` |
 | Discussions | Enabled |
 | Topics | 14, including `adaptive-runtime`, `policy-engine`, `hysteresis`, and `zero-dependencies` |
-| Labels | 28 (`type:*`, `area:*`, `priority:*`, status, accessibility, and defaults) |
+| Labels | 28 recorded labels (`type:*`, `area:*`, `priority:*`, status, accessibility, and defaults); add `skip-changelog` if release-note exclusion is needed |
 | Collaborators | `@yusufgulerr` only, role `admin` |
 | Deploy keys | 0 |
 | Branch protection | PR required, 1 approval, code-owner review, stale approvals dismissed, last push approved, conversations resolved, linear history, no force push/deletion, admin bypass |
-| Required checks | `Node 22`, `Node 24`, `Node 26`, `Analyze JavaScript/TypeScript` |
+| Required checks | `Node 22`, `Node 24`, `Node 26`, `Analyze JavaScript/TypeScript`; add `PR title` when the new job is enabled |
 | Tag ruleset | `Protect release tags`, `refs/tags/v*`, creation/update/deletion restricted, admin bypass only |
-| Actions | Selected GitHub-owned actions, SHA pinning required, read-only default token, external forks require approval |
+| Actions | Selected actions (GitHub-owned plus the SHA-pinned `ossf/scorecard-action`), SHA pinning required, read-only default token, external forks require approval |
 | Security | Private vulnerability reporting, secret scanning, push protection, Dependabot alerts, and automated security fixes enabled |
 | Release environment | `release`, required reviewer `@yusufgulerr`, tag deployment policy |
+| Repository automation | Release-note categories, Discussion forms, PR title validator, citation metadata, and Scorecard workflow added to the tree; remote settings and the first Scorecard run are pending |
+
+The `PR title` check and the `ossf/scorecard-action` allow-list entry are
+repository-settings changes described in [GITHUB_SETTINGS.md](GITHUB_SETTINGS.md).
+They cannot be applied from a local checkout, and the Scorecard workflow has not
+run remotely for this tree. Do not claim either the required-check state or a
+Scorecard score until the repository settings and workflow run confirm them.
 
 Historical remote workflow evidence from the 0.1.0 baseline commit:
 
@@ -233,8 +242,9 @@ Historical remote workflow evidence from the 0.1.0 baseline commit:
 | Dependency Review on PR #6 | **PASS** — run [39636395231](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39636395231) |
 | Release `verify-publish` job | **NOT EXECUTED** — requires a `v*` tag and an approved publish |
 
-The 0.3.0 tree was still uncommitted when this record was written, so no CI or
-CodeQL run exists for it. Push the commit and confirm all required checks pass
+The 0.3.0 tree and the repository-automation changes remain uncommitted, so no
+CI, CodeQL, or Scorecard run exists for them. Push the commit, apply the settings
+in [GITHUB_SETTINGS.md](GITHUB_SETTINGS.md), and confirm all required checks pass
 before creating a release tag.
 
 ## Release status
@@ -269,10 +279,11 @@ approved publish.
 
 ## Release assessment
 
-Local verification for 0.3.0 is complete: 251 tests, 99.08% line / 96.71% branch /
+Local verification for 0.3.0 is complete: 256 tests, 99.10% line / 96.91% branch /
 98.64% function coverage, build, six examples, both benchmarks, package
-inspection, all documented subpath imports, a strict TypeScript consumer, and the
-zero-Node portability scan. The source is coherent for the 0.x line.
+inspection, all documented subpath imports, a strict TypeScript consumer, the
+built-package export verifier, and the zero-Node portability scan. The source is
+coherent for the 0.x line.
 
 The 0.3.0 commit has not been pushed, so remote CI, CodeQL, the `v0.3.0` tag, the
 GitHub release, and npm publication are **pending**. Publishing requires explicit

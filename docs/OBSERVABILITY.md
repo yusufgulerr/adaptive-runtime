@@ -32,7 +32,9 @@ console.log(prometheus);
 detach();
 ```
 
-`attach()` returns a detach function and subscribes to `decision`, `run:start`,
+`MetricsCollector` is the exported class behind `createMetricsCollector`; use
+whichever form reads more clearly in your application. `attach()` returns a
+detach function and subscribes to `decision`, `run:start`,
 `run:success`, `run:error`, `provider:error`, `listener:error`, and
 `runtime:closed`. `reset()` clears the in-memory registry. Snapshot counters
 cover runs, decisions, strategy selections, signal statuses, budget statuses,

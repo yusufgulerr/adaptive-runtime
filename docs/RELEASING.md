@@ -43,8 +43,11 @@ for the fallback path and rotate it if it is exposed.
 1. Update `package.json` and `package-lock.json` to the intended version.
 2. Move the relevant entries from `Unreleased` to the new version in
    `CHANGELOG.md`; add the date.
-3. Update any version-specific documentation and `docs/VERIFICATION.md`.
-4. Run the full local gate:
+3. Confirm the merged pull requests carry labels recognized by
+   `.github/release.yml`, so generated release notes group them correctly. Use
+   `skip-changelog` only for changes that should not appear.
+4. Update any version-specific documentation and `docs/VERIFICATION.md`.
+5. Run the full local gate:
 
    ```bash
    npm ci
@@ -56,10 +59,10 @@ for the fallback path and rotate it if it is exposed.
 
 5. Inspect the package file list and confirm that no secrets, tests, examples,
    benchmarks, coverage, or local state are included.
-6. Open a pull request, wait for Node 22/24/26, CodeQL, and Dependency Review, and
-   merge it through the protected `main` branch. The owner uses the documented
-   admin bypass only for their own pull request because GitHub does not allow
-   self-approval.
+6. Open a pull request, wait for Node 22/24/26, CodeQL, Dependency Review, and the
+   `PR title` check, and merge it through the protected `main` branch. The owner
+   uses the documented admin bypass only for their own pull request because GitHub
+   does not allow self-approval.
 
 ## 2. Confirm the registry state
 
@@ -104,7 +107,8 @@ Never force-push or move a published tag.
    - runs `npm pack --dry-run`;
    - publishes with `npm publish --provenance --access public`, preferring OIDC
      trusted publishing and falling back to `NPM_TOKEN` only when it is set;
-   - creates the GitHub release with generated notes;
+   - creates the GitHub release with generated notes categorized by
+     `.github/release.yml`;
    - then runs the `verify-publish` job, which waits for registry propagation,
      checks version, integrity, and repository metadata, verifies the provenance
      attestation, and installs the package in a clean consumer.
@@ -158,7 +162,7 @@ run, and clean-consumer result in [VERIFICATION.md](VERIFICATION.md).
 
 - [ ] Version, changelog, and docs are consistent.
 - [ ] `npm ci`, `npm run check`, coverage, benchmark, and `npm pack` pass.
-- [ ] `main` is green on Node 22/24/26, CodeQL, and Dependency Review.
+- [ ] `main` is green on Node 22/24/26, CodeQL, Dependency Review, and `PR title`.
 - [ ] `npm view adaptive-runtime version` is 404 or the intended version is new.
 - [ ] npm trusted publishing (OIDC) is configured; `NPM_TOKEN` is set only if the
       fallback is required and only in the `release` environment.

@@ -117,7 +117,12 @@ tests/
   │   └── isolation.test.ts
   └── integration/
       ├── examples.test.ts
-      └── entrypoints.test.ts
+      ├── entrypoints.test.ts
+      ├── public-api.test.ts
+      └── pr-title.test.ts
+scripts/
+  ├── check-pr-title.mjs
+  └── verify-package-exports.mjs
 examples/
   └── multi-runtime-edge/
       ├── edge-gateway.ts
@@ -127,8 +132,8 @@ examples/
 
 ## Verification status
 
-- 251 tests across 44 suites, 0 failures, 0 skipped.
-- 99.08% lines, 96.71% branches, 98.64% functions; every `src/**` file is above
+- 256 tests across 45 suites, 0 failures, 0 skipped.
+- 99.10% lines, 96.91% branches, 98.64% functions; every `src/**` file is above
   80% branch coverage.
 - Full local gate passed on 2026-10-22: format, lint, typecheck, tests, coverage,
   build, six examples, both benchmarks, `npm pack --dry-run`, zero-Node source

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  type CustomPolicySelector,
   createAdaptiveRuntime,
   MissingSignalError,
   NoEligibleStrategyError,
@@ -10,8 +11,10 @@ import {
   RuntimeClosedError,
   type Strategy,
 } from "../../src/index.js";
+import { createMetricsCollector, MetricsCollector } from "../../src/observability/index.js";
 import * as policyApi from "../../src/policy/index.js";
 import * as providersApi from "../../src/providers/index.js";
+import { createFakeClock } from "../../src/testing/index.js";
 import { FunctionSignalProvider } from "../helpers/providers.js";
 
 function constantProvider(id: string, signalName: string, value: number) {
@@ -197,5 +200,31 @@ describe("public API integration", () => {
 
     assert.equal(typeof providersApi.ProcessMemoryProvider, "function");
     assert.equal(providersApi.PROCESS_MEMORY_HEAP_USED, "process.memory.heapUsed");
+  });
+
+  it("uses the root selector type, observability collector, and testing SDK together", async () => {
+    const selector: CustomPolicySelector = ({ candidates }) => candidates[0]?.id;
+    const runtime = createAdaptiveRuntime({
+      policy: { evaluationIntervalMs: 0, customSelector: selector },
+    });
+    const collector = createMetricsCollector({ prefix: "public_api_test" });
+    assert.ok(collector instanceof MetricsCollector);
+    const detach = collector.attach(runtime);
+    const clock = createFakeClock(1_000);
+    assert.equal(clock.now(), 1_000);
+
+    const result = await runtime.run({
+      operationId: "selector",
+      input: 21,
+      strategies: identityStrategies,
+    });
+    assert.equal(result.value, 42);
+
+    detach();
+    await runtime.close();
+
+    const prometheus = collector.toPrometheusText();
+    assert.match(prometheus, /public_api_test_runs_total/);
+    assert.match(prometheus, /public_api_test_decisions_total/);
   });
 });

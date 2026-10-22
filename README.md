@@ -4,6 +4,9 @@
   <a href="https://github.com/yusufgulerr/adaptive-runtime/actions/workflows/ci.yml">
     <img alt="CI" src="https://github.com/yusufgulerr/adaptive-runtime/actions/workflows/ci.yml/badge.svg?branch=main">
   </a>
+  <a href="https://scorecard.dev/viewer/?uri=github.com/yusufgulerr/adaptive-runtime">
+    <img alt="OpenSSF Scorecard" src="https://api.scorecard.dev/projects/github.com/yusufgulerr/adaptive-runtime/badge">
+  </a>
   <a href="LICENSE">
     <img alt="License: Apache-2.0" src="https://img.shields.io/github/license/yusufgulerr/adaptive-runtime">
   </a>
@@ -440,9 +443,10 @@ npm install
 npm run format      # Biome formatter
 npm run lint        # Biome
 npm run typecheck   # tsc, includes tests/examples/benchmarks
-npm test            # node:test, 251 tests
+npm test            # node:test, 256 tests
 npm run test:coverage
 npm run build       # emit ESM + declarations to dist/
+npm run verify:exports  # import every built subpath and check named exports
 npm run example:edge
 npm run benchmark
 npm run benchmark:concurrency
@@ -450,7 +454,7 @@ npm pack --dry-run  # inspect the package file set
 npm run check       # lint + typecheck + test + build
 ```
 
-Coverage from the verification run: **99.08% lines, 96.71% branches, 98.64%
+Coverage from the verification run: **99.10% lines, 96.91% branches, 98.64%
 functions** across `src/`, with every source file above 80% branch coverage.
 See [docs/VERIFICATION.md](docs/VERIFICATION.md) for the exact commands and
 results.
@@ -515,7 +519,14 @@ Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md),
 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md), and [SECURITY.md](SECURITY.md). Project
 roles, review rules, and access policy are in [GOVERNANCE.md](GOVERNANCE.md).
 Repository settings and the exact review gate are documented in
-[docs/GITHUB_SETTINGS.md](docs/GITHUB_SETTINGS.md).
+[docs/GITHUB_SETTINGS.md](docs/GITHUB_SETTINGS.md). Pull request titles are
+validated against the Conventional Commits format in CI.
+
+## Citation
+
+If you use Adaptive Runtime in academic or technical work, cite it using the
+metadata in [CITATION.cff](CITATION.cff). GitHub exposes the same metadata through
+the repository's **Cite this repository** action.
 
 ## License
 
