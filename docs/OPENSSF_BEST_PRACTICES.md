@@ -220,19 +220,20 @@ silver or gold:
   runs a weekly 10,000-run campaign, a 1,000-run pull-request campaign for
   relevant paths, and manual dispatch. It is still a bounded property campaign,
   not a coverage-guided fuzzer; a coverage-guided integration remains a
-  post-passing hardening item and may also improve the Scorecard `Fuzzing` check.
+  post-passing hardening item. The Scorecard `Fuzzing` check now detects the
+  `TypeScriptPropertyBasedTesting` integration and reports 10/10.
 - **Secret scanning:** GitHub secret scanning and push protection are enabled, but
   non-provider patterns and validity checks are currently disabled. Consider
   enabling them as part of supply-chain hardening.
 
 ## Relationship to OpenSSF Scorecard
 
-The current Scorecard result is 7/10. Relevant findings:
+The current Scorecard result is **7.6/10**. Relevant findings:
 
 | Check | Current result | Relationship to this work |
 | --- | --- | --- |
 | `CII-Best-Practices` | 0 | Registering and earning the passing badge should improve this check. |
-| `Fuzzing` | 0 | Not required for the passing badge; the property suite is present, and re-measuring Scorecard after merge will show whether it is detected. |
+| `Fuzzing` | 10 | Detected `TypeScriptPropertyBasedTesting` integration in `tests/property/support.ts`; the scheduled campaign is in `.github/workflows/fuzz.yml`. |
 | `Code-Review` | 0 | The owner currently self-merges with admin bypass; adding a second reviewer is a silver/gold and governance follow-up. |
 | `Branch-Protection` | 8 | Required review count is 1; the owner bypass is documented in GOVERNANCE. |
 | `Pinned-Dependencies` | 8 | `npmCommand` is not pinned by hash; actions are SHA-pinned. |
