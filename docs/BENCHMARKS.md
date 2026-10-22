@@ -41,6 +41,58 @@ npm run benchmark:concurrency
 # Optional: CONCURRENCY_RUNS=8192 CONCURRENCY_LEVELS=1,8,32 npm run benchmark:concurrency
 ```
 
+## JSON output and trend comparison
+
+`--json` switches the existing benchmark to machine-readable output. Measurement
+logic, mode order, warmup, round rotation, garbage collection, and checksum
+verification are unchanged; only the presentation differs. JSON mode prints exactly
+one document with no human-readable lines.
+
+```bash
+npm run benchmark -- --json > current.json
+node scripts/compare-benchmarks.mjs baseline.json current.json
+node scripts/compare-benchmarks.mjs baseline.json current.json --max-regression-percent 15
+```
+
+The document uses `schemaVersion: 1`:
+
+| Field | Contents |
+| --- | --- |
+| `generatedAt` | ISO-8601 timestamp of the run |
+| `package` | `name` and `version` read from `package.json` |
+| `environment` | Node.js version, platform, OS release, CPU model, logical cores, total memory (GiB) |
+| `config` | `iterations`, `rounds`, and `warmup` |
+| `verification` | Checked input (`42`) and the value every mode returned |
+| `modes` | Per mode: label, median µs/run, relative to the direct call, and raw samples |
+
+The comparison script:
+
+- validates schema version 1, the `modes` array, unique labels, and finite positive
+  medians, and requires both files to contain the same mode labels;
+- prints the baseline, current, and percent change per mode; positive deltas are
+  slower than the baseline;
+- is informational by default: regressions are reported, but the exit code stays 0,
+  so no CI threshold applies;
+- treats `--max-regression-percent <number>` as an explicit manual opt-in that exits
+  1 when any mode is slower by more than that percentage. `--json` prints a parseable
+  report and keeps the same exit-code rule.
+
+```bash
+node scripts/compare-benchmarks.mjs baseline.json current.json --json
+```
+
+Absolute numbers are environment-sensitive: CPU model, power state, background load,
+antivirus, Node.js version, and `tsx` loader overhead can all shift the medians. Treat
+the comparison as a directional signal over time, not a pass/fail build gate, and
+compare runs from the same class of machine.
+
+The [`Benchmark trend`](../.github/workflows/benchmark.yml) workflow runs weekly
+(Mondays 04:37 UTC) and on manual dispatch. It writes `benchmark.json` and uploads it
+as the `runtime-overhead-<run_id>` artifact, retained for 90 days. The workflow does
+not compare runs, upload a baseline, fail on performance changes, or enforce a
+regression threshold. Download artifacts from the Actions run to keep a local
+baseline history; comparisons are always manual.
+
 ## Environment
 
 | Item | Value |
@@ -159,5 +211,7 @@ not a leak test and does not exercise unbounded operation-id cardinality.
 - Windows vs Linux differences.
 - The compiled package versus `tsx` execution.
 
-These are candidates for a future CI trend suite. No CI benchmark has been run,
-and no performance regression threshold is enforced.
+These remain outside current coverage. The scheduled Benchmark trend workflow
+records the runtime-overhead JSON document as an artifact for observation only: it
+does not compare results, fail on performance changes, or enforce a regression
+threshold. Use the manual comparison command above when a threshold is needed.
