@@ -3,8 +3,9 @@
 This document records the local and remote checks performed for the 0.3.0 line on
 **2026-10-22**. It distinguishes local verification, remote workflow evidence,
 GitHub repository settings, and npm registry status. The 0.3.0 tree was merged to
-`main` at `ad7fd2f`; remote CI, CodeQL, and Scorecard pass for that commit. The
-GitHub release and npm publication are separate release phases.
+`main` at `ad7fd2f`; the two-phase release change merged at `5504f21`. Remote CI,
+CodeQL, and Scorecard pass for both commits. The `v0.3.0` tag points to `5504f21`
+and the GitHub release is published; npm publication remains pending.
 
 ## Environment
 
@@ -231,14 +232,23 @@ The `PR title` required check, `ossf/scorecard-action` allow-list entry,
 as described in [GITHUB_SETTINGS.md](GITHUB_SETTINGS.md). The first Scorecard run
 on `main` succeeded and published a score; see the current evidence below.
 
-Current remote workflow evidence for `main` at `ad7fd2f`:
+Current remote workflow evidence for the 0.3.0 release tree:
 
 | Workflow | Result |
 | --- | --- |
-| CI on `main` | **PASS** — run [39702926008](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39702926008) |
-| CodeQL on `main` | **PASS** — run [39702925914](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39702925914) |
-| OpenSSF Scorecard on `main` | **PASS** — run [39703457017](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39703457017), score 7/10 |
+| CI on `main` at `5504f21` | **PASS** — run [39705496725](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39705496725) |
+| CodeQL on `main` at `5504f21` | **PASS** — run [39705496817](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39705496817) |
+| OpenSSF Scorecard on `main` at `5504f21` | **PASS** — run [39705496768](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39705496768), score 7/10 |
+| Release tag verification (`v0.3.0`) | **PASS** — run [39705537214](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39705537214) |
+| Automated GitHub release (`v0.3.0`) | **FAILED** — `gh` ran without a git checkout; the release was created manually from the same tag |
 | Release `verify-publish` job | **NOT EXECUTED** — requires the npm publication phase |
+
+The earlier `ad7fd2f` tree also passed CI
+([39702926008](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39702926008)),
+CodeQL
+([39702925914](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39702925914)),
+and Scorecard
+([39703457017](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39703457017)).
 
 Historical remote workflow evidence from the 0.1.0 baseline commit:
 
@@ -253,22 +263,25 @@ Historical remote workflow evidence from the 0.1.0 baseline commit:
 
 The 0.3.0 tree and the repository-automation changes are merged to `main` at
 `ad7fd2f`. Remote CI, CodeQL, and Scorecard pass for that commit, and the required
-checks are active. The tag is created only after this release-prep change is
-merged.
+checks are active. The `v0.3.0` tag points to `5504f21`; its verification job
+passed. The automated release step failed because `gh` had no git checkout, so the
+GitHub release was created manually from the same tag. The Unreleased changelog
+records the `GH_REPO` fix for the workflow.
 
 ## Release status
 
 | Artifact | Status on 2026-10-22 |
 | --- | --- |
 | npm registry package | **NOT PUBLISHED** — no 0.3.0 publish was attempted; the name returned 404 on 2026-10-22 |
-| Git tag `v0.3.0` | **NOT CREATED** — pending merge of this release-prep change |
-| GitHub release | **NOT CREATED** — created by the tag-push workflow |
+| Git tag `v0.3.0` | **CREATED** at `5504f21` |
+| GitHub release | **CREATED** — <https://github.com/yusufgulerr/adaptive-runtime/releases/tag/v0.3.0> |
 | npm provenance attestation | **NOT AVAILABLE** until the first successful publish |
 
 The source repository is public, but the npm release is a separate, irreversible
-phase. Do not describe the package as published, released, or remotely verified
-until the registry, provenance, remote CI, and clean-consumer checks pass after an
-approved npm dispatch.
+phase. The GitHub release does not imply that the package is on npm. Do not
+describe the package as published, released, or remotely verified until the
+registry, provenance, remote CI, and clean-consumer checks pass after an approved
+npm dispatch.
 
 ## Not verified
 
@@ -293,8 +306,9 @@ inspection, all documented subpath imports, a strict TypeScript consumer, the
 built-package export verifier, and the zero-Node portability scan. The source is
 coherent for the 0.x line.
 
-The 0.3.0 commit is merged on `main` at `ad7fd2f`, and remote CI, CodeQL, and
-Scorecard pass. The `v0.3.0` tag and GitHub release are created from this
-release-prep change; npm publication is a separate owner-approved dispatch. After
-the tag workflow and, later, the npm workflow complete, update this document with
-the GitHub release URL, registry version, provenance, and clean-consumer result.
+The 0.3.0 source is merged at `5504f21` and tagged `v0.3.0`; the GitHub release is
+published. The tag verification job passed, and the release was created manually
+after the automated release step failed to find a git checkout. npm publication is
+a separate owner-approved dispatch. After the npm workflow completes, update this
+document with the registry version, integrity, provenance, and clean-consumer
+result.
