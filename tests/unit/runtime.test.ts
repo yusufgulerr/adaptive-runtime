@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { getEventListeners } from "node:events";
 import { describe, it } from "node:test";
 import {
   ConfigurationError,
@@ -1064,6 +1065,262 @@ describe("AdaptiveRuntime", () => {
     assert.match(plain.message, /plain failure/);
     const wrapped = new StrategyExecutionError("op", "s", {} as never, 1, new Error("cause text"));
     assert.match(wrapped.message, /cause text/);
+  });
+
+  it("rejects immediately on pre-aborted signal fast-path without modifying lock state", async () => {
+    const runtime = createAdaptiveRuntime({
+      providers: [fixedProvider(10)],
+      policy: policy(),
+    });
+    const preAborted = new AbortController();
+    const abortReason = new Error("pre-aborted before run");
+    preAborted.abort(abortReason);
+
+    let strategyCalls = 0;
+    const testStrategies = [
+      strategy("s1", 1, () => {
+        strategyCalls += 1;
+        return "val";
+      }),
+    ];
+
+    await assert.rejects(
+      runtime.run({
+        operationId: "fast-path-abort",
+        input: 1,
+        strategies: testStrategies,
+        signal: preAborted.signal,
+      }),
+      (error: unknown) =>
+        error instanceof OperationAbortedError &&
+        error.name === "AbortError" &&
+        error.operationId === "fast-path-abort" &&
+        error.cause === abortReason,
+    );
+
+    assert.equal(strategyCalls, 0);
+    assert.equal(runtime.removeOperation("fast-path-abort"), false);
+    assert.equal(getEventListeners(preAborted.signal, "abort").length, 0);
+    await runtime.close();
+  });
+
+  it("resolves head-of-line blocking with zero delay when queued task is aborted", async () => {
+    let releaseTaskA: (() => void) | undefined;
+    let taskACompleted = false;
+    const provider = new FunctionSignalProvider({
+      id: "slow-provider",
+      signalName: SIGNAL,
+      read: (context) =>
+        new Promise<readonly ResourceSignal[]>((resolve) => {
+          releaseTaskA = () => {
+            taskACompleted = true;
+            resolve([okSignal(SIGNAL, 10, context.now)]);
+          };
+        }),
+    });
+
+    const runtime = createAdaptiveRuntime({
+      providers: [provider],
+      policy: { evaluationIntervalMs: 0 },
+    });
+
+    let taskBCalls = 0;
+    const taskAPromise = runtime.run({
+      operationId: "hol-op",
+      input: 1,
+      strategies: [strategy("sA", 1, () => "taskA-result")],
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    const ctrlB = new AbortController();
+    const taskBPromise = runtime.run({
+      operationId: "hol-op",
+      input: 2,
+      strategies: [
+        strategy("sB", 1, () => {
+          taskBCalls += 1;
+          return "taskB-result";
+        }),
+      ],
+      signal: ctrlB.signal,
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    assert.equal(getEventListeners(ctrlB.signal, "abort").length, 1);
+    const abortReason = new Error("abort task B in queue");
+    ctrlB.abort(abortReason);
+
+    await assert.rejects(
+      taskBPromise,
+      (error: unknown) =>
+        error instanceof OperationAbortedError &&
+        error.name === "AbortError" &&
+        error.operationId === "hol-op" &&
+        error.cause === abortReason,
+    );
+
+    // Crucial HoL assertion: Task B rejected while Task A is still in-flight
+    assert.equal(taskACompleted, false);
+    assert.equal(getEventListeners(ctrlB.signal, "abort").length, 0);
+
+    // Release Task A and verify it finishes normally and Task B was never invoked
+    releaseTaskA?.();
+    const resultA = await taskAPromise;
+    assert.equal(resultA.value, "taskA-result");
+    assert.equal(taskACompleted, true);
+    assert.equal(taskBCalls, 0);
+
+    await runtime.close();
+  });
+
+  it("verifies zero HoL delay under wall-clock timing and recovers queue for subsequent task", async () => {
+    let releaseTaskA: (() => void) | undefined;
+    let reads = 0;
+    const provider = new FunctionSignalProvider({
+      id: "timed-provider",
+      signalName: SIGNAL,
+      read: (context) => {
+        reads += 1;
+        if (reads === 1) {
+          return new Promise<readonly ResourceSignal[]>((resolve) => {
+            releaseTaskA = () => {
+              resolve([okSignal(SIGNAL, 10, context.now)]);
+            };
+          });
+        }
+        return [okSignal(SIGNAL, 10, context.now)];
+      },
+    });
+
+    const runtime = createAdaptiveRuntime({
+      providers: [provider],
+      policy: { evaluationIntervalMs: 0 },
+    });
+
+    let taskBCalls = 0;
+    let taskCCalls = 0;
+
+    const taskAPromise = runtime.run({
+      operationId: "queue-recovery-op",
+      input: 1,
+      strategies: [strategy("sA", 1, () => "resA")],
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    const timer = setTimeout(() => {
+      releaseTaskA?.();
+    }, 60);
+
+    const ctrlB = new AbortController();
+    const taskBStartTime = Date.now();
+    let taskBRejectionElapsed = 0;
+
+    const taskBPromise = runtime
+      .run({
+        operationId: "queue-recovery-op",
+        input: 2,
+        strategies: [
+          strategy("sB", 1, () => {
+            taskBCalls += 1;
+            return "resB";
+          }),
+        ],
+        signal: ctrlB.signal,
+      })
+      .catch((error: unknown) => {
+        taskBRejectionElapsed = Date.now() - taskBStartTime;
+        throw error;
+      });
+
+    const taskCPromise = runtime.run({
+      operationId: "queue-recovery-op",
+      input: 3,
+      strategies: [
+        strategy("sC", 1, () => {
+          taskCCalls += 1;
+          return "resC";
+        }),
+      ],
+    });
+
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    ctrlB.abort(new Error("abort B after 10ms"));
+
+    await assert.rejects(taskBPromise, OperationAbortedError);
+    // Task B rejected well before Task A's 60ms timer completed (< 45ms)
+    assert.ok(
+      taskBRejectionElapsed < 45,
+      `Expected task B to reject with zero HoL delay (<45ms), got ${taskBRejectionElapsed}ms`,
+    );
+
+    const [resA, resC] = await Promise.all([taskAPromise, taskCPromise]);
+    clearTimeout(timer);
+
+    assert.equal(resA.value, "resA");
+    assert.equal(resC.value, "resC");
+    assert.equal(taskBCalls, 0);
+    assert.equal(taskCCalls, 1);
+    assert.equal(getEventListeners(ctrlB.signal, "abort").length, 0);
+
+    // Queue recovered and locks are completely released
+    assert.equal(runtime.removeOperation("queue-recovery-op"), true);
+    await runtime.close();
+  });
+
+  it("prevents listener leaks by cleaning up signal abort listeners across all execution paths", async () => {
+    const runtime = createAdaptiveRuntime({
+      providers: [fixedProvider(10)],
+      policy: policy(),
+    });
+
+    // 1. Normal completion
+    const ctrlNormal = new AbortController();
+    const resNormal = await runtime.run({
+      operationId: "leak-test-normal",
+      input: 1,
+      strategies: basicStrategies(),
+      signal: ctrlNormal.signal,
+    });
+    assert.equal(resNormal.value, "high:1");
+    assert.equal(getEventListeners(ctrlNormal.signal, "abort").length, 0);
+
+    // 2. Abort during in-flight strategy run
+    const ctrlInFlight = new AbortController();
+    let releaseStrategy: (() => void) | undefined;
+    const hangingStrategy = strategy("hang", 1, () => {
+      return new Promise<string>((resolve) => {
+        releaseStrategy = () => resolve("done");
+      });
+    });
+    const inFlightPromise = runtime.run({
+      operationId: "leak-test-inflight",
+      input: 1,
+      strategies: [hangingStrategy],
+      signal: ctrlInFlight.signal,
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    ctrlInFlight.abort(new Error("abort during execution"));
+    await assert.rejects(inFlightPromise, OperationAbortedError);
+    releaseStrategy?.();
+    assert.equal(getEventListeners(ctrlInFlight.signal, "abort").length, 0);
+
+    // 3. Task failure (strategy throws error)
+    const ctrlFailure = new AbortController();
+    const failingStrategy = strategy("failing", 1, () => {
+      throw new Error("strategy broke");
+    });
+    await assert.rejects(
+      runtime.run({
+        operationId: "leak-test-failing",
+        input: 1,
+        strategies: [failingStrategy],
+        signal: ctrlFailure.signal,
+      }),
+      StrategyExecutionError,
+    );
+    assert.equal(getEventListeners(ctrlFailure.signal, "abort").length, 0);
+
+    await runtime.close();
   });
 });
 

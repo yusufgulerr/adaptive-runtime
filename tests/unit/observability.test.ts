@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { ConfigurationError } from "../../src/errors/index.js";
 import {
   attachOpenTelemetryMeter,
   type CounterLike,
@@ -12,7 +13,7 @@ import {
   type UpDownCounterLike,
 } from "../../src/observability/index.js";
 import { createAdaptiveRuntime } from "../../src/runtime/runtime.js";
-import type { StrategyDecision } from "../../src/types/decision.js";
+import type { BudgetView, StrategyDecision } from "../../src/types/decision.js";
 import type {
   AdaptiveRuntimeEvents,
   RuntimeEventListener,
@@ -167,7 +168,7 @@ describe("Observability Bridge Unit Tests", () => {
       );
     });
 
-    it("creates all 10 expected instruments with default prefix", () => {
+    it("creates all expected instruments with default prefix", () => {
       const mockRuntime = new MockEmitterRuntime() as unknown as AdaptiveRuntime;
       const mockMeter = new MockOpenTelemetryMeter();
 
@@ -196,6 +197,15 @@ describe("Observability Bridge Unit Tests", () => {
       assert.equal(
         mockMeter.histograms.get("adaptive_runtime_run_duration_seconds")?.options?.unit,
         "s",
+      );
+
+      assert.ok(
+        mockMeter.upDownCounters.has("adaptive_runtime_signal_reading"),
+        "Missing signal reading UpDownCounter",
+      );
+      assert.ok(
+        mockMeter.upDownCounters.has("adaptive_runtime_budget_engaged"),
+        "Missing budget engaged UpDownCounter",
       );
     });
 
@@ -405,6 +415,21 @@ describe("Observability Bridge Unit Tests", () => {
         operation_id: "op-signals",
         status: "unsupported",
       });
+
+      // UpDownCounters: only ok signals and ok budgets recorded
+      const signalReadingUpDown = mockMeter.upDownCounters.get("adaptive_runtime_signal_reading");
+      assert.equal(signalReadingUpDown?.adds.length, 1);
+      assert.deepEqual(signalReadingUpDown?.adds[0], {
+        value: 0.8,
+        attributes: { signal: "cpu.utilization", unit: "ratio" },
+      });
+
+      const budgetEngagedUpDown = mockMeter.upDownCounters.get("adaptive_runtime_budget_engaged");
+      assert.equal(budgetEngagedUpDown?.adds.length, 1);
+      assert.deepEqual(budgetEngagedUpDown?.adds[0], {
+        value: 0,
+        attributes: { budget: "b-ok" },
+      });
     });
 
     it("records provider:error, listener:error, and runtime:closed", () => {
@@ -485,6 +510,265 @@ describe("Observability Bridge Unit Tests", () => {
         mockMeter.counters.get("adaptive_runtime_strategy_selections_total")?.adds.length,
         0,
       );
+    });
+
+    it("handles OpenTelemetry meter without createUpDownCounter method", () => {
+      const mockRuntime = new MockEmitterRuntime() as unknown as AdaptiveRuntime;
+      const meterWithoutUpDown: OpenTelemetryMeterLike = {
+        createCounter(name: string, options?: MetricOptionsLike): CounterLike {
+          return new MockCounter(name, options);
+        },
+        createHistogram(name: string, options?: MetricOptionsLike): HistogramLikeMetric {
+          return new MockHistogram(name, options);
+        },
+      };
+
+      const unsub = attachOpenTelemetryMeter(mockRuntime, meterWithoutUpDown);
+      assert.equal(typeof unsub, "function");
+
+      // Verify decision emission doesn't throw when upDownCounters are undefined
+      (mockRuntime as unknown as MockEmitterRuntime).emit("decision", {
+        decision: makeDecision({
+          signals: [{ name: "cpu", status: "ok", value: 0.5, unit: "ratio" }],
+          budgets: [
+            {
+              id: "b1",
+              status: "ok",
+              engaged: true,
+              signal: "cpu",
+              limit: 1,
+              recoverBelow: 0.5,
+              tierReduction: 1,
+            },
+          ],
+        }),
+      });
+      unsub();
+    });
+
+    it("records ok signal readings and budget engagement to UpDownCounters with exact attributes", () => {
+      const mockRuntime = new MockEmitterRuntime();
+      const mockMeter = new MockOpenTelemetryMeter();
+
+      attachOpenTelemetryMeter(mockRuntime as unknown as AdaptiveRuntime, mockMeter, {
+        defaultAttributes: { env: "prod" },
+      });
+
+      mockRuntime.emit("decision", {
+        decision: makeDecision({
+          operationId: "op-updown",
+          signals: [
+            { name: "mem.used", status: "ok", value: 1024, unit: "bytes" },
+            { name: "cpu.load", status: "ok", value: 0.75, unit: "ratio" },
+            { name: "net.dropped", status: "unsupported", unit: "count" },
+            { name: "broken.value", status: "ok", value: Number.NaN, unit: "custom" },
+          ],
+          budgets: [
+            {
+              id: "b-engaged",
+              signal: "mem.used",
+              status: "ok",
+              engaged: true,
+              limit: 2000,
+              recoverBelow: 1500,
+              tierReduction: 1,
+            },
+            {
+              id: "b-healthy",
+              signal: "cpu.load",
+              status: "ok",
+              engaged: false,
+              limit: 1,
+              recoverBelow: 0.5,
+              tierReduction: 1,
+            },
+            {
+              id: "b-err",
+              signal: "net.dropped",
+              status: "error",
+              engaged: false,
+              limit: 10,
+              recoverBelow: 5,
+              tierReduction: 1,
+            },
+          ],
+        }),
+      });
+
+      const signalUpDown = mockMeter.upDownCounters.get("adaptive_runtime_signal_reading");
+      assert.ok(signalUpDown);
+      // Only ok signals with finite values are recorded (mem.used, cpu.load)
+      assert.equal(signalUpDown.adds.length, 2);
+      assert.deepEqual(signalUpDown.adds[0], {
+        value: 1024,
+        attributes: { env: "prod", signal: "mem.used", unit: "bytes" },
+      });
+      assert.deepEqual(signalUpDown.adds[1], {
+        value: 0.75,
+        attributes: { env: "prod", signal: "cpu.load", unit: "ratio" },
+      });
+
+      const budgetUpDown = mockMeter.upDownCounters.get("adaptive_runtime_budget_engaged");
+      assert.ok(budgetUpDown);
+      // Only ok budgets are recorded (b-engaged -> 1, b-healthy -> 0)
+      assert.equal(budgetUpDown.adds.length, 2);
+      assert.deepEqual(budgetUpDown.adds[0], {
+        value: 1,
+        attributes: { env: "prod", budget: "b-engaged" },
+      });
+      assert.deepEqual(budgetUpDown.adds[1], {
+        value: 0,
+        attributes: { env: "prod", budget: "b-healthy" },
+      });
+
+      // Verify custom name on budget object if present
+      mockRuntime.emit("decision", {
+        decision: makeDecision({
+          budgets: [
+            {
+              name: "custom-budget-name",
+              id: "b-id",
+              status: "ok",
+              engaged: true,
+              signal: "mem.used",
+              limit: 1,
+              recoverBelow: 0.5,
+              tierReduction: 1,
+            } as unknown as BudgetView,
+          ],
+        }),
+      });
+      assert.equal(budgetUpDown.adds.length, 3);
+      assert.deepEqual(budgetUpDown.adds[2], {
+        value: 1,
+        attributes: { env: "prod", budget: "custom-budget-name" },
+      });
+    });
+
+    it("isolates throwing instruments so other instruments still record and listeners never throw", () => {
+      const mockRuntime = new MockEmitterRuntime();
+
+      class ThrowingCounter implements CounterLike {
+        add(): void {
+          throw new Error("Instrument explosion!");
+        }
+      }
+
+      const safeCounters = new Map<string, MockCounter>();
+      const safeHistograms = new Map<string, MockHistogram>();
+      const safeUpDownCounters = new Map<string, MockUpDownCounter>();
+
+      // Mock meter where specific instruments throw
+      const throwingMeter: OpenTelemetryMeterLike = {
+        createCounter(name: string, options?: MetricOptionsLike) {
+          if (name === "adaptive_runtime_runs_total") {
+            return new ThrowingCounter();
+          }
+          if (name === "adaptive_runtime_decisions_total") {
+            return new ThrowingCounter();
+          }
+          if (name === "adaptive_runtime_provider_errors_total") {
+            return new ThrowingCounter();
+          }
+          const counter = new MockCounter(name, options);
+          safeCounters.set(name, counter);
+          return counter;
+        },
+        createHistogram(name: string, options?: MetricOptionsLike) {
+          const histogram = new MockHistogram(name, options);
+          safeHistograms.set(name, histogram);
+          return histogram;
+        },
+        createUpDownCounter(name: string, options?: MetricOptionsLike) {
+          const upDown = new MockUpDownCounter(name, options);
+          safeUpDownCounters.set(name, upDown);
+          return upDown;
+        },
+      };
+
+      attachOpenTelemetryMeter(mockRuntime as unknown as AdaptiveRuntime, throwingMeter);
+
+      // 1. run:start - safe counter records
+      assert.doesNotThrow(() => {
+        mockRuntime.emit("run:start", {
+          operationId: "op-1",
+          strategyId: "fast",
+          decision: makeDecision(),
+        });
+      });
+      assert.equal(safeCounters.get("adaptive_runtime_strategy_selections_total")?.adds.length, 1);
+
+      // 2. run:success - runs_total throws, but quality_total and run_duration_seconds still record!
+      assert.doesNotThrow(() => {
+        mockRuntime.emit("run:success", {
+          metadata: {
+            operationId: "op-1",
+            strategyId: "fast",
+            qualityTier: 1,
+            startedAt: 1000,
+            finishedAt: 1050,
+            durationMs: 50,
+            attempts: 1,
+            quality: { status: "passed" },
+            decision: makeDecision(),
+            signals: [],
+          },
+        });
+      });
+      assert.equal(safeCounters.get("adaptive_runtime_quality_total")?.adds.length, 1);
+      assert.equal(safeHistograms.get("adaptive_runtime_run_duration_seconds")?.records.length, 1);
+
+      // 3. run:error - runs_total throws, but histogram still records!
+      assert.doesNotThrow(() => {
+        mockRuntime.emit("run:error", {
+          operationId: "op-err",
+          strategyId: "failing",
+          error: new Error("fail"),
+          durationMs: 100,
+        });
+      });
+      assert.equal(safeHistograms.get("adaptive_runtime_run_duration_seconds")?.records.length, 2);
+
+      // 4. decision - decisions_total throws, but signal and budget upDownCounters still record!
+      assert.doesNotThrow(() => {
+        mockRuntime.emit("decision", {
+          decision: makeDecision({
+            signals: [{ name: "cpu", status: "ok", value: 0.5, unit: "ratio" }],
+            budgets: [
+              {
+                id: "b1",
+                status: "ok",
+                engaged: true,
+                signal: "cpu",
+                limit: 1,
+                recoverBelow: 0.5,
+                tierReduction: 1,
+              },
+            ],
+          }),
+        });
+      });
+      assert.equal(safeUpDownCounters.get("adaptive_runtime_signal_reading")?.adds.length, 1);
+      assert.equal(safeUpDownCounters.get("adaptive_runtime_budget_engaged")?.adds.length, 1);
+
+      // 5. provider:error - throws without crashing
+      assert.doesNotThrow(() => {
+        mockRuntime.emit("provider:error", {
+          providerId: "p1",
+          error: new Error("read err"),
+        });
+      });
+
+      // 6. listener:error and runtime:closed
+      assert.doesNotThrow(() => {
+        mockRuntime.emit("listener:error", { event: "decision", error: new Error("err") });
+      });
+      assert.equal(safeCounters.get("adaptive_runtime_listener_errors_total")?.adds.length, 1);
+
+      assert.doesNotThrow(() => {
+        mockRuntime.emit("runtime:closed", {});
+      });
+      assert.equal(safeCounters.get("adaptive_runtime_runtime_closed_total")?.adds.length, 1);
     });
   });
 
@@ -1164,6 +1448,177 @@ describe("Observability Bridge Unit Tests", () => {
 
       detachCollector();
       detachOtel();
+    });
+  });
+
+  describe("MetricsCollector maxSeries & LRU eviction", () => {
+    it("validates maxSeries configuration option", () => {
+      assert.throws(() => new MetricsCollector({ maxSeries: 0 }), ConfigurationError);
+      assert.throws(() => new MetricsCollector({ maxSeries: -5 }), ConfigurationError);
+      assert.throws(() => new MetricsCollector({ maxSeries: 3.14 }), ConfigurationError);
+      assert.throws(() => new MetricsCollector({ maxSeries: Number.NaN }), ConfigurationError);
+      assert.throws(
+        () => new MetricsCollector({ maxSeries: Number.POSITIVE_INFINITY }),
+        ConfigurationError,
+      );
+      assert.throws(
+        () => new MetricsCollector({ maxSeries: "100" as unknown as number }),
+        ConfigurationError,
+      );
+
+      // Valid values do not throw
+      const collector1 = new MetricsCollector({ maxSeries: 1 });
+      const collector2 = new MetricsCollector({ maxSeries: 500 });
+      assert.ok(collector1);
+      assert.ok(collector2);
+    });
+
+    it("evicts the least recently used series when maxSeries limit is reached", () => {
+      const collector = new MetricsCollector({ maxSeries: 3 });
+
+      // Add 3 series: counter A, gauge B, histogram C
+      collector.increment("counter_a", { id: "a" }, 1);
+      collector.setGauge("gauge_b", 42, { id: "b" });
+      collector.observe("hist_c", 0.5, { id: "c" });
+
+      let snapshot = collector.getSnapshot();
+      assert.equal(snapshot.counters.length, 1);
+      assert.equal(snapshot.gauges.length, 1);
+      assert.equal(snapshot.histograms.length, 1);
+
+      // Add 4th series: counter D. Oldest series (counter A) must be evicted!
+      collector.increment("counter_d", { id: "d" }, 2);
+
+      snapshot = collector.getSnapshot();
+      assert.equal(snapshot.counters.length, 1); // counter_d only
+      assert.equal(snapshot.counters[0]?.name, "counter_d");
+      assert.equal(snapshot.gauges.length, 1); // gauge_b
+      assert.equal(snapshot.histograms.length, 1); // hist_c
+
+      // Refresh / update gauge B (becomes MRU)
+      collector.setGauge("gauge_b", 99, { id: "b" });
+
+      // Add 5th series: counter E. Oldest series now is hist_c! hist_c must be evicted!
+      collector.increment("counter_e", { id: "e" }, 3);
+
+      snapshot = collector.getSnapshot();
+      assert.equal(snapshot.histograms.length, 0); // hist_c evicted
+      assert.equal(snapshot.gauges.length, 1); // gauge_b remained because refreshed
+      assert.equal(snapshot.gauges[0]?.value, 99);
+      assert.equal(snapshot.counters.length, 2); // counter_d and counter_e
+      assert.deepEqual(
+        snapshot.counters.map((c) => c.name),
+        ["counter_d", "counter_e"],
+      );
+
+      // Refresh / update counter_d by incrementing
+      collector.increment("counter_d", { id: "d" }, 1);
+
+      // Add 6th series: gauge F. Oldest series now is gauge_b! gauge_b must be evicted!
+      collector.setGauge("gauge_f", 10, { id: "f" });
+
+      snapshot = collector.getSnapshot();
+      assert.equal(snapshot.gauges.length, 1);
+      assert.equal(snapshot.gauges[0]?.name, "gauge_f");
+      assert.equal(snapshot.counters.length, 2); // counter_e and counter_d
+    });
+
+    it("refreshes LRU when observing existing histogram series", () => {
+      const collector = new MetricsCollector({ maxSeries: 2 });
+
+      collector.observe("hist_1", 0.1);
+      collector.increment("counter_1");
+
+      // Touch hist_1
+      collector.observe("hist_1", 0.2);
+
+      // Add gauge_1 -> counter_1 was older than touched hist_1, so counter_1 is evicted
+      collector.setGauge("gauge_1", 100);
+
+      const snapshot = collector.getSnapshot();
+      assert.equal(snapshot.counters.length, 0);
+      assert.equal(snapshot.histograms.length, 1);
+      assert.equal(snapshot.histograms[0]?.name, "hist_1");
+      assert.equal(snapshot.gauges.length, 1);
+      assert.equal(snapshot.gauges[0]?.name, "gauge_1");
+    });
+  });
+
+  describe("MetricsCollector removeOperation", () => {
+    it("validates operationId input", () => {
+      const collector = new MetricsCollector();
+
+      assert.throws(() => collector.removeOperation("" as string), ConfigurationError);
+      assert.throws(() => collector.removeOperation("   "), ConfigurationError);
+      assert.throws(() => collector.removeOperation("  op-1"), ConfigurationError);
+      assert.throws(() => collector.removeOperation("op-1  "), ConfigurationError);
+      assert.throws(() => collector.removeOperation(null as unknown as string), ConfigurationError);
+      assert.throws(() => collector.removeOperation(123 as unknown as string), ConfigurationError);
+      assert.throws(() => collector.removeOperation({} as unknown as string), ConfigurationError);
+    });
+
+    it("removes all counters, gauges, and histograms matching operation_id and frees LRU capacity", () => {
+      const collector = new MetricsCollector({ maxSeries: 6 });
+
+      // Series for op-alpha
+      collector.increment("requests_total", { operation_id: "op-alpha", type: "read" }, 10);
+      collector.setGauge("signal_reading", 55.5, { operation_id: "op-alpha", signal: "cpu" });
+      collector.observe("latency_seconds", 0.05, { operation_id: "op-alpha" });
+
+      // Series for op-beta
+      collector.increment("requests_total", { operation_id: "op-beta", type: "write" }, 5);
+      collector.setGauge("signal_reading", 88.8, { operation_id: "op-beta", signal: "cpu" });
+
+      // Global series without operation_id
+      collector.increment("runtime_closed_total");
+
+      let snapshot = collector.getSnapshot();
+      assert.equal(snapshot.counters.length, 3);
+      assert.equal(snapshot.gauges.length, 2);
+      assert.equal(snapshot.histograms.length, 1);
+
+      // Remove op-alpha
+      collector.removeOperation("op-alpha");
+
+      snapshot = collector.getSnapshot();
+      // All op-alpha series are gone
+      assert.equal(
+        snapshot.counters.some((c) => c.labels.operation_id === "op-alpha"),
+        false,
+      );
+      assert.equal(
+        snapshot.gauges.some((g) => g.labels.operation_id === "op-alpha"),
+        false,
+      );
+      assert.equal(
+        snapshot.histograms.some((h) => h.labels.operation_id === "op-alpha"),
+        false,
+      );
+
+      // op-beta and global series remain
+      assert.equal(snapshot.counters.length, 2); // op-beta requests_total, global runtime_closed_total
+      assert.equal(snapshot.gauges.length, 1); // op-beta signal_reading
+      assert.equal(snapshot.histograms.length, 0);
+
+      // Verify Prometheus text does not contain op-alpha
+      const text = collector.toPrometheusText();
+      assert.ok(!text.includes("op-alpha"));
+      assert.ok(text.includes('operation_id="op-beta"'));
+      assert.ok(text.includes("runtime_closed_total"));
+
+      // Verify removing non-existent operation is a clean no-op
+      assert.doesNotThrow(() => collector.removeOperation("op-gamma"));
+      assert.equal(collector.getSnapshot().counters.length, 2);
+
+      // Verify LRU capacity was freed:
+      // We had 6 total items. op-alpha had 3 items removed. 3 items remain.
+      // maxSeries is 6. We can add 3 new series without evicting op-beta!
+      collector.increment("new_1");
+      collector.increment("new_2");
+      collector.increment("new_3");
+
+      snapshot = collector.getSnapshot();
+      assert.ok(snapshot.counters.some((c) => c.labels.operation_id === "op-beta"));
     });
   });
 });

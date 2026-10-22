@@ -5,6 +5,7 @@ import type {
   SignalDescriptor,
   SignalProvider,
   SignalReadContext,
+  SignalStartContext,
   SignalStatus,
   SignalUnit,
 } from "../types/signals.js";
@@ -252,6 +253,8 @@ export class CompositeSignalProvider implements SignalProvider {
     );
   }
 
+  async start(context?: SignalStartContext): Promise<void>;
+  async start(context?: unknown): Promise<void>;
   async start(context?: unknown): Promise<void> {
     await Promise.all(
       this.#providers.map(async (provider) => {

@@ -1,8 +1,13 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { ConfigurationError, RuntimeClosedError } from "../../src/errors/index.js";
+import { CompositeSignalProvider } from "../../src/providers/composite.js";
 import { SignalCollector } from "../../src/signals/collector.js";
-import type { ResourceSignal, SignalProvider } from "../../src/types/signals.js";
+import type {
+  ResourceSignal,
+  SignalProvider,
+  SignalStartContext,
+} from "../../src/types/signals.js";
 import { FakeClock } from "../helpers/fake-clock.js";
 import {
   FunctionSignalProvider,
@@ -349,7 +354,7 @@ describe("SignalCollector", () => {
     assert.equal(requireOk(third.readings[0]).value, 2);
   });
 
-  it("reports a provider start failure once and reuses the error readings", async () => {
+  it("reports a provider start failure once and reuses the error readings within the evaluation interval", async () => {
     let starts = 0;
     let reads = 0;
     const provider: SignalProvider = {
@@ -364,7 +369,7 @@ describe("SignalCollector", () => {
         return [];
       },
     };
-    const { collector, clock, errors } = makeCollector([provider], { evaluationIntervalMs: 0 });
+    const { collector, clock, errors } = makeCollector([provider], { evaluationIntervalMs: 1000 });
 
     const first = await collector.collect(clock.now(), new AbortController().signal);
     assert.equal(first.readings[0]?.status, "error");
@@ -372,6 +377,7 @@ describe("SignalCollector", () => {
 
     const second = await collector.collect(clock.now(), new AbortController().signal);
     assert.equal(second.readings[0]?.status, "error");
+    assert.equal(second.cached, true);
     assert.equal(starts, 1);
     assert.equal(reads, 0);
     assert.equal(errors.length, 1);
@@ -415,7 +421,7 @@ describe("SignalCollector", () => {
     assert.equal(starts, 1);
   });
 
-  it("caches an asynchronous start rejection and does not leak it", async () => {
+  it("caches an asynchronous start rejection and does not leak it within the evaluation interval", async () => {
     let starts = 0;
     let reads = 0;
     const provider: SignalProvider = {
@@ -430,7 +436,7 @@ describe("SignalCollector", () => {
         return [];
       },
     };
-    const { collector, clock, errors } = makeCollector([provider], { evaluationIntervalMs: 0 });
+    const { collector, clock, errors } = makeCollector([provider], { evaluationIntervalMs: 1000 });
 
     const unhandled: unknown[] = [];
     const onUnhandled = (reason: unknown): void => {
@@ -444,6 +450,7 @@ describe("SignalCollector", () => {
 
       const second = await collector.collect(clock.now(), new AbortController().signal);
       assert.equal(second.readings[0]?.status, "error");
+      assert.equal(second.cached, true);
       assert.match(second.readings[0]?.error ?? "", /async start failed/);
 
       await new Promise<void>((resolve) => {
@@ -460,7 +467,7 @@ describe("SignalCollector", () => {
     assert.equal(errors[0]?.providerId, "async-start-failure");
   });
 
-  it("times out a hanging asynchronous start and caches the failure", async () => {
+  it("times out a hanging asynchronous start and caches the failure within the evaluation interval", async () => {
     let starts = 0;
     let reads = 0;
     const provider: SignalProvider = {
@@ -476,7 +483,7 @@ describe("SignalCollector", () => {
       },
     };
     const { collector, clock, errors } = makeCollector([provider], {
-      evaluationIntervalMs: 0,
+      evaluationIntervalMs: 1000,
       providerTimeoutMs: 500,
     });
 
@@ -491,8 +498,10 @@ describe("SignalCollector", () => {
     assert.equal(errors.length, 1);
     assert.equal(errors[0]?.providerId, "async-start-timeout");
 
+    // Second read at 500ms is still within evaluation interval (500 < 1000)
     const second = await collector.collect(clock.now(), new AbortController().signal);
     assert.equal(second.readings[0]?.status, "error");
+    assert.equal(second.cached, true);
     assert.equal(starts, 1);
     assert.equal(reads, 0);
     assert.equal(errors.length, 1);
@@ -631,5 +640,188 @@ describe("SignalCollector", () => {
       assert.match(snapshot.readings[0]?.error ?? "", testCase.match, testCase.label);
       assert.equal(errors.length, 1, testCase.label);
     }
+  });
+
+  it("truncates provider reading error strings to at most 1000 characters", async () => {
+    const longError = "E".repeat(1500);
+    const provider: SignalProvider = {
+      id: "long-error-provider",
+      signals: [{ name: PROVIDER_SIGNAL, unit: "bytes" }],
+      read: (context) => [
+        {
+          name: PROVIDER_SIGNAL,
+          unit: "bytes",
+          status: "unsupported",
+          observedAt: context.now,
+          error: longError,
+        },
+      ],
+    };
+    const { collector, clock } = makeCollector([provider], { evaluationIntervalMs: 0 });
+    const snapshot = await collector.collect(clock.now(), new AbortController().signal);
+    assert.equal(snapshot.readings.length, 1);
+    const reading = snapshot.readings[0];
+    assert.equal(reading?.status, "unsupported");
+    assert.equal(reading?.error?.length, 1001);
+    assert.equal(reading?.error?.slice(0, 1000), "E".repeat(1000));
+    assert.ok(reading?.error?.endsWith("…"));
+  });
+
+  it("passes SignalStartContext with valid now and signal to provider.start()", async () => {
+    let capturedContext: SignalStartContext | undefined;
+    const provider: SignalProvider = {
+      id: "start-context-provider",
+      signals: [{ name: PROVIDER_SIGNAL, unit: "bytes" }],
+      start: (context) => {
+        capturedContext = context;
+      },
+      read: (context) => [okSignal(PROVIDER_SIGNAL, 42, context.now)],
+    };
+    const { collector, clock } = makeCollector([provider], { evaluationIntervalMs: 1000 });
+    clock.advance(1234);
+    const snapshot = await collector.collect(clock.now(), new AbortController().signal);
+
+    assert.equal(requireOk(snapshot.readings[0]).value, 42);
+    assert.ok(capturedContext !== undefined);
+    assert.equal(capturedContext.now, clock.now());
+    assert.ok(capturedContext.signal instanceof AbortSignal);
+    assert.equal(capturedContext.signal.aborted, false);
+  });
+
+  it("recovers from transient start failure on the next evaluation interval when clock advances", async () => {
+    let startAttempts = 0;
+    let readCalls = 0;
+    const provider: SignalProvider = {
+      id: "transient-failure-provider",
+      signals: [{ name: PROVIDER_SIGNAL, unit: "bytes" }],
+      start: () => {
+        startAttempts += 1;
+        if (startAttempts === 1) {
+          throw new Error("transient network blip on boot");
+        }
+      },
+      read: (context) => {
+        readCalls += 1;
+        return [okSignal(PROVIDER_SIGNAL, 99, context.now)];
+      },
+    };
+    const { collector, clock, errors } = makeCollector([provider], { evaluationIntervalMs: 1000 });
+
+    // Cycle 1: start fails, returns synthesized error reading
+    const first = await collector.collect(clock.now(), new AbortController().signal);
+    assert.equal(first.readings[0]?.status, "error");
+    assert.match(first.readings[0]?.error ?? "", /transient network blip/);
+    assert.equal(startAttempts, 1);
+    assert.equal(readCalls, 0);
+    assert.equal(errors.length, 1);
+    assert.equal(errors[0]?.providerId, "transient-failure-provider");
+
+    // Still within evaluation interval (age 500 < 1000): returns cached error readings without retry
+    clock.advance(500);
+    const cached = await collector.collect(clock.now(), new AbortController().signal);
+    assert.equal(cached.cached, true);
+    assert.equal(cached.readings[0]?.status, "error");
+    assert.equal(startAttempts, 1);
+    assert.equal(errors.length, 1);
+
+    // Evaluation interval passes (age 1000 >= 1000): fresh cycle retries start and succeeds
+    clock.advance(500);
+    const recovered = await collector.collect(clock.now(), new AbortController().signal);
+    assert.equal(recovered.cached, false);
+    assert.equal(recovered.readings[0]?.status, "ok");
+    assert.equal(requireOk(recovered.readings[0]).value, 99);
+    assert.equal(startAttempts, 2);
+    assert.equal(readCalls, 1);
+    assert.equal(errors.length, 1); // No new errors emitted on recovery
+
+    // Subsequent call within new evaluation interval serves cached ok snapshot
+    const stable = await collector.collect(clock.now(), new AbortController().signal);
+    assert.equal(stable.cached, true);
+    assert.equal(requireOk(stable.readings[0]).value, 99);
+    assert.equal(startAttempts, 2);
+    assert.equal(readCalls, 1);
+  });
+
+  it("retries start on every fresh collection cycle when evaluationIntervalMs is 0", async () => {
+    let startAttempts = 0;
+    const provider: SignalProvider = {
+      id: "uninterrupted-failure-provider",
+      signals: [{ name: PROVIDER_SIGNAL, unit: "bytes" }],
+      start: () => {
+        startAttempts += 1;
+        throw new Error(`failure attempt ${startAttempts}`);
+      },
+      read: () => [],
+    };
+    const { collector, clock, errors } = makeCollector([provider], { evaluationIntervalMs: 0 });
+
+    const first = await collector.collect(clock.now(), new AbortController().signal);
+    assert.equal(first.readings[0]?.status, "error");
+    assert.match(first.readings[0]?.error ?? "", /failure attempt 1/);
+    assert.equal(startAttempts, 1);
+    assert.equal(errors.length, 1);
+
+    clock.advance(10);
+    const second = await collector.collect(clock.now(), new AbortController().signal);
+    assert.equal(second.readings[0]?.status, "error");
+    assert.match(second.readings[0]?.error ?? "", /failure attempt 2/);
+    assert.equal(startAttempts, 2);
+    assert.equal(errors.length, 2);
+  });
+
+  it("forwards SignalStartContext through CompositeSignalProvider to child providers", async () => {
+    let childAContext: SignalStartContext | undefined;
+    let childBContext: SignalStartContext | undefined;
+
+    const childA: SignalProvider = {
+      id: "child-a",
+      signals: [{ name: "child.a", unit: "ratio" }],
+      start: (context) => {
+        childAContext = context;
+      },
+      read: (context) => [
+        { name: "child.a", unit: "ratio", status: "ok", value: 0.8, observedAt: context.now },
+      ],
+    };
+
+    const childB: SignalProvider = {
+      id: "child-b",
+      signals: [{ name: "child.b", unit: "ratio" }],
+      start: async (context) => {
+        childBContext = context;
+      },
+      read: (context) => [
+        { name: "child.b", unit: "ratio", status: "ok", value: 0.2, observedAt: context.now },
+      ],
+    };
+
+    const composite = new CompositeSignalProvider({
+      id: "test-composite",
+      providers: [childA, childB],
+      rules: [
+        {
+          name: "composite.sum",
+          unit: "ratio",
+          inputs: ["child.a", "child.b"],
+          compute: (v) => (v["child.a"] ?? 0) + (v["child.b"] ?? 0),
+        },
+      ],
+    });
+
+    const { collector, clock } = makeCollector([composite], { evaluationIntervalMs: 1000 });
+    clock.advance(5555);
+
+    const snapshot = await collector.collect(clock.now(), new AbortController().signal);
+    assert.equal(snapshot.readings.length, 3);
+    const sumReading = snapshot.readings.find((r) => r.name === "composite.sum");
+    assert.equal(sumReading?.status, "ok");
+
+    assert.ok(childAContext !== undefined);
+    assert.equal(childAContext.now, clock.now());
+    assert.ok(childAContext.signal instanceof AbortSignal);
+
+    assert.ok(childBContext !== undefined);
+    assert.equal(childBContext.now, clock.now());
+    assert.ok(childBContext.signal instanceof AbortSignal);
   });
 });

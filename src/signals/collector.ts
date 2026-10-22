@@ -4,10 +4,11 @@ import type {
   ResourceSignal,
   SignalDescriptor,
   SignalProvider,
+  SignalStartContext,
   SignalStatus,
   SignalUnit,
 } from "../types/signals.js";
-import { toError } from "../utils/errors.js";
+import { errorMessage, toError } from "../utils/errors.js";
 
 export interface SignalSnapshot {
   readonly readings: readonly ResourceSignal[];
@@ -275,6 +276,12 @@ export class SignalCollector {
   }
 
   async #collectFresh(now: number, signal: AbortSignal): Promise<SignalSnapshot> {
+    for (const entry of this.#entries) {
+      if (!entry.started && entry.startError !== null) {
+        entry.startError = null;
+        entry.startPromise = null;
+      }
+    }
     const results = await Promise.all(
       this.#entries.map(async (entry) => this.#readEntry(entry, now, signal)),
     );
@@ -298,7 +305,7 @@ export class SignalCollector {
     }
 
     if (!entry.started) {
-      const start = this.#beginStart(entry, now);
+      const start = this.#beginStart(entry, now, signal);
       if (start.errorReadings !== null) {
         return start.errorReadings;
       }
@@ -332,12 +339,13 @@ export class SignalCollector {
   }
 
   /**
-   * Invokes start() at most once. Synchronous starts keep their immediate
-   * behavior; a returned promise is stored so later reads reuse it.
+   * Invokes start() for unstarted providers. Synchronous starts keep their immediate
+   * behavior; a returned promise is stored so concurrent or later reads reuse it.
    */
   #beginStart(
     entry: ProviderEntry,
     now: number,
+    signal: AbortSignal,
   ): {
     readonly errorReadings: readonly ResourceSignal[] | null;
     readonly promise: Promise<void> | null;
@@ -346,23 +354,41 @@ export class SignalCollector {
       return { errorReadings: null, promise: entry.startPromise };
     }
 
+    if (typeof entry.provider.start !== "function") {
+      entry.started = true;
+      entry.startError = null;
+      return { errorReadings: null, promise: null };
+    }
+
+    const context: SignalStartContext = { now, signal };
+
     let result: void | Promise<void>;
     try {
-      result = entry.provider.start?.();
+      result = entry.provider.start(context);
     } catch (error) {
       const failure = toError(error);
       entry.startError = failure;
-      entry.started = true;
+      entry.started = false;
       this.#onProviderError(entry.provider.id, failure);
       return { errorReadings: this.#errorReadings(entry, now, failure.message), promise: null };
     }
 
     if (result === undefined) {
       entry.started = true;
+      entry.startError = null;
       return { errorReadings: null, promise: null };
     }
 
-    const promise = Promise.resolve(result);
+    const promise = Promise.resolve(result)
+      .then(() => {
+        entry.started = true;
+        entry.startError = null;
+      })
+      .catch((error: unknown) => {
+        entry.started = false;
+        throw toError(error);
+      });
+
     // A caller can abandon the wait through its abort signal; observe any late
     // rejection so it never surfaces as an unhandled rejection.
     promise.catch(() => undefined);
@@ -373,7 +399,7 @@ export class SignalCollector {
   /**
    * Waits for a pending start under the provider timeout. A caller abort keeps
    * the start promise reusable and caches nothing; a timeout or rejection is
-   * cached as startError and reported once.
+   * cached as startError and reported once without marking started as true.
    */
   async #awaitStart(
     entry: ProviderEntry,
@@ -384,12 +410,13 @@ export class SignalCollector {
     const result = await this.#waitForProvider(entry, signal, () => startPromise);
     if (result.ok) {
       entry.started = true;
+      entry.startError = null;
       return null;
     }
 
     if (!result.aborted) {
       entry.startError = result.error;
-      entry.started = true;
+      entry.started = false;
       this.#onProviderError(entry.provider.id, result.error);
     }
     return this.#errorReadings(entry, now, result.error.message);
@@ -493,6 +520,7 @@ export class SignalCollector {
           `Signal "${reading.name}" has an invalid status "${String(reading.status)}".`,
         );
       }
+      let normalizedReading: ResourceSignal;
       if (reading.status === "ok") {
         if (!Number.isFinite(reading.value)) {
           throw new TypeError(`Signal "${reading.name}" has a non-finite value.`);
@@ -503,10 +531,17 @@ export class SignalCollector {
         ) {
           throw new TypeError(`Signal "${reading.name}" confidence must be between 0 and 1.`);
         }
-      } else if (reading.error !== undefined && typeof reading.error !== "string") {
-        throw new TypeError(`Signal "${reading.name}" error must be a string.`);
+        normalizedReading = reading;
+      } else {
+        if (reading.error !== undefined && typeof reading.error !== "string") {
+          throw new TypeError(`Signal "${reading.name}" error must be a string.`);
+        }
+        normalizedReading =
+          reading.error !== undefined
+            ? { ...reading, error: errorMessage(reading.error) }
+            : reading;
       }
-      received.set(reading.name, reading);
+      received.set(reading.name, normalizedReading);
     }
 
     const readings: ResourceSignal[] = [];
@@ -533,7 +568,7 @@ export class SignalCollector {
       unit: descriptor.unit,
       status: "error" as const,
       observedAt: now,
-      error: message,
+      error: errorMessage(message),
     }));
   }
 }

@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 const DEFAULT_PACKAGE = "adaptive-runtime";
@@ -31,6 +32,7 @@ Options:
   --metadata-file <path>           Read registry metadata from JSON instead of npm.
                                    Disables all registry access.
   --attestations-file <path>       Read the provenance attestation from JSON.
+  --tarball <path>                 Install from a packed tarball (.tgz) instead of npm registry.
   --skip-provenance                Skip the provenance attestation check.
   --skip-consumer                  Skip the clean-consumer install and smoke test.
   --json                           Print exactly one JSON summary to stdout.
@@ -57,6 +59,7 @@ function parseArgs(argv) {
     waitDelayMs: DEFAULT_WAIT_DELAY_MS,
     metadataFile: undefined,
     attestationsFile: undefined,
+    tarball: undefined,
     skipProvenance: false,
     skipConsumer: false,
     json: false,
@@ -116,6 +119,9 @@ function parseArgs(argv) {
       case "attestations-file":
         options.attestationsFile = takeValue();
         break;
+      case "tarball":
+        options.tarball = takeValue();
+        break;
       case "skip-provenance":
         rejectValue();
         options.skipProvenance = true;
@@ -131,6 +137,10 @@ function parseArgs(argv) {
       default:
         throw new Error(`Unknown option "--${name}". Use --help for usage.`);
     }
+  }
+
+  if (options.tarball !== undefined && !existsSync(resolve(options.tarball))) {
+    throw new Error(`--tarball points to a missing file: "${options.tarball}".`);
   }
 
   if (options.version === undefined) {
@@ -227,6 +237,10 @@ function readJsonFile(path, label) {
 }
 
 async function waitForRegistry(options, reporter) {
+  if (options.tarball !== undefined) {
+    reporter.step(1, "Registry propagation", `skipped (--tarball "${options.tarball}").`);
+    return;
+  }
   const specifier = `${options.package}@${options.version}`;
   for (let attempt = 1; attempt <= options.waitAttempts; attempt += 1) {
     let published = "";
@@ -262,6 +276,22 @@ async function waitForRegistry(options, reporter) {
 function loadMetadata(options) {
   if (options.metadataFile !== undefined) {
     return readJsonFile(options.metadataFile, "metadata file");
+  }
+  if (options.tarball !== undefined) {
+    const tarballPath = resolve(options.tarball);
+    const tarballContent = readFileSync(tarballPath);
+    const integrity = `sha512-${createHash("sha512").update(tarballContent).digest("base64")}`;
+    const packageJsonPath = join(process.cwd(), "package.json");
+    let pkg = {};
+    if (existsSync(packageJsonPath)) {
+      pkg = JSON.parse(readFileSync(packageJsonPath, "utf8"));
+    }
+    return {
+      name: pkg.name ?? options.package,
+      version: pkg.version ?? options.version,
+      dist: { integrity },
+      repository: typeof pkg.repository === "string" ? { url: pkg.repository } : pkg.repository,
+    };
   }
   const specifier = `${options.package}@${options.version}`;
   const raw = runNpm(["view", specifier, "--json"], `npm view ${specifier} --json`, {
@@ -334,6 +364,15 @@ function verifyProvenance(options, reporter) {
     return null;
   }
 
+  if (options.tarball !== undefined) {
+    reporter.step(
+      3,
+      "Provenance",
+      "skipped (--tarball; pass --attestations-file to verify provenance).",
+    );
+    return null;
+  }
+
   const specifier = `${options.package}@${options.version}`;
   const raw = runNpm(
     ["view", specifier, "dist.attestations", "--json"],
@@ -352,7 +391,7 @@ function runConsumerSmoke(options, reporter) {
     return false;
   }
 
-  if (options.metadataFile !== undefined) {
+  if (options.metadataFile !== undefined && options.tarball === undefined) {
     reporter.step(4, "Consumer", "skipped (--metadata-file disables registry access).");
     return false;
   }
@@ -363,22 +402,93 @@ function runConsumerSmoke(options, reporter) {
       cwd: consumerDirectory,
       timeoutMs: 60_000,
     });
-    const specifier = `${options.package}@${options.version}`;
-    runNpm(["install", specifier], `npm install ${specifier}`, {
+    const installTarget =
+      options.tarball !== undefined
+        ? resolve(options.tarball)
+        : `${options.package}@${options.version}`;
+    runNpm(["install", installTarget], `npm install ${installTarget}`, {
       cwd: consumerDirectory,
       timeoutMs: 300_000,
     });
 
     const smoke = `
-import { createAdaptiveRuntime, ProcessMemoryProvider } from ${JSON.stringify(options.package)};
+import { createAdaptiveRuntime } from ${JSON.stringify(options.package)};
+import { createAdaptiveRuntime as createCoreRuntime } from ${JSON.stringify(`${options.package}/core`)};
+import { createAdaptiveRuntime as createNodeRuntime, ProcessMemoryProvider } from ${JSON.stringify(`${options.package}/node`)};
+import { DeviceMemoryProvider, NetworkInformationProvider, FrameTimingProvider } from ${JSON.stringify(`${options.package}/web`)};
+import { ExecutionBudgetProvider } from ${JSON.stringify(`${options.package}/edge`)};
 import { definePolicy, resolvePolicy } from ${JSON.stringify(`${options.package}/policy`)};
-import { EventLoopDelayProvider } from ${JSON.stringify(`${options.package}/providers`)};
+import { EventLoopDelayProvider, CompositeSignalProvider } from ${JSON.stringify(`${options.package}/providers`)};
+import { createMetricsCollector } from ${JSON.stringify(`${options.package}/observability`)};
+import { createFakeClock } from ${JSON.stringify(`${options.package}/testing`)};
+
+// 1. Policy subpath verification
 const policy = definePolicy({ evaluationIntervalMs: 0 });
-if (resolvePolicy(policy).evaluationIntervalMs !== 0) throw new Error("policy subpath mismatch");
+const resolvedPolicy = resolvePolicy(policy);
+if (resolvedPolicy.evaluationIntervalMs !== 0) {
+  throw new Error("policy subpath mismatch");
+}
+
+// 2. Web providers verification
+const devMem = new DeviceMemoryProvider();
+devMem.close();
+const netInfo = new NetworkInformationProvider();
+const frameTiming = new FrameTimingProvider();
+frameTiming.recordFrameDuration(16);
+frameTiming.close();
+
+// 3. Edge provider verification
+const edgeProvider = new ExecutionBudgetProvider({
+  getBudgetSnapshot: () => ({ totalBudgetMs: 50, elapsedMs: 5 }),
+});
+const edgeReadings = await edgeProvider.read({
+  now: 1000,
+  signal: new AbortController().signal,
+});
+if (!Array.isArray(edgeReadings) || edgeReadings.length === 0) {
+  throw new Error("edge provider reading failed");
+}
+
+// 4. Testing SDK verification
+const clock = createFakeClock(500);
+clock.advance(100);
+if (clock.now() !== 600) {
+  throw new Error("testing subpath fake clock failed");
+}
+
+// 5. Observability verification
+const collector = createMetricsCollector();
+
+// 6. Core and Node subpaths verification
+if (typeof createCoreRuntime !== "function") {
+  throw new Error("core subpath missing createAdaptiveRuntime");
+}
+if (typeof createNodeRuntime !== "function") {
+  throw new Error("node subpath missing createAdaptiveRuntime");
+}
+
+// 7. Node / composite providers and runtime execution
+const memProvider = new ProcessMemoryProvider();
+const delayProvider = new EventLoopDelayProvider();
+const compositeProvider = new CompositeSignalProvider({
+  providers: [memProvider],
+  passthroughInputs: false,
+  rules: [
+    {
+      name: "custom.composite.heap",
+      unit: "bytes",
+      inputs: ["process.memory.heapUsed"],
+      compute: (values) => values["process.memory.heapUsed"] ?? 0,
+    },
+  ],
+});
+
 const runtime = createAdaptiveRuntime({
-  providers: [new ProcessMemoryProvider(), new EventLoopDelayProvider()],
+  providers: [memProvider, delayProvider, compositeProvider],
   policy,
 });
+const detachMetrics = collector.attach(runtime);
+
 try {
   const result = await runtime.run({
     operationId: "post-publish-smoke",
@@ -387,10 +497,16 @@ try {
   });
   if (result.value !== 11) throw new Error("unexpected strategy result");
   if (result.metadata.strategyId !== "sum") throw new Error("unexpected strategy id");
+
+  const snapshot = collector.getSnapshot();
+  if (snapshot.counters.length === 0) throw new Error("observability snapshot missing counters");
 } finally {
+  detachMetrics();
+  memProvider.close();
+  delayProvider.close();
   await runtime.close();
 }
-console.log("clean consumer import, run, subpaths, and close OK");
+console.log("clean consumer import across all 9 runtime subpaths, run, metrics, and close OK");
 `;
     try {
       execFileSync(process.execPath, ["--input-type=module", "-e", smoke], {
@@ -406,7 +522,7 @@ console.log("clean consumer import, run, subpaths, and close OK");
       throw new Error(`clean consumer smoke test failed${detail.length > 0 ? `: ${detail}` : ""}`);
     }
 
-    reporter.step(4, "Consumer", "clean install, subpath imports, run, and close OK.");
+    reporter.step(4, "Consumer", "clean install, all 9 subpath imports, run, and close OK.");
     return true;
   } finally {
     rmSync(consumerDirectory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
@@ -439,11 +555,16 @@ async function main() {
     const attestationUrl = verifyProvenance(options, reporter);
     const consumerVerified = runConsumerSmoke(options, reporter);
 
+    const metadataSource = metadataFromFile
+      ? "file"
+      : options.tarball !== undefined
+        ? "tarball"
+        : "registry";
     const summary = {
       ok: true,
       package: options.package,
       version: options.version,
-      metadataSource: metadataFromFile ? "file" : "registry",
+      metadataSource,
       integrity,
       repository,
       provenance: attestationUrl === null ? "skipped" : "verified",

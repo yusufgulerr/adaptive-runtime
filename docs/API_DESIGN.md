@@ -29,14 +29,21 @@ the compatibility process described below.
 
 ## Public surface
 
-The package exposes three entry points. Consumers should not import from `dist/`
-subpaths directly.
+The package exposes 10 package exports (9 runtime subpaths plus `package.json`).
+Consumers should not import from `dist/` subpaths directly.
 
-| Entry point | Contents | Responsibility |
-| --- | --- | --- |
-| `adaptive-runtime` | Runtime, operation, strategy, policy, decision, signal, error, and provider types | Recommended application surface: lifecycle, selection, execution, events, stats |
-| `adaptive-runtime/policy` | `definePolicy`, `evaluatePolicy`, `resolvePolicy`, policy/decision types | Platform-neutral policy evaluation with no Node.js imports |
-| `adaptive-runtime/providers` | `ProcessMemoryProvider`, `CpuUtilizationProvider`, `EventLoopDelayProvider`, `NetworkLatencyProvider` | Node.js adapters with injection points |
+| Entry point | Target | Contents | Responsibility |
+| --- | --- | --- | --- |
+| `adaptive-runtime` | Node.js | Runtime, operation, strategy, policy, decision, signal, error, and built-in provider types | Recommended application surface: lifecycle, selection, execution, events, stats |
+| `adaptive-runtime/core` | Universal | Portable core runtime (`createAdaptiveRuntime`, `CompositeSignalProvider`, `NetworkLatencyProvider`, `definePolicy`, types, errors) | Pure, portable core with zero Node.js built-ins or `process` dependencies |
+| `adaptive-runtime/node` | Node.js | Core runtime plus Node.js process-level resource providers (`ProcessMemoryProvider`, `CpuUtilizationProvider`, `EventLoopDelayProvider`) | Targeted surface for Node.js services requiring OS and process telemetry |
+| `adaptive-runtime/web` | Browser | Web-specific signal providers (`DeviceMemoryProvider`, `NetworkInformationProvider`, `FrameTimingProvider`) | Structurally typed browser telemetry with no direct DOM/window global assumptions |
+| `adaptive-runtime/edge` | WinterCG | Edge execution budget providers (`ExecutionBudgetProvider`, `EDGE_EXECUTION_REMAINING_MS`, `EDGE_EXECUTION_USED_RATIO`, `EDGE_CONCURRENCY_SATURATION`) | Edge and worker runtimes (Cloudflare Workers, Deno, Bun, Vercel Edge) |
+| `adaptive-runtime/policy` | Universal | Pure policy engine (`definePolicy`, `resolvePolicy`, `evaluatePolicy`, `createInitialPolicyState`, decision/budget types) | Platform-neutral policy evaluation and declarative rule definition with zero dependencies |
+| `adaptive-runtime/providers` | Mixed | Comprehensive providers barrel (composite, web, edge, and Node.js process providers) | Single-import convenience barrel for all signal provider implementations |
+| `adaptive-runtime/observability` | Universal | Zero-dependency observability bridge (`createMetricsCollector`, `MetricsCollector`, `attachOpenTelemetryMeter`) | In-memory metrics collection, Prometheus text generation, and OpenTelemetry Meter bridge |
+| `adaptive-runtime/testing` | Universal | Provider conformance and test SDK (`createFakeClock`, `ScriptedSignalProvider`, `runProviderConformanceCheck`) | Deterministic simulation, fake timers, and provider contract verification |
+| `adaptive-runtime/package.json` | Manifest | Package metadata and exports manifest | Package resolution and build tooling introspection |
 
 Root entry-point areas:
 
@@ -161,8 +168,8 @@ or `provider:error` / `listener:error` events instead of crashing the operation.
 
 ## Compatibility and change process
 
-- The package is ESM-only and exposes the root, `./policy`, and `./providers`
-  entry points.
+- The package is ESM-only and exposes the root entry point, 8 runtime subpaths,
+  and `./package.json`.
 - `0.x` is pre-1.0. Breaking changes are allowed but must be documented in
   [CHANGELOG.md](../CHANGELOG.md) and, for semantic changes, an ADR.
 - Prefer additive optional fields over changing existing meanings.

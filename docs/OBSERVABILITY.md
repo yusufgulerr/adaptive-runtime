@@ -21,6 +21,7 @@ const collector = createMetricsCollector({
   prefix: "adaptive_runtime",              // default
   defaultAttributes: { service: "search" },
   buckets: [0.001, 0.01, 0.1, 1],          // seconds
+  maxSeries: 1000,                         // default series cardinality limit
 });
 const detach = collector.attach(runtime);
 
@@ -36,18 +37,33 @@ detach();
 whichever form reads more clearly in your application. `attach()` returns a
 detach function and subscribes to `decision`, `run:start`,
 `run:success`, `run:error`, `provider:error`, `listener:error`, and
-`runtime:closed`. `reset()` clears the in-memory registry. Snapshot counters
-cover runs, decisions, strategy selections, signal statuses, budget statuses,
-quality checks, provider errors, listener errors, and runtime closes. Gauges
-cover `ok` signal readings and budget engagement. Histograms cover run duration
-in seconds.
+`runtime:closed`. `reset()` clears the in-memory registry and LRU tracking.
+Snapshot counters cover runs, decisions, strategy selections, signal statuses,
+budget statuses, quality checks, provider errors, listener errors, and runtime
+closes. Gauges cover `ok` signal readings and budget engagement. Histograms
+cover run duration in seconds.
 
 The collector derives a family's type from the recording method, not from the
 metric name: `increment` creates a counter, `setGauge` a gauge, and `observe` a
 histogram. Reusing a name with a different instrument kind throws `TypeError`
 before state changes. Series keys encode label keys and values unambiguously, so
 commas, equals signs, or quotes in label text cannot merge distinct series.
-`reset()` clears both the series and the family registrations.
+`reset()` clears the series, LRU tracking, and family registrations.
+
+### Series Cardinality & Eviction (`maxSeries`)
+
+The collector bounds series cardinality across all metric families (counters,
+gauges, histograms) using an LRU tracking structure. When the total number of
+series reaches `maxSeries` (default: `1000`) and a new series is created, the
+least-recently used series is evicted before inserting the new one. Updating
+or observing an existing series refreshes its LRU position. Configuring
+`maxSeries` with a non-positive integer throws `ConfigurationError`.
+
+To proactively free series for completed or retired operations, call
+`collector.removeOperation(operationId)`. This purges all counter, gauge, and
+histogram series with `operation_id === operationId` and removes them from LRU
+tracking. Throws `ConfigurationError` if `operationId` is empty or has leading
+or trailing whitespace.
 
 | Metric | Type | Labels |
 | --- | --- | --- |
@@ -84,10 +100,27 @@ const detachMeter = attachOpenTelemetryMeter(runtime, meter, {
 });
 ```
 
-The adapter creates counters, a duration histogram, and (when available) an
-up-down counter for signal readings, then forwards runtime events to them. It is
-best-effort: a meter instrument that throws does not fail a run. Call the
-returned detach function before discarding the runtime.
+The adapter creates counters, a duration histogram, and (when `meter.createUpDownCounter`
+is available) UpDownCounters for signal readings (`<prefix>_signal_reading`) and budget
+engagement (`<prefix>_budget_engaged`).
+
+On `decision` events:
+- For signal readings with `reading.status === "ok"`, records `reading.value` to
+  `<prefix>_signal_reading` with attributes `{ signal: reading.name, unit: reading.unit }`.
+  Non-ok readings are strictly recorded to `<prefix>_signal_status_total` and are never
+  coerced to `0` or emitted to the UpDownCounter.
+- For budget evaluations with `budget.status === "ok"`, records `budget.engaged ? 1 : 0` to
+  `<prefix>_budget_engaged` with attributes `{ budget: budget.name }`. Non-ok budgets
+  record to `<prefix>_budget_status_total`.
+
+### Per-Instrument Error Isolation
+
+Every individual metric instrument call inside the OpenTelemetry event listeners is
+isolated with safe error handling (`safeRecord`). If an individual instrument throws
+an error (e.g., meter transport error, invalid metric attribute formatting), the error
+is caught safely without bubbling, preventing listener failures and ensuring that
+remaining telemetry instruments continue recording without dropping data or failing
+runs. Call the returned detach function before discarding the runtime.
 
 ## Surfaces
 
@@ -206,8 +239,11 @@ runtime.on("run:error", ({ operationId, strategyId, durationMs }) => {
 
 ## Label cardinality
 
-- `operationId` must be a stable workload key, not raw user input. Bound the
-  number of distinct ids; the runtime never evicts per-operation state.
+- `operationId` must be a stable workload key, not raw user input. Although the
+  runtime evicts unpinned operations beyond `maxTrackedOperations` and the
+  metrics collector bounds series cardinality via `maxSeries` (default: 1000,
+  with LRU eviction and `removeOperation(operationId)`), bounding distinct ids
+  protects downstream metric stores from unbounded label cardinality.
 - `strategyId` and `budget.id` come from application declarations and are usually
   bounded.
 - `signal.name` is provider-declared and bounded by the runtime configuration.

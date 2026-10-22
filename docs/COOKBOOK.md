@@ -46,8 +46,9 @@ misread. The patterns are independent; use the parts that fit your workload.
   or an uncooperative promise.
 - **Close the runtime at shutdown.** Let in-flight runs settle before calling
   `close()`, because provider shutdown can affect a pending read.
-- **ESM and Node.js 22+.** The package is ESM-only and exposes only the root
-  entry point.
+- **ESM and Node.js 22+.** The package is ESM-only and exposes the root entry
+  point along with specialized subpaths (`./core`, `./node`, `./web`, `./edge`,
+  `./policy`, `./providers`, `./observability`, `./testing`) and `./package.json`.
 
 ## Declared quality versus verified quality
 
@@ -334,7 +335,10 @@ the highest applicable strategy allowed by `minQualityTier` and
 
 - `operationId` is the state key. Using one id for two workloads shares budgets,
   mode history, pins, and stats, so pressure from one affects the other.
-- Use stable, low-cardinality ids. The runtime does not evict per-operation state.
+- Use stable, low-cardinality ids. The runtime bounds tracked operations using
+  `maxTrackedOperations` (default: 1,000) with LRU eviction for unpinned, idle
+  operations. Proactively release completed or retired operations using
+  `runtime.removeOperation(operationId)`.
 - `setAdaptationEnabled` expects a boolean; any other value throws
   `ConfigurationError`. Calling it after `close()` throws `RuntimeClosedError`.
 - The override is in memory only. Reapply it at startup after a restart.

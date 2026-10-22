@@ -327,9 +327,9 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
     operation: Operation<TInput, TOutput>,
     operationId: string,
   ): Promise<{ decision: StrategyDecision }> {
-    return this.#serialize(operationId, async () => {
+    const signal = operation.signal ?? NEVER_ABORTED;
+    return this.#serialize(operationId, signal, async () => {
       this.#ensureOpen();
-      const signal = operation.signal ?? NEVER_ABORTED;
       if (signal.aborted) {
         throw new OperationAbortedError(operationId, signal.reason);
       }
@@ -472,14 +472,67 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
     };
   }
 
-  #serialize<T>(operationId: string, task: () => Promise<T>): Promise<T> {
-    const previous = this.#locks.get(operationId) ?? Promise.resolve();
-    const next = previous.catch(() => undefined).then(task);
-    this.#locks.set(operationId, next);
-    return next.finally(() => {
-      if (this.#locks.get(operationId) === next) {
-        this.#locks.delete(operationId);
+  #serialize<T>(operationId: string, signal: AbortSignal, task: () => Promise<T>): Promise<T> {
+    if (signal.aborted) {
+      return Promise.reject(new OperationAbortedError(operationId, signal.reason));
+    }
+
+    let aborted = false;
+    let onAbort: (() => void) | undefined;
+    const cleanup = () => {
+      if (onAbort !== undefined) {
+        signal.removeEventListener("abort", onAbort);
+        onAbort = undefined;
       }
+    };
+
+    let execution: Promise<unknown>;
+    const previous = this.#locks.get(operationId) ?? Promise.resolve();
+    execution = previous
+      .catch(() => undefined)
+      .then(async () => {
+        if (aborted || signal.aborted) {
+          return;
+        }
+        return task();
+      })
+      .finally(() => {
+        if (this.#locks.get(operationId) === execution) {
+          this.#locks.delete(operationId);
+        }
+      });
+
+    this.#locks.set(operationId, execution);
+
+    return new Promise<T>((resolve, reject) => {
+      if (signal.aborted) {
+        aborted = true;
+        reject(new OperationAbortedError(operationId, signal.reason));
+        return;
+      }
+      onAbort = () => {
+        aborted = true;
+        cleanup();
+        reject(new OperationAbortedError(operationId, signal.reason));
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+
+      execution.then(
+        (value) => {
+          cleanup();
+          if (aborted || signal.aborted) {
+            reject(new OperationAbortedError(operationId, signal.reason));
+          } else {
+            resolve(value as T);
+          }
+        },
+        (error: unknown) => {
+          cleanup();
+          reject(error);
+        },
+      );
+    }).finally(() => {
+      cleanup();
     });
   }
 
