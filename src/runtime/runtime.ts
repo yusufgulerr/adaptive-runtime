@@ -31,9 +31,45 @@ import { systemClock } from "./clock.js";
 import { RuntimeEmitter } from "./emitter.js";
 import { executeStrategy } from "./executor.js";
 import { StatsRegistry } from "./stats.js";
-import { validateOperation, validateOperationId, validateProviderTimeout } from "./validate.js";
+import {
+  validateOperation,
+  validateOperationId,
+  validateProviderTimeout,
+  validateStrategyId,
+} from "./validate.js";
 
 const NEVER_ABORTED = new AbortController().signal;
+
+/**
+ * Freezes the decision's own structures without recursively freezing opaque
+ * user-provided `reason.details` values. This keeps published decisions
+ * immutable while avoiding side effects on application objects.
+ */
+function freezeDecision(decision: StrategyDecision): StrategyDecision {
+  for (const signal of decision.signals) {
+    Object.freeze(signal);
+  }
+  for (const budget of decision.budgets) {
+    Object.freeze(budget);
+  }
+  for (const reason of decision.reasons) {
+    if (reason.details !== undefined) {
+      Object.freeze(reason.details);
+    }
+    Object.freeze(reason);
+  }
+  Object.freeze(decision.signals);
+  Object.freeze(decision.budgets);
+  Object.freeze(decision.reasons);
+  return Object.freeze(decision);
+}
+
+function freezeMetadata(metadata: RunMetadata): RunMetadata {
+  Object.freeze(metadata.quality);
+  Object.freeze(metadata.signals);
+  Object.freeze(metadata.decision);
+  return Object.freeze(metadata);
+}
 
 function validateClock(clock: Clock): void {
   if (
@@ -154,7 +190,7 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
         runStartedAt,
       );
       const finishedAt = this.#clock.now();
-      const metadata: RunMetadata = {
+      const metadata: RunMetadata = freezeMetadata({
         operationId,
         strategyId: strategy.id,
         qualityTier: strategy.qualityTier,
@@ -165,7 +201,7 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
         decision,
         signals: decision.signals,
         quality,
-      };
+      });
       this.#stats.success(operationId, metadata.durationMs);
       this.#emitter.emit("run:success", { metadata });
       return { value: execution.value, metadata };
@@ -189,7 +225,7 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
   pinStrategy(operationId: string, strategyId: string): void {
     this.#ensureOpen();
     const id = validateOperationId(operationId);
-    this.#pins.set(id, validateOperationId(strategyId, "strategyId"));
+    this.#pins.set(id, validateStrategyId(strategyId));
     this.#trackOperation(id);
     this.#enforceTrackingLimit();
   }
@@ -210,7 +246,7 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
     const id = validateOperationId(operationId);
     this.#adaptationOverrides.set(id, enabled);
     this.#trackOperation(id);
-    this.#enforceTrackingLimit();
+    this.#enforceTrackingLimit(id);
   }
 
   getDecision(operationId: string): StrategyDecision | null {
@@ -335,11 +371,12 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
         },
         this.#policy,
       );
+      const decision = freezeDecision(evaluation.decision);
       this.#states.set(operationId, evaluation.state);
-      this.#decisions.set(operationId, evaluation.decision);
+      this.#decisions.set(operationId, decision);
       this.#trackOperation(operationId);
-      this.#emitter.emit("decision", { decision: evaluation.decision });
-      return { decision: evaluation.decision };
+      this.#emitter.emit("decision", { decision });
+      return { decision };
     });
   }
 
@@ -497,9 +534,10 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
    * Evicts least-recently-used operations when the configured bound is
    * exceeded. Active selections, in-flight runs, and explicit pins are never
    * evicted; the bound can therefore be exceeded when every tracked operation
-   * is pinned or active.
+   * is pinned or active. A caller that has just written state for one operation
+   * can protect it for this call so that the write survives enforcement.
    */
-  #enforceTrackingLimit(): void {
+  #enforceTrackingLimit(protectedOperationId?: string): void {
     const limit = this.#policy.maxTrackedOperations;
     if (limit === null || this.#tracked.size <= limit) {
       return;
@@ -507,6 +545,9 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
     for (const operationId of [...this.#tracked.keys()]) {
       if (this.#tracked.size <= limit) {
         break;
+      }
+      if (operationId === protectedOperationId) {
+        continue;
       }
       if (
         this.#locks.has(operationId) ||

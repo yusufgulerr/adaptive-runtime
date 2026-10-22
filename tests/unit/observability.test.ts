@@ -618,6 +618,112 @@ describe("Observability Bridge Unit Tests", () => {
       assert.equal(collector.toPrometheusText(), "");
     });
 
+    it("produces distinct series for ambiguous label keys and values", () => {
+      const collector = new MetricsCollector();
+
+      collector.increment("ambiguous_total", { a: "b,c=d" });
+      collector.increment("ambiguous_total", { a: "b", c: "d" });
+
+      const snapshot = collector.getSnapshot();
+      assert.equal(snapshot.counters.length, 2);
+      assert.deepEqual(
+        snapshot.counters.map((counter) => counter.labels),
+        [{ a: "b", c: "d" }, { a: "b,c=d" }],
+      );
+      assert.deepEqual(
+        snapshot.counters.map((counter) => counter.value),
+        [1, 1],
+      );
+
+      const text = collector.toPrometheusText();
+      assert.ok(text.includes('ambiguous_total{a="b",c="d"} 1'));
+      assert.ok(text.includes('ambiguous_total{a="b,c=d"} 1'));
+    });
+
+    it("derives histogram families from the observe instrument, not the name suffix", () => {
+      const collector = new MetricsCollector({
+        buckets: [0.5, Number.POSITIVE_INFINITY],
+      });
+
+      collector.observe("x_total", 0.5);
+
+      const snapshot = collector.getSnapshot();
+      assert.equal(snapshot.counters.length, 0);
+      assert.equal(snapshot.histograms.length, 1);
+
+      const text = collector.toPrometheusText();
+      assert.ok(text.includes("# TYPE x_total histogram"));
+      assert.ok(!text.includes("# TYPE x_total counter"));
+      assert.ok(text.includes('x_total_bucket{le="0.5"} 1'));
+      assert.ok(text.includes('x_total_bucket{le="+Inf"} 1'));
+      assert.ok(text.includes("x_total_sum 0.5"));
+      assert.ok(text.includes("x_total_count 1"));
+    });
+
+    it("rejects conflicting instrument kinds before mutating series state", () => {
+      const collector = new MetricsCollector({
+        buckets: [1, Number.POSITIVE_INFINITY],
+      });
+
+      collector.increment("same");
+      collector.increment("same");
+
+      assert.throws(() => collector.setGauge("same", 1), TypeError);
+      assert.throws(() => collector.observe("same", 0.5), TypeError);
+
+      const snapshot = collector.getSnapshot();
+      assert.equal(snapshot.counters.length, 1);
+      assert.equal(snapshot.counters[0]?.value, 2);
+      assert.equal(snapshot.gauges.length, 0);
+      assert.equal(snapshot.histograms.length, 0);
+
+      const text = collector.toPrometheusText();
+      assert.ok(text.includes("# TYPE same counter"));
+      assert.ok(!text.includes("# TYPE same gauge"));
+      assert.ok(!text.includes("# TYPE same histogram"));
+      assert.ok(text.includes("same 2"));
+
+      // Same-kind repeated calls remain allowed.
+      collector.increment("same");
+      assert.equal(collector.getSnapshot().counters[0]?.value, 3);
+
+      // The reverse direction also conflicts without dropping the gauge series.
+      collector.setGauge("gauge_same", 7);
+      assert.throws(() => collector.increment("gauge_same"), TypeError);
+      assert.throws(() => collector.observe("gauge_same", 0.5), TypeError);
+      assert.equal(collector.getSnapshot().gauges[0]?.value, 7);
+
+      // A histogram family also rejects counter and gauge instruments.
+      collector.observe("hist_same", 0.5);
+      assert.throws(() => collector.increment("hist_same"), TypeError);
+      assert.throws(() => collector.setGauge("hist_same", 1), TypeError);
+      assert.equal(collector.getSnapshot().histograms.length, 1);
+    });
+
+    it("clears family registration on reset so a name can be reused with a different kind", () => {
+      const collector = new MetricsCollector({
+        buckets: [1, Number.POSITIVE_INFINITY],
+      });
+
+      collector.increment("reused_total");
+      assert.throws(() => collector.observe("reused_total", 0.5), TypeError);
+
+      collector.reset();
+      assert.equal(collector.toPrometheusText(), "");
+
+      collector.observe("reused_total", 0.5);
+
+      const snapshot = collector.getSnapshot();
+      assert.equal(snapshot.counters.length, 0);
+      assert.equal(snapshot.histograms.length, 1);
+
+      const text = collector.toPrometheusText();
+      assert.ok(text.includes("# TYPE reused_total histogram"));
+      assert.ok(text.includes('reused_total_bucket{le="1"} 1'));
+      assert.ok(text.includes("reused_total_sum 0.5"));
+      assert.ok(text.includes("reused_total_count 1"));
+    });
+
     it("produces valid Prometheus text format v0.0.4 with HELP, TYPE, escaping, and trailing newline", () => {
       const collector = new MetricsCollector({
         prefix: "test_runtime",

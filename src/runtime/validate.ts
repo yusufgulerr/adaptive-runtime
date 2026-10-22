@@ -9,6 +9,15 @@ export function validateOperationId(value: unknown, label = "operationId"): stri
   return value.trim();
 }
 
+/** Strategy ids are matched verbatim, so padding is rejected instead of trimmed. */
+export function validateStrategyId(value: unknown, label = "strategyId"): string {
+  const id = validateOperationId(value, label);
+  if (id !== value) {
+    throw new ConfigurationError(`${label} must not have leading or trailing whitespace.`);
+  }
+  return id;
+}
+
 export function validateOptionalAbortSignal(value: unknown): AbortSignal | undefined {
   if (value === undefined) {
     return undefined;
@@ -56,12 +65,7 @@ export function validateStrategies<TInput, TOutput>(
       throw new ConfigurationError(`strategies[${index}] must be an object.`);
     }
     const strategy = item as Strategy<TInput, TOutput>;
-    const id = validateOperationId(strategy.id, `strategies[${index}].id`);
-    if (id !== strategy.id) {
-      throw new ConfigurationError(
-        `strategies[${index}].id must not have leading or trailing whitespace.`,
-      );
-    }
+    const id = validateStrategyId(strategy.id, `strategies[${index}].id`);
     if (seen.has(id)) {
       throw new ConfigurationError(`Duplicate strategy id "${id}".`);
     }

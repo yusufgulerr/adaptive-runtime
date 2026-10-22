@@ -175,13 +175,25 @@ function createMetricLabels(
   return Object.freeze(sorted);
 }
 
-function buildSeriesKey(name: string, labels: MetricLabels): string {
-  const entries = Object.entries(labels);
-  if (entries.length === 0) {
-    return name;
+function compareLabelKeys(a: readonly [string, string], b: readonly [string, string]): number {
+  if (a[0] !== b[0]) {
+    return a[0] < b[0] ? -1 : 1;
   }
-  const formatted = entries.map(([k, v]) => `${k}=${v}`).join(",");
-  return `${name}{${formatted}}`;
+  if (a[1] !== b[1]) {
+    return a[1] < b[1] ? -1 : 1;
+  }
+  return 0;
+}
+
+function buildSeriesKey(name: string, labels: MetricLabels): string {
+  // Length-prefixed segments make the key unambiguous regardless of the
+  // characters present in metric names, label keys, or label values.
+  let key = `${name.length}:${name}`;
+  const entries = Object.entries(labels).sort(compareLabelKeys);
+  for (const [labelKey, labelValue] of entries) {
+    key += `;${labelKey.length}:${labelKey}=${labelValue.length}:${labelValue}`;
+  }
+  return key;
 }
 
 function compareSnapshots<T extends { readonly name: string; readonly labels: MetricLabels }>(
@@ -191,9 +203,21 @@ function compareSnapshots<T extends { readonly name: string; readonly labels: Me
   if (a.name !== b.name) {
     return a.name < b.name ? -1 : 1;
   }
-  const keyA = buildSeriesKey(a.name, a.labels);
-  const keyB = buildSeriesKey(b.name, b.labels);
-  return keyA < keyB ? -1 : keyA > keyB ? 1 : 0;
+  const entriesA = Object.entries(a.labels).sort(compareLabelKeys);
+  const entriesB = Object.entries(b.labels).sort(compareLabelKeys);
+  const sharedLength = Math.min(entriesA.length, entriesB.length);
+  for (let i = 0; i < sharedLength; i++) {
+    const entryA = entriesA[i];
+    const entryB = entriesB[i];
+    if (entryA === undefined || entryB === undefined) {
+      break;
+    }
+    const order = compareLabelKeys(entryA, entryB);
+    if (order !== 0) {
+      return order;
+    }
+  }
+  return entriesA.length < entriesB.length ? -1 : entriesA.length > entriesB.length ? 1 : 0;
 }
 
 function escapeHelp(text: string): string {
@@ -213,72 +237,44 @@ function formatPrometheusLabels(labels: Record<string, string>): string {
   return `{${pairs.join(",")}}`;
 }
 
+type MetricFamilyType = "counter" | "gauge" | "histogram";
+
 interface MetricFamilyMeta {
-  readonly type: "counter" | "gauge" | "histogram";
+  readonly type: MetricFamilyType;
   readonly help: string;
 }
 
-function getMetricFamilyMeta(name: string, prefix: string): MetricFamilyMeta {
+function getMetricFamilyHelp(name: string, prefix: string): string {
   const suffix = name.startsWith(`${prefix}_`) ? name.slice(prefix.length + 1) : name;
-  let type: "counter" | "gauge" | "histogram";
-  let help: string;
 
   switch (suffix) {
     case "strategy_selections_total":
-      type = "counter";
-      help = "Total number of strategy selections started.";
-      break;
+      return "Total number of strategy selections started.";
     case "runs_total":
-      type = "counter";
-      help = "Total number of strategy runs completed or failed.";
-      break;
+      return "Total number of strategy runs completed or failed.";
     case "quality_total":
-      type = "counter";
-      help = "Total number of strategy runs categorized by quality status.";
-      break;
+      return "Total number of strategy runs categorized by quality status.";
     case "run_duration_seconds":
-      type = "histogram";
-      help = "Duration of strategy execution in seconds.";
-      break;
+      return "Duration of strategy execution in seconds.";
     case "decisions_total":
-      type = "counter";
-      help = "Total number of policy decisions made.";
-      break;
+      return "Total number of policy decisions made.";
     case "signal_reading":
-      type = "gauge";
-      help = "Current resource signal reading value.";
-      break;
+      return "Current resource signal reading value.";
     case "signal_status_total":
-      type = "counter";
-      help = "Total count of non-ok signal readings.";
-      break;
+      return "Total count of non-ok signal readings.";
     case "budget_engaged":
-      type = "gauge";
-      help = "Current budget engagement state (1 engaged, 0 healthy).";
-      break;
+      return "Current budget engagement state (1 engaged, 0 healthy).";
     case "budget_status_total":
-      type = "counter";
-      help = "Total count of non-ok budget evaluations.";
-      break;
+      return "Total count of non-ok budget evaluations.";
     case "provider_errors_total":
-      type = "counter";
-      help = "Total number of signal provider errors.";
-      break;
+      return "Total number of signal provider errors.";
     case "listener_errors_total":
-      type = "counter";
-      help = "Total number of listener errors.";
-      break;
+      return "Total number of listener errors.";
     case "runtime_closed_total":
-      type = "counter";
-      help = "Total number of runtime close events.";
-      break;
+      return "Total number of runtime close events.";
     default:
-      type = name.endsWith("_total") ? "counter" : "gauge";
-      help = `Metric family for ${name}.`;
-      break;
+      return `Metric family for ${name}.`;
   }
-
-  return { type, help };
 }
 
 interface InternalCounterSeries {
@@ -315,6 +311,7 @@ export class MetricsCollector implements RuntimeMetricsCollector {
   readonly #counters = new Map<string, InternalCounterSeries>();
   readonly #gauges = new Map<string, InternalGaugeSeries>();
   readonly #histograms = new Map<string, InternalHistogramSeries>();
+  readonly #families = new Map<string, MetricFamilyMeta>();
 
   constructor(options?: ObservabilityOptions) {
     this.#prefix = options?.prefix ?? "adaptive_runtime";
@@ -325,11 +322,25 @@ export class MetricsCollector implements RuntimeMetricsCollector {
         : DEFAULT_HISTOGRAM_BUCKETS;
   }
 
+  #registerFamily(name: string, type: MetricFamilyType): void {
+    const existing = this.#families.get(name);
+    if (existing !== undefined) {
+      if (existing.type !== type) {
+        throw new TypeError(
+          `Metric "${name}" is already registered as a ${existing.type} family and cannot be used as a ${type} family.`,
+        );
+      }
+      return;
+    }
+    this.#families.set(name, { type, help: getMetricFamilyHelp(name, this.#prefix) });
+  }
+
   increment(name: string, labels?: MetricAttributesLike, amount = 1): void {
     if (!Number.isFinite(amount)) {
       throw new TypeError(`Counter increment for "${name}" must be a finite number.`);
     }
     const metricLabels = createMetricLabels(this.#defaultAttributes, labels);
+    this.#registerFamily(name, "counter");
     const key = buildSeriesKey(name, metricLabels);
     const existing = this.#counters.get(key);
     if (existing === undefined) {
@@ -344,6 +355,7 @@ export class MetricsCollector implements RuntimeMetricsCollector {
       throw new TypeError(`Gauge value for "${name}" must be a finite number.`);
     }
     const metricLabels = createMetricLabels(this.#defaultAttributes, labels);
+    this.#registerFamily(name, "gauge");
     const key = buildSeriesKey(name, metricLabels);
     const existing = this.#gauges.get(key);
     if (existing === undefined) {
@@ -360,6 +372,7 @@ export class MetricsCollector implements RuntimeMetricsCollector {
       );
     }
     const metricLabels = createMetricLabels(this.#defaultAttributes, labels);
+    this.#registerFamily(name, "histogram");
     const key = buildSeriesKey(name, metricLabels);
     const existing = this.#histograms.get(key);
     if (existing === undefined) {
@@ -516,36 +529,18 @@ export class MetricsCollector implements RuntimeMetricsCollector {
   }
 
   toPrometheusText(): string {
-    if (this.#counters.size === 0 && this.#gauges.size === 0 && this.#histograms.size === 0) {
+    if (this.#families.size === 0) {
       return "";
     }
 
-    const familyMap = new Map<string, MetricFamilyMeta>();
-
-    for (const counter of this.#counters.values()) {
-      if (!familyMap.has(counter.name)) {
-        familyMap.set(counter.name, getMetricFamilyMeta(counter.name, this.#prefix));
-      }
-    }
-    for (const gauge of this.#gauges.values()) {
-      if (!familyMap.has(gauge.name)) {
-        familyMap.set(gauge.name, getMetricFamilyMeta(gauge.name, this.#prefix));
-      }
-    }
-    for (const histogram of this.#histograms.values()) {
-      if (!familyMap.has(histogram.name)) {
-        familyMap.set(histogram.name, getMetricFamilyMeta(histogram.name, this.#prefix));
-      }
-    }
-
-    const sortedFamilyNames = Array.from(familyMap.keys()).sort((a, b) =>
+    const sortedFamilyNames = Array.from(this.#families.keys()).sort((a, b) =>
       a < b ? -1 : a > b ? 1 : 0,
     );
 
     const lines: string[] = [];
 
     for (const name of sortedFamilyNames) {
-      const meta = familyMap.get(name);
+      const meta = this.#families.get(name);
       if (meta === undefined) {
         continue;
       }
@@ -595,6 +590,7 @@ export class MetricsCollector implements RuntimeMetricsCollector {
     this.#counters.clear();
     this.#gauges.clear();
     this.#histograms.clear();
+    this.#families.clear();
   }
 }
 

@@ -378,6 +378,163 @@ describe("SignalCollector", () => {
     assert.equal(errors[0]?.providerId, "start-failure");
   });
 
+  it("awaits an asynchronous start before the first read", async () => {
+    let starts = 0;
+    let reads = 0;
+    let started = false;
+    let resolveStart: (() => void) | undefined;
+    const provider: SignalProvider = {
+      id: "async-start",
+      signals: [{ name: PROVIDER_SIGNAL, unit: "bytes" }],
+      start: () => {
+        starts += 1;
+        return new Promise<void>((resolve) => {
+          resolveStart = () => {
+            started = true;
+            resolve();
+          };
+        });
+      },
+      read: (context) => {
+        reads += 1;
+        return [okSignal(PROVIDER_SIGNAL, started ? 7 : 0, context.now)];
+      },
+    };
+    const { collector, clock } = makeCollector([provider], { evaluationIntervalMs: 0 });
+
+    const promise = collector.collect(clock.now(), new AbortController().signal);
+    assert.equal(starts, 1);
+    assert.equal(reads, 0);
+    resolveStart?.();
+    const first = await promise;
+    assert.equal(reads, 1);
+    assert.equal(requireOk(first.readings[0]).value, 7);
+
+    const second = await collector.collect(clock.now(), new AbortController().signal);
+    assert.equal(requireOk(second.readings[0]).value, 7);
+    assert.equal(starts, 1);
+  });
+
+  it("caches an asynchronous start rejection and does not leak it", async () => {
+    let starts = 0;
+    let reads = 0;
+    const provider: SignalProvider = {
+      id: "async-start-failure",
+      signals: [{ name: PROVIDER_SIGNAL, unit: "bytes" }],
+      start: async () => {
+        starts += 1;
+        throw new Error("async start failed");
+      },
+      read: () => {
+        reads += 1;
+        return [];
+      },
+    };
+    const { collector, clock, errors } = makeCollector([provider], { evaluationIntervalMs: 0 });
+
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const first = await collector.collect(clock.now(), new AbortController().signal);
+      assert.equal(first.readings[0]?.status, "error");
+      assert.match(first.readings[0]?.error ?? "", /async start failed/);
+
+      const second = await collector.collect(clock.now(), new AbortController().signal);
+      assert.equal(second.readings[0]?.status, "error");
+      assert.match(second.readings[0]?.error ?? "", /async start failed/);
+
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
+      assert.equal(unhandled.length, 0);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+
+    assert.equal(starts, 1);
+    assert.equal(reads, 0);
+    assert.equal(errors.length, 1);
+    assert.equal(errors[0]?.providerId, "async-start-failure");
+  });
+
+  it("times out a hanging asynchronous start and caches the failure", async () => {
+    let starts = 0;
+    let reads = 0;
+    const provider: SignalProvider = {
+      id: "async-start-timeout",
+      signals: [{ name: PROVIDER_SIGNAL, unit: "bytes" }],
+      start: () => {
+        starts += 1;
+        return new Promise<void>(() => undefined);
+      },
+      read: () => {
+        reads += 1;
+        return [okSignal(PROVIDER_SIGNAL, 1, 0)];
+      },
+    };
+    const { collector, clock, errors } = makeCollector([provider], {
+      evaluationIntervalMs: 0,
+      providerTimeoutMs: 500,
+    });
+
+    const promise = collector.collect(clock.now(), new AbortController().signal);
+    assert.equal(starts, 1);
+    assert.equal(clock.pendingTimers(), 1);
+    clock.advance(500);
+    const first = await promise;
+    assert.equal(first.readings[0]?.status, "error");
+    assert.match(first.readings[0]?.error ?? "", /did not finish/);
+    assert.equal(reads, 0);
+    assert.equal(errors.length, 1);
+    assert.equal(errors[0]?.providerId, "async-start-timeout");
+
+    const second = await collector.collect(clock.now(), new AbortController().signal);
+    assert.equal(second.readings[0]?.status, "error");
+    assert.equal(starts, 1);
+    assert.equal(reads, 0);
+    assert.equal(errors.length, 1);
+    assert.equal(clock.pendingTimers(), 0);
+  });
+
+  it("does not cache a caller abort during a pending start", async () => {
+    let starts = 0;
+    let reads = 0;
+    let resolveStart: (() => void) | undefined;
+    const provider: SignalProvider = {
+      id: "async-start-abort",
+      signals: [{ name: PROVIDER_SIGNAL, unit: "bytes" }],
+      start: () => {
+        starts += 1;
+        return new Promise<void>((resolve) => {
+          resolveStart = resolve;
+        });
+      },
+      read: (context) => {
+        reads += 1;
+        return [okSignal(PROVIDER_SIGNAL, 4, context.now)];
+      },
+    };
+    const { collector, clock, errors } = makeCollector([provider], { providerTimeoutMs: 0 });
+
+    const controller = new AbortController();
+    const first = collector.collect(clock.now(), controller.signal);
+    const reason = new Error("cancel the start wait");
+    const rejection = assert.rejects(first, (error: unknown) => error === reason);
+    controller.abort(reason);
+    await rejection;
+    assert.equal(errors.length, 0);
+
+    resolveStart?.();
+    const second = await collector.collect(clock.now(), new AbortController().signal);
+    assert.equal(second.cached, false);
+    assert.equal(requireOk(second.readings[0]).value, 4);
+    assert.equal(starts, 1);
+    assert.equal(reads, 1);
+  });
+
   it("contains provider close failures and still resolves close", async () => {
     const provider: SignalProvider = {
       id: "close-failure",
