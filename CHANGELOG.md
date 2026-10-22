@@ -12,6 +12,9 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) after 1.0.
   dependency. It covers budget hysteresis, candidate ordering, pure policy
   evaluation, and the exactly-one-execution runtime invariant; the runtime still
   has zero runtime dependencies.
+- Scheduled property fuzz campaign in `.github/workflows/fuzz.yml`, with weekly,
+  pull-request, and manual-dispatch modes. The scope and reproduction workflow
+  are documented in `docs/FUZZING.md`.
 - OpenSSF Best Practices passing-level self-assessment, evidence map, and
   application checklist in `docs/OPENSSF_BEST_PRACTICES.md`.
 

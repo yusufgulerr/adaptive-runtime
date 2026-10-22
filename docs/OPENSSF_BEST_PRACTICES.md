@@ -143,10 +143,10 @@ Use absolute URLs in the BadgeApp form. These are the stable values:
 | `test` | **Met** | `npm test` runs the public FLOSS test suite: 265 tests across 49 suites in `tests/unit`, `tests/integration`, and `tests/property`. |
 | `test_invocation` | **Met** | `npm test` is the standard Node.js/npm invocation; `npm run test:coverage` adds the coverage gate and `npm run test:fuzz` runs the property/fuzz suite alone. |
 | `test_most` | **Met** | [VERIFICATION.md](VERIFICATION.md) records 99.10% lines, 97.00% branches, and 98.64% functions; every `src/**` file is above 80% branch coverage. |
-| `test_continuous_integration` | **Met** | [ci.yml](../.github/workflows/ci.yml) runs the suite on Node 22/24/26 and on Windows/macOS; pull requests and `main` are covered. |
+| `test_continuous_integration` | **Met** | [ci.yml](../.github/workflows/ci.yml) runs the suite on Node 22/24/26 and on Windows/macOS; [fuzz.yml](../.github/workflows/fuzz.yml) adds a weekly 10,000-run property campaign, a 1,000-run pull-request campaign for relevant paths, and manual dispatch. Pull requests and `main` are covered. |
 | `test_policy` | **Met** | [CONTRIBUTING.md § Tests](../CONTRIBUTING.md#tests) requires regression tests for bug fixes, unit/integration tests for new behavior, and deterministic property/fuzz tests for policy/runtime invariants. |
 | `tests_are_added` | **Met** | Recent feature PRs added substantial tests: #8 (composite/web/edge providers), #10 (observability), #11 (testing SDK and packaging), #12 (export and PR-title checks), and the property/fuzz PR (budget hysteresis, selection, purity, and exactly-one execution). |
-| `tests_documented_added` | **Met** | The test policy is documented in CONTRIBUTING and the pull-request checklist requires added or updated tests. |
+| `tests_documented_added` | **Met** | The test policy is documented in CONTRIBUTING, the scheduled campaign and reproduction steps are in [FUZZING.md](FUZZING.md), and the pull-request checklist requires added or updated tests. |
 | `warnings` | **Met** | Biome lint/format and TypeScript `strict` with `noUncheckedIndexedAccess`, `noUnusedLocals`, `noUnusedParameters`, and `noImplicitOverride`. |
 | `warnings_fixed` | **Met** | `npm run check` passes lint, typecheck, tests, build, and export verification on the release tree. |
 | `warnings_strict` | **Met** | `strict: true` plus the additional strictness flags in `tsconfig.json`; Biome recommended rules and `noExplicitAny: error`. |
@@ -180,7 +180,7 @@ Use absolute URLs in the BadgeApp form. These are the stable values:
 | `static_analysis_common_vulnerabilities` | **Met** | CodeQL's security queries cover common JavaScript/TypeScript vulnerability classes. |
 | `static_analysis_fixed` | **Met** | No open CodeQL security findings are reported. The six open code-scanning alerts are Scorecard governance/automation findings, tracked separately from source vulnerabilities. |
 | `static_analysis_often` | **Met** | CodeQL runs on pull requests, pushes to `main`, and a weekly schedule. |
-| `dynamic_analysis` | **Met** | The automated test suite exercises the code with actual inputs, and the `fast-check` property/fuzz suite covers budget hysteresis, candidate ordering, pure policy evaluation, and exactly-one runtime execution. Branch coverage is 97.00%, above the criterion's 80% alternative. |
+| `dynamic_analysis` | **Met** | The automated test suite exercises the code with actual inputs, and the `fast-check` property/fuzz suite covers budget hysteresis, candidate ordering, pure policy evaluation, and exactly-one runtime execution. The scheduled campaign is documented in [FUZZING.md](FUZZING.md). Branch coverage is 97.00%, above the criterion's 80% alternative. |
 | `dynamic_analysis_unsafe` | **N/A** | The project is TypeScript/JavaScript and produces no memory-unsafe native code. |
 | `dynamic_analysis_enable_assertions` | **Met** | Tests use `node:test` assertions and fail on unexpected behavior; assertions are enabled in the test configuration. |
 | `dynamic_analysis_fixed` | **N/A** | No medium-or-higher severity vulnerability has been discovered through dynamic analysis. |
@@ -216,22 +216,24 @@ silver or gold:
   same BadgeApp. This document targets the metal passing badge; the baseline
   series is a separate follow-up.
 - **Fuzzing:** the `fast-check` property suite covers budget hysteresis,
-  candidate ordering, purity, and exactly-one execution. It is a bounded
-  deterministic campaign, not a coverage-guided fuzzer; a scheduled or
-  coverage-guided campaign remains a post-passing hardening item and would also
-  address the Scorecard `Fuzzing` check.
+  candidate ordering, purity, and exactly-one execution. [fuzz.yml](../.github/workflows/fuzz.yml)
+  runs a weekly 10,000-run campaign, a 1,000-run pull-request campaign for
+  relevant paths, and manual dispatch. It is still a bounded property campaign,
+  not a coverage-guided fuzzer; a coverage-guided integration remains a
+  post-passing hardening item. The Scorecard `Fuzzing` check now detects the
+  `TypeScriptPropertyBasedTesting` integration and reports 10/10.
 - **Secret scanning:** GitHub secret scanning and push protection are enabled, but
   non-provider patterns and validity checks are currently disabled. Consider
   enabling them as part of supply-chain hardening.
 
 ## Relationship to OpenSSF Scorecard
 
-The current Scorecard result is 7/10. Relevant findings:
+The current Scorecard result is **7.6/10**. Relevant findings:
 
 | Check | Current result | Relationship to this work |
 | --- | --- | --- |
 | `CII-Best-Practices` | 0 | Registering and earning the passing badge should improve this check. |
-| `Fuzzing` | 0 | Not required for the passing badge; the property suite is present, and re-measuring Scorecard after merge will show whether it is detected. |
+| `Fuzzing` | 10 | Detected `TypeScriptPropertyBasedTesting` integration in `tests/property/support.ts`; the scheduled campaign is in `.github/workflows/fuzz.yml`. |
 | `Code-Review` | 0 | The owner currently self-merges with admin bypass; adding a second reviewer is a silver/gold and governance follow-up. |
 | `Branch-Protection` | 8 | Required review count is 1; the owner bypass is documented in GOVERNANCE. |
 | `Pinned-Dependencies` | 8 | `npmCommand` is not pinned by hash; actions are SHA-pinned. |

@@ -174,8 +174,10 @@ Use **Settings → Actions → General**:
 
 The workflows declare the minimum permissions they need. CI adds a cross-platform
 job on Windows and macOS without changing the required Linux check names. The
-release workflow's `github-release` job is the only job that requests
-`contents: write`; `security-events: write` is limited to CodeQL and Scorecard, and
+fuzz workflow uses `contents: read` only, with SHA-pinned actions, and cannot
+write to the repository or publish artifacts. The release workflow's
+`github-release` job is the only job that requests `contents: write`;
+`security-events: write` is limited to CodeQL and Scorecard, and
 `id-token: write` is limited to the npm publication job and the Scorecard badge
 publication. The npm publication job is additionally gated by the `release`
 environment. GitHub release creation is a separate tag-push step and does not

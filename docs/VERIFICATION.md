@@ -4,9 +4,10 @@ This document records the local and remote checks performed for the 0.3.0 line o
 **2026-10-22**. It distinguishes local verification, remote workflow evidence,
 GitHub repository settings, and npm registry status. The 0.3.0 tree was merged to
 `main` at `5504f21`; the release-workflow fix and the OpenSSF readiness
-documentation merged at `953a484` and `6f67ff3`. Remote CI, CodeQL, and Scorecard
-pass for all three commits. The `v0.3.0` tag points to `5504f21` and the GitHub
-release is published; npm publication remains pending.
+documentation merged at `953a484` and `6f67ff3`. The property/fuzz suite merged
+at `8441299`. Remote CI, CodeQL, and Scorecard pass for these commits. The
+`v0.3.0` tag points to `5504f21` and the GitHub release is published; npm
+publication remains pending.
 
 ## Environment
 
@@ -32,6 +33,7 @@ release is published; npm publication remains pending.
 | `npm run typecheck` | **PASS** — `tsc -p tsconfig.check.json` |
 | `npm test` | **PASS** — 265 tests, 49 suites, 0 failures, 0 skipped |
 | `npm run test:fuzz` | **PASS** — 9 property tests, 4 suites, 0 failures |
+| `FUZZ_RUNS=5000 FUZZ_SEED=12345 npm run test:fuzz` | **PASS** — 5,000 runs per pure property, 50 runtime runs |
 | `npm run test:coverage` | **PASS** — 99.10% lines, 97.00% branches, 98.64% functions |
 | `npm run build` | **PASS** — ESM, declarations, and maps emitted to `dist/` |
 | `npm run verify:exports` | **PASS** — 10 export entries, 27 files, and 27 runtime symbols |
@@ -43,20 +45,21 @@ release is published; npm publication remains pending.
 | `npm run example:edge` | **PASS** — deterministic three-tier sequence and Prometheus text |
 | `npm run benchmark` | **PASS** — results below |
 | `npm run benchmark:concurrency` | **PASS** — concurrency and retained-heap observations below |
-| `npm pack --dry-run` | **PASS** — 168 files, 144.7 kB packed, 672.5 kB unpacked |
+| `npm pack --dry-run` | **PASS** — 168 files, 144.7 kB packed, 672.7 kB unpacked |
 | Clean consumer install from tarball | **PASS** — all ten documented subpaths imported; core run, web/edge reads, testing SDK, and observability collector succeeded |
 | Clean consumer TypeScript compile | **PASS** — all subpaths resolve under NodeNext with `@types/node` |
 | Portable source scan | **PASS** — zero `node:` / `process.` matches across 33 files |
 | `npm ls --omit=dev --depth=0` | **PASS** — `(empty)`; no runtime dependencies |
 | `npm audit` | **PASS** — 0 vulnerabilities (including dev dependencies) |
-| Markdown relative-link check | **PASS** — 191 Markdown files, 207 relative links, all targets exist |
+| Markdown relative-link check | **PASS** — 192 Markdown files, 219 relative links, all targets exist |
 
 The suite covers unit tests in `tests/unit/`, integration tests in
 `tests/integration/`, and deterministic property/fuzz tests in `tests/property/`,
 plus shared helpers. `node:test` reports 49 suites because of nested `describe`
 blocks. The property suite uses `fast-check` with a fixed default seed; set
-`FUZZ_RUNS` and `FUZZ_SEED` to run a longer reproducible campaign. The checks in
-this line include the testing SDK, entry-point isolation, package subpath
+`FUZZ_RUNS` and `FUZZ_SEED` to run a longer reproducible campaign. The scheduled
+campaign and scope limits are documented in [FUZZING.md](FUZZING.md). The checks
+in this line include the testing SDK, entry-point isolation, package subpath
 assertions, the built-package export verifier, the PR title validator, the
 portability source scan, and deterministic edge-example assertions.
 
@@ -170,8 +173,8 @@ results are in
 ## Package inspection
 
 - `npm pack --dry-run` reports **168 files**, **144.7 kB packed**, and
-  **672.5 kB unpacked**, version **0.3.0**, shasum
-  `e14ab895b2ab0d06d0a0fea0b6644a2ab38fc751`.
+  **672.7 kB unpacked**, version **0.3.0**, shasum
+  `928546bd5ca2a11db75685900062d1274e1a0b58`.
 - The tarball contains `dist/`, `README.md`, `LICENSE`, `NOTICE`, and
   `package.json`. No `src/`, `tests/`, `examples/`, `benchmarks/`, `docs/`,
   coverage, or `node_modules/` files are included.
@@ -238,10 +241,15 @@ The `PR title` required check, `ossf/scorecard-action` allow-list entry,
 as described in [GITHUB_SETTINGS.md](GITHUB_SETTINGS.md). The first Scorecard run
 on `main` succeeded and published a score; see the current evidence below.
 
-Current remote workflow evidence for the 0.3.0 release tree:
+Current remote workflow evidence for the 0.3.0 release tree and post-0.3.0
+fuzzing work:
 
 | Workflow | Result |
 | --- | --- |
+| CI on `main` at `8441299` | **PASS** — run [39806557742](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39806557742) |
+| CodeQL on `main` at `8441299` | **PASS** — run [39806557678](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39806557678) |
+| OpenSSF Scorecard on `main` at `8441299` | **PASS** — run [39806557762](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39806557762), score 7.6/10, `Fuzzing` 10/10 |
+| Fuzz on PR #18 | **PASS** — run [39807476351](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39807476351), 1,000 runs per property |
 | CI on `main` at `6f67ff3` | **PASS** — run [39707436345](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39707436345) |
 | CodeQL on `main` at `6f67ff3` | **PASS** — run [39707436457](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39707436457) |
 | OpenSSF Scorecard on `main` at `6f67ff3` | **PASS** — run [39707436347](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39707436347), score 7/10 |
@@ -254,6 +262,9 @@ Current remote workflow evidence for the 0.3.0 release tree:
 | Release tag verification (`v0.3.0`) | **PASS** — run [39705537214](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39705537214) |
 | Automated GitHub release (`v0.3.0`) | **FAILED** — `gh` ran without a git checkout; the release was created manually from the same tag |
 | Release `verify-publish` job | **NOT EXECUTED** — requires the npm publication phase |
+
+The Scorecard job on `8441299` hit a transient GitHub GraphQL internal error on
+its first two attempts; the rerun passed without a code or settings change.
 
 The earlier `ad7fd2f` tree also passed CI
 ([39702926008](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39702926008)),

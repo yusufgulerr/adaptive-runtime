@@ -146,6 +146,8 @@ Not yet delivered:
 
 Candidate work after 0.3.0:
 
+- **Coverage-guided fuzzing.** The deterministic property-based campaign is
+  delivered; a coverage-guided integration remains candidate work.
 - **Async applicability.** Only if a clear need appears; it complicates selection
   latency and determinism.
 - **Per-operation policy overrides.** Useful for multi-tenant services, but needs
