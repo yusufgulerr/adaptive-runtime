@@ -22,7 +22,9 @@ import {
   validateStrategies,
   validateTimeout,
 } from "../../src/runtime/validate.js";
+import type { DecisionReason, SignalView, StrategyDecision } from "../../src/types/decision.js";
 import type { Policy } from "../../src/types/policy.js";
+import type { RunMetadata } from "../../src/types/run.js";
 import type { ResourceSignal, SignalProvider } from "../../src/types/signals.js";
 import type { Strategy } from "../../src/types/strategy.js";
 import { errorMessage, toError } from "../../src/utils/errors.js";
@@ -203,6 +205,23 @@ describe("AdaptiveRuntime", () => {
       () => runtime.run({ operationId: "pinned", input: 3, strategies }),
       PinnedStrategyError,
     );
+  });
+
+  it("rejects padded pin strategy ids without storing a pin", async () => {
+    const clock = new FakeClock();
+    const runtime = createAdaptiveRuntime({
+      clock,
+      providers: [fixedProvider(150)],
+      policy: policy(),
+    });
+    const strategies = basicStrategies();
+
+    assert.throws(() => runtime.pinStrategy("padded-pin", " hi "), ConfigurationError);
+    const result = await runtime.run({ operationId: "padded-pin", input: 1, strategies });
+    assert.equal(result.metadata.decision.kind, "initial");
+    assert.equal(result.metadata.strategyId, "economy");
+    assert.equal(runtime.getDecision("padded-pin")?.kind, "initial");
+    await runtime.close();
   });
 
   it("wraps strategy failures and never retries automatically", async () => {
@@ -518,6 +537,134 @@ describe("AdaptiveRuntime", () => {
     assert.deepEqual(seen, ["decision"]);
   });
 
+  it("keeps the stored decision immutable across decision listeners", async () => {
+    const clock = new FakeClock();
+    const runtime = createAdaptiveRuntime({
+      clock,
+      providers: [fixedProvider(10)],
+      policy: policy(),
+    });
+    const calls: string[] = [];
+    const mutationResults: boolean[] = [];
+    const listenerErrors: string[] = [];
+    let observedDecision: StrategyDecision | undefined;
+    runtime.on("decision", ({ decision }) => {
+      observedDecision = decision;
+      mutationResults.push(Reflect.set(decision, "strategyId", "economy"));
+      mutationResults.push(Reflect.set(decision, "changed", true));
+      const signal = decision.signals[0];
+      if (signal !== undefined) {
+        mutationResults.push(Reflect.set(signal, "status", "error"));
+        mutationResults.push(Reflect.set(signal, "value", 999));
+      }
+      const reason = decision.reasons[0];
+      if (reason !== undefined) {
+        mutationResults.push(Reflect.set(reason, "message", "tampered"));
+      }
+      const budget = decision.budgets[0];
+      if (budget !== undefined) {
+        mutationResults.push(Reflect.set(budget, "limit", -1));
+      }
+      try {
+        (decision.reasons as DecisionReason[]).push({
+          code: "cached-sample",
+          message: "injected",
+        });
+        mutationResults.push(true);
+      } catch {
+        mutationResults.push(false);
+      }
+      throw new Error("decision listener failed");
+    });
+    runtime.on("listener:error", ({ event }) => listenerErrors.push(event));
+
+    const result = await runtime.run({
+      operationId: "immutable-decision",
+      input: 1,
+      strategies: basicStrategies(calls),
+    });
+
+    assert.deepEqual(calls, ["high"]);
+    assert.equal(result.value, "high:1");
+    assert.equal(result.metadata.strategyId, "high");
+    assert.equal(result.metadata.decision.strategyId, "high");
+    assert.equal(result.metadata.decision.kind, "initial");
+    const stored = runtime.getDecision("immutable-decision");
+    assert.equal(stored, result.metadata.decision);
+    assert.equal(stored?.strategyId, "high");
+    assert.equal(stored?.signals[0]?.status, "ok");
+    assert.equal(stored?.budgets[0]?.limit, 100);
+    assert.equal(observedDecision, stored);
+    assert.deepEqual(mutationResults, [false, false, false, false, false, false, false]);
+    assert.deepEqual(listenerErrors, ["decision"]);
+    assert.equal(Object.isFrozen(result.metadata.decision), true);
+    assert.equal(Object.isFrozen(result.metadata.decision.signals), true);
+    assert.equal(Object.isFrozen(result.metadata.decision.signals[0]), true);
+    assert.equal(Object.isFrozen(result.metadata.decision.reasons[0]), true);
+    assert.equal(Object.isFrozen(result.metadata.decision.budgets[0]), true);
+    await runtime.close();
+  });
+
+  it("keeps returned run metadata immutable across success listeners", async () => {
+    const clock = new FakeClock();
+    const runtime = createAdaptiveRuntime({
+      clock,
+      providers: [fixedProvider(10)],
+      policy: policy(),
+    });
+    const mutationResults: boolean[] = [];
+    const listenerErrors: string[] = [];
+    let observedMetadata: RunMetadata | undefined;
+    runtime.on("run:success", ({ metadata }) => {
+      observedMetadata = metadata;
+      mutationResults.push(Reflect.set(metadata, "strategyId", "economy"));
+      mutationResults.push(Reflect.set(metadata, "durationMs", 999_999));
+      mutationResults.push(Reflect.set(metadata.quality, "status", "failed"));
+      mutationResults.push(Reflect.set(metadata.quality, "score", -1));
+      const signal = metadata.signals[0];
+      if (signal !== undefined) {
+        mutationResults.push(Reflect.set(signal, "status", "error"));
+        mutationResults.push(Reflect.set(signal, "value", -1));
+      }
+      mutationResults.push(Reflect.set(metadata.decision, "strategyId", "economy"));
+      try {
+        (metadata.signals as SignalView[]).push({ name: "tampered", status: "ok" });
+        mutationResults.push(true);
+      } catch {
+        mutationResults.push(false);
+      }
+      throw new Error("success listener failed");
+    });
+    runtime.on("listener:error", ({ event }) => listenerErrors.push(event));
+
+    const result = await runtime.run({
+      operationId: "immutable-metadata",
+      input: 1,
+      strategies: [
+        strategy("high", 2, () => "value", {
+          checkQuality: () => ({ ok: true, score: 0.9 }),
+        }),
+      ],
+    });
+
+    assert.equal(result.metadata.strategyId, "high");
+    assert.notEqual(result.metadata.durationMs, 999_999);
+    assert.equal(result.metadata.quality.status, "passed");
+    assert.equal(result.metadata.quality.score, 0.9);
+    assert.equal(result.metadata.signals[0]?.status, "ok");
+    assert.equal(result.metadata.signals[0]?.value, 10);
+    assert.equal(result.metadata.decision.strategyId, "high");
+    assert.equal(runtime.getDecision("immutable-metadata"), result.metadata.decision);
+    assert.equal(observedMetadata, result.metadata);
+    assert.deepEqual(mutationResults, [false, false, false, false, false, false, false, false]);
+    assert.deepEqual(listenerErrors, ["run:success"]);
+    assert.equal(Object.isFrozen(result.metadata), true);
+    assert.equal(Object.isFrozen(result.metadata.quality), true);
+    assert.equal(Object.isFrozen(result.metadata.signals), true);
+    assert.equal(Object.isFrozen(result.metadata.decision), true);
+    await runtime.close();
+  });
+
   it("handles concurrent runs for the same and different operations", async () => {
     const clock = new FakeClock();
     const runtime = createAdaptiveRuntime({
@@ -829,6 +976,28 @@ describe("AdaptiveRuntime", () => {
     });
     assert.equal(afterUnpin.metadata.strategyId, "high");
     assert.equal(afterUnpin.metadata.decision.kind, "retained");
+    await runtime.close();
+  });
+
+  it("keeps a just-written adaptation override when pins fill the tracking bound", async () => {
+    const clock = new FakeClock();
+    const runtime = createAdaptiveRuntime({
+      clock,
+      providers: [fixedProvider(150)],
+      policy: policy({ maxTrackedOperations: 1 }),
+    });
+    const strategies = basicStrategies();
+
+    runtime.pinStrategy("pinned-hold", "high");
+    runtime.setAdaptationEnabled("static-survivor", false);
+    const result = await runtime.run({
+      operationId: "static-survivor",
+      input: 1,
+      strategies,
+    });
+
+    assert.equal(result.metadata.decision.kind, "static");
+    assert.equal(result.metadata.strategyId, "high");
     await runtime.close();
   });
 
