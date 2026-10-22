@@ -4,6 +4,13 @@ All notable changes are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project intends
 to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) after 1.0.
 
+## [Unreleased]
+
+### Fixed
+
+- The tag-push GitHub release job sets `GH_REPO` for `gh release` commands when it
+  runs without a checkout.
+
 ## [0.3.0] — 2026-10-22
 
 ### Added
