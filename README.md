@@ -26,16 +26,16 @@ you supply, applies a deterministic policy, and runs exactly one strategy with
 inspectable metadata explaining the choice.
 
 > **Status: v0.3.0 source line.** The public repository is live and its baseline
-> passes CI/CodeQL on Node.js 22, 24, and 26. The 0.3.0 tree provides a verified
-> multi-runtime core for Node.js, browsers, and WinterCG edge runtimes with
-> **zero runtime dependencies** and a fully typed ESM surface. It includes web
-> and edge signal providers, composite signals, custom policy selectors, an
-> in-memory OpenTelemetry-compatible metrics bridge with Prometheus exposition,
-> and a testing SDK. The 0.3.0 tree is verified locally and awaits its first
-> remote CI run. The public API follows semantic versioning; the 0.x series may
-> still make documented breaking changes. npm publication is produced by a
-> tag-driven OIDC/provenance workflow and is pending owner approval. See
-> [Architectural boundaries](#architectural-boundaries-and-operational-notes).
+> passes CI/CodeQL on Node.js 22, 24, and 26, plus OpenSSF Scorecard on `main`.
+> The 0.3.0 tree provides a verified multi-runtime core for Node.js, browsers, and
+> WinterCG edge runtimes with **zero runtime dependencies** and a fully typed ESM
+> surface. It includes web and edge signal providers, composite signals, custom
+> policy selectors, an in-memory OpenTelemetry-compatible metrics bridge with
+> Prometheus exposition, and a testing SDK. The 0.3.0 tree is verified locally and
+> on remote CI/CodeQL. The public API follows semantic versioning; the 0.x series
+> may still make documented breaking changes. GitHub releases are tag-driven; npm
+> publication is a separate owner-approved OIDC/provenance dispatch and is pending.
+> See [Architectural boundaries](#architectural-boundaries-and-operational-notes).
 
 ## Why
 
@@ -92,8 +92,8 @@ The package is ESM-only and requires Node.js 22 or newer. For development, run
 npm install adaptive-runtime
 ```
 
-Registry publication is produced by the tag-driven OIDC/provenance workflow and
-requires explicit owner approval. Until that workflow has completed and the
+Registry publication uses a separate, owner-approved OIDC/provenance workflow
+dispatch against the release tag. Until that workflow has completed and the
 registry artifact is verified, use the repository installation above. See
 [docs/RELEASING.md](docs/RELEASING.md) and
 [docs/VERIFICATION.md](docs/VERIFICATION.md) for the release evidence.
@@ -501,8 +501,8 @@ responsible for:
   coordinated. Bound it with `maxTrackedOperations` or release it with
   `removeOperation`.
 - The public source repository is at
-  <https://github.com/yusufgulerr/adaptive-runtime>; its baseline passes CI and
-  CodeQL there, while the 0.3.0 tree awaits its first remote run. See
+  <https://github.com/yusufgulerr/adaptive-runtime>; the 0.3.0 tree passes CI,
+  CodeQL, and Scorecard there. See
   [docs/VERIFICATION.md](docs/VERIFICATION.md) for the verification record.
 
 See [docs/ROADMAP.md](docs/ROADMAP.md) and [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).

@@ -9,6 +9,7 @@
 - [0007 — Multi-runtime web and edge providers, and composite signals](0007-multi-runtime-web-edge-and-composite-providers.md)
 - [0008 — Custom policy selector, observability bridge, and testing SDK](0008-custom-policy-selector-observability-and-testing-sdk.md)
 - [0009 — Repository automation and supply-chain hardening](0009-repository-automation-and-supply-chain.md)
+- [0010 — Two-phase GitHub and npm release](0010-two-phase-github-and-npm-release.md)
 
 ## Decision map
 
@@ -26,6 +27,7 @@ duplicating records:
 | Web/edge providers, portable core, composite signals | [0007](0007-multi-runtime-web-edge-and-composite-providers.md) |
 | Custom selector, observability, testing SDK | [0008](0008-custom-policy-selector-observability-and-testing-sdk.md) |
 | Repository automation and supply-chain checks | [0009](0009-repository-automation-and-supply-chain.md) |
+| Two-phase GitHub and npm release | [0010](0010-two-phase-github-and-npm-release.md) |
 
 New decisions use the same structure: status, date, context, decision,
 consequences, alternatives, and follow-up. A decision that changes public

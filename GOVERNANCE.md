@@ -86,8 +86,9 @@ after the missing evidence exists; the decision and its reasoning stay on record
 - Only the owner creates release tags.
 - Tags matching `v*` are protected: creation, update, and deletion are restricted
   to the repository administrator role.
-- The `release` GitHub environment requires owner approval.
-- The tag-driven workflow runs the full checks and publishes through npm trusted
+- The `release` GitHub environment requires owner approval for npm publication.
+- The tag workflow runs the full checks and creates the GitHub release. npm
+  publication is a separate `workflow_dispatch` against the tag, using trusted
   publishing (OIDC) with provenance. An optional `NPM_TOKEN` environment secret
   provides a fallback for registries or accounts that cannot use OIDC.
 - Dependency Review runs on every pull request.

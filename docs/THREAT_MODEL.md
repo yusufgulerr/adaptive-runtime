@@ -218,8 +218,9 @@ injects code into consumer processes.
 - CI runs lint, typecheck, tests, coverage, build, and package inspection on
   Linux, Windows, and macOS.
 - CodeQL, Dependabot, and Dependency Review workflows are configured.
-- The release workflow is tag-driven and publishes through npm trusted publishing
-  (OIDC) with provenance; a token fallback exists for accounts without OIDC.
+- The tag-push phase creates the GitHub release; npm publication is a separate,
+  owner-approved dispatch through npm trusted publishing (OIDC) with provenance. A
+  token fallback exists for accounts without OIDC.
 
 **Residual risk: medium.** CI and CodeQL have executed successfully on the public
 repository. npm publication is still pending and the runtime has not been

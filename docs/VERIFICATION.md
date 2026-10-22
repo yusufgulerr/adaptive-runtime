@@ -1,9 +1,10 @@
 # Verification record
 
-This document records the local checks performed for the 0.3.0 line on
-**2026-10-22**. It distinguishes local verification, historical remote evidence,
-GitHub repository settings, and npm registry status. The 0.3.0 work was verified
-locally before commit; remote CI for this exact tree has not run yet.
+This document records the local and remote checks performed for the 0.3.0 line on
+**2026-10-22**. It distinguishes local verification, remote workflow evidence,
+GitHub repository settings, and npm registry status. The 0.3.0 tree was merged to
+`main` at `ad7fd2f`; remote CI, CodeQL, and Scorecard pass for that commit. The
+GitHub release and npm publication are separate release phases.
 
 ## Environment
 
@@ -223,13 +224,21 @@ re-queried for this local 0.3.0 run:
 | Actions | Selected actions (GitHub-owned plus the SHA-pinned `ossf/scorecard-action`), SHA pinning required, read-only default token, external forks require approval |
 | Security | Private vulnerability reporting, secret scanning, push protection, Dependabot alerts, and automated security fixes enabled |
 | Release environment | `release`, required reviewer `@yusufgulerr`, tag deployment policy |
-| Repository automation | Release-note categories, Discussion forms, PR title validator, citation metadata, and Scorecard workflow added to the tree; remote settings and the first Scorecard run are pending |
+| Repository automation | Release-note categories, Discussion forms, PR title validator, citation metadata, Scorecard workflow, required checks, labels, and action allow-list configured and verified |
 
-The `PR title` check and the `ossf/scorecard-action` allow-list entry are
-repository-settings changes described in [GITHUB_SETTINGS.md](GITHUB_SETTINGS.md).
-They cannot be applied from a local checkout, and the Scorecard workflow has not
-run remotely for this tree. Do not claim either the required-check state or a
-Scorecard score until the repository settings and workflow run confirm them.
+The `PR title` required check, `ossf/scorecard-action` allow-list entry,
+`status:needs-triage` and `skip-changelog` labels, and Discussions are configured
+as described in [GITHUB_SETTINGS.md](GITHUB_SETTINGS.md). The first Scorecard run
+on `main` succeeded and published a score; see the current evidence below.
+
+Current remote workflow evidence for `main` at `ad7fd2f`:
+
+| Workflow | Result |
+| --- | --- |
+| CI on `main` | **PASS** — run [39702926008](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39702926008) |
+| CodeQL on `main` | **PASS** — run [39702925914](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39702925914) |
+| OpenSSF Scorecard on `main` | **PASS** — run [39703457017](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39703457017), score 7/10 |
+| Release `verify-publish` job | **NOT EXECUTED** — requires the npm publication phase |
 
 Historical remote workflow evidence from the 0.1.0 baseline commit:
 
@@ -242,35 +251,34 @@ Historical remote workflow evidence from the 0.1.0 baseline commit:
 | Dependency Review on PR #6 | **PASS** — run [39636395231](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39636395231) |
 | Release `verify-publish` job | **NOT EXECUTED** — requires a `v*` tag and an approved publish |
 
-The 0.3.0 tree and the repository-automation changes remain uncommitted, so no
-CI, CodeQL, or Scorecard run exists for them. Push the commit, apply the settings
-in [GITHUB_SETTINGS.md](GITHUB_SETTINGS.md), and confirm all required checks pass
-before creating a release tag.
+The 0.3.0 tree and the repository-automation changes are merged to `main` at
+`ad7fd2f`. Remote CI, CodeQL, and Scorecard pass for that commit, and the required
+checks are active. The tag is created only after this release-prep change is
+merged.
 
 ## Release status
 
 | Artifact | Status on 2026-10-22 |
 | --- | --- |
-| npm registry package | **NOT PUBLISHED** — no 0.3.0 publish was attempted; the name returned 404 on 2026-10-21 |
-| Git tag `v0.3.0` | **NOT CREATED** |
-| GitHub release | **NOT CREATED** |
+| npm registry package | **NOT PUBLISHED** — no 0.3.0 publish was attempted; the name returned 404 on 2026-10-22 |
+| Git tag `v0.3.0` | **NOT CREATED** — pending merge of this release-prep change |
+| GitHub release | **NOT CREATED** — created by the tag-push workflow |
 | npm provenance attestation | **NOT AVAILABLE** until the first successful publish |
 
 The source repository is public, but the npm release is a separate, irreversible
-step. Do not describe the package as published, released, or remotely verified
+phase. Do not describe the package as published, released, or remotely verified
 until the registry, provenance, remote CI, and clean-consumer checks pass after an
-approved publish.
+approved npm dispatch.
 
 ## Not verified
 
-- Node.js 22 and 26 locally: only Node 24.15.0 was available. CI is configured
-  for 22/24/26 but has not run on this 0.3.0 tree.
-- Remote CI or CodeQL for 0.3.0. The historical evidence above belongs to the
-  0.1.0 baseline.
+- Node.js 22 and 26 locally: only Node 24.15.0 was available. Remote CI exercises
+  all three lines.
 - Real browser, Cloudflare Workers, Vercel Edge, Deno, and Bun execution. Web and
   edge providers are tested through structural injection points and a Node.js
   edge example; no vendor runtime was available locally.
-- The OIDC release path. It has not executed because no release tag exists.
+- The OIDC npm publication path. It has not executed because the npm phase has not
+  been dispatched.
 - Post-publication npm registry install and provenance attestation.
 - Fuzzing, long-run load testing, soak testing, and memory profiling. The
   concurrency benchmark is a short local observation, not a soak test.
@@ -285,8 +293,8 @@ inspection, all documented subpath imports, a strict TypeScript consumer, the
 built-package export verifier, and the zero-Node portability scan. The source is
 coherent for the 0.x line.
 
-The 0.3.0 commit has not been pushed, so remote CI, CodeQL, the `v0.3.0` tag, the
-GitHub release, and npm publication are **pending**. Publishing requires explicit
-owner approval. After approval, confirm remote checks, publish with provenance,
-and repeat the registry and clean-consumer checks before updating this document
-to say the release is published.
+The 0.3.0 commit is merged on `main` at `ad7fd2f`, and remote CI, CodeQL, and
+Scorecard pass. The `v0.3.0` tag and GitHub release are created from this
+release-prep change; npm publication is a separate owner-approved dispatch. After
+the tag workflow and, later, the npm workflow complete, update this document with
+the GitHub release URL, registry version, provenance, and clean-consumer result.

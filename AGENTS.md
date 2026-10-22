@@ -22,9 +22,9 @@
 ## Current position
 
 - Version 0.3.0 on the 0.x line. The public repository exists and its baseline
-  passes CI/CodeQL remotely on Node 22/24/26. The 0.3.0 tree is verified locally;
-  its remote CI run is pending. npm publication is prepared but not yet
-  performed; it requires explicit owner approval.
+  passes CI/CodeQL remotely on Node 22/24/26. The 0.3.0 tree is merged to `main`
+  and remote CI/CodeQL/Scorecard pass. The GitHub release is tag-driven; npm
+  publication is a separate owner-approved dispatch and is not yet performed.
 - The runtime is multi-platform: one portable core plus Node.js, browser, web, and
   WinterCG entry points. It includes bounded operation state
   (`maxTrackedOperations`, `removeOperation`, `resetStats`), a modular policy core
