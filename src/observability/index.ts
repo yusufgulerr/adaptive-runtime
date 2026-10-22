@@ -1,3 +1,4 @@
+import { ConfigurationError } from "../errors/index.js";
 import type { AdaptiveRuntime } from "../types/runtime.js";
 
 /**
@@ -59,6 +60,8 @@ export interface ObservabilityOptions {
   readonly defaultAttributes?: MetricAttributesLike;
   /** Custom latency histogram buckets in seconds. */
   readonly buckets?: readonly number[];
+  /** Maximum series cardinality across all families. Defaults to 1000. */
+  readonly maxSeries?: number;
 }
 
 /**
@@ -104,6 +107,8 @@ export interface RuntimeMetricsCollector {
   getSnapshot(): MetricsSnapshot;
   toPrometheusText(): string;
   reset(): void;
+  /** Removes all series associated with the specified operation id. */
+  removeOperation(operationId: string): void;
 }
 
 /**
@@ -307,19 +312,54 @@ export class MetricsCollector implements RuntimeMetricsCollector {
   readonly #prefix: string;
   readonly #defaultAttributes?: MetricAttributesLike;
   readonly #buckets: readonly number[];
+  readonly #maxSeries: number;
 
   readonly #counters = new Map<string, InternalCounterSeries>();
   readonly #gauges = new Map<string, InternalGaugeSeries>();
   readonly #histograms = new Map<string, InternalHistogramSeries>();
   readonly #families = new Map<string, MetricFamilyMeta>();
+  readonly #lruOrder = new Map<string, MetricFamilyType>();
 
   constructor(options?: ObservabilityOptions) {
+    if (options?.maxSeries !== undefined) {
+      if (
+        typeof options.maxSeries !== "number" ||
+        !Number.isInteger(options.maxSeries) ||
+        options.maxSeries <= 0
+      ) {
+        throw new ConfigurationError("maxSeries must be a positive integer.");
+      }
+    }
+
     this.#prefix = options?.prefix ?? "adaptive_runtime";
     this.#defaultAttributes = options?.defaultAttributes;
     this.#buckets =
       options?.buckets !== undefined
         ? normalizeBuckets(options.buckets)
         : DEFAULT_HISTOGRAM_BUCKETS;
+    this.#maxSeries = options?.maxSeries ?? 1000;
+  }
+
+  #touchLru(key: string, kind: MetricFamilyType): void {
+    this.#lruOrder.delete(key);
+    this.#lruOrder.set(key, kind);
+  }
+
+  #evictIfNeeded(): void {
+    if (this.#lruOrder.size >= this.#maxSeries) {
+      const oldestKey = this.#lruOrder.keys().next().value;
+      if (oldestKey !== undefined) {
+        const kind = this.#lruOrder.get(oldestKey);
+        this.#lruOrder.delete(oldestKey);
+        if (kind === "counter") {
+          this.#counters.delete(oldestKey);
+        } else if (kind === "gauge") {
+          this.#gauges.delete(oldestKey);
+        } else if (kind === "histogram") {
+          this.#histograms.delete(oldestKey);
+        }
+      }
+    }
   }
 
   #registerFamily(name: string, type: MetricFamilyType): void {
@@ -344,10 +384,13 @@ export class MetricsCollector implements RuntimeMetricsCollector {
     const key = buildSeriesKey(name, metricLabels);
     const existing = this.#counters.get(key);
     if (existing === undefined) {
+      this.#evictIfNeeded();
       this.#counters.set(key, { name, labels: metricLabels, value: amount });
+      this.#touchLru(key, "counter");
       return;
     }
     existing.value += amount;
+    this.#touchLru(key, "counter");
   }
 
   setGauge(name: string, value: number, labels?: MetricAttributesLike): void {
@@ -359,10 +402,13 @@ export class MetricsCollector implements RuntimeMetricsCollector {
     const key = buildSeriesKey(name, metricLabels);
     const existing = this.#gauges.get(key);
     if (existing === undefined) {
+      this.#evictIfNeeded();
       this.#gauges.set(key, { name, labels: metricLabels, value });
+      this.#touchLru(key, "gauge");
       return;
     }
     existing.value = value;
+    this.#touchLru(key, "gauge");
   }
 
   observe(name: string, value: number, labels?: MetricAttributesLike): void {
@@ -376,6 +422,7 @@ export class MetricsCollector implements RuntimeMetricsCollector {
     const key = buildSeriesKey(name, metricLabels);
     const existing = this.#histograms.get(key);
     if (existing === undefined) {
+      this.#evictIfNeeded();
       this.#histograms.set(key, {
         name,
         labels: metricLabels,
@@ -385,6 +432,7 @@ export class MetricsCollector implements RuntimeMetricsCollector {
         max: value,
         bucketCounts: this.#buckets.map((b) => (value <= b ? 1 : 0)),
       });
+      this.#touchLru(key, "histogram");
       return;
     }
     existing.count += 1;
@@ -397,6 +445,7 @@ export class MetricsCollector implements RuntimeMetricsCollector {
         existing.bucketCounts[i] = (existing.bucketCounts[i] ?? 0) + 1;
       }
     }
+    this.#touchLru(key, "histogram");
   }
 
   attach(runtime: AdaptiveRuntime): () => void {
@@ -591,6 +640,37 @@ export class MetricsCollector implements RuntimeMetricsCollector {
     this.#gauges.clear();
     this.#histograms.clear();
     this.#families.clear();
+    this.#lruOrder.clear();
+  }
+
+  removeOperation(operationId: string): void {
+    if (typeof operationId !== "string" || operationId.trim().length === 0) {
+      throw new ConfigurationError("operationId must be a non-empty string.");
+    }
+    if (operationId !== operationId.trim()) {
+      throw new ConfigurationError("operationId must not have leading or trailing whitespace.");
+    }
+
+    for (const [key, series] of this.#counters) {
+      if (series.labels.operation_id === operationId) {
+        this.#counters.delete(key);
+        this.#lruOrder.delete(key);
+      }
+    }
+
+    for (const [key, series] of this.#gauges) {
+      if (series.labels.operation_id === operationId) {
+        this.#gauges.delete(key);
+        this.#lruOrder.delete(key);
+      }
+    }
+
+    for (const [key, series] of this.#histograms) {
+      if (series.labels.operation_id === operationId) {
+        this.#histograms.delete(key);
+        this.#lruOrder.delete(key);
+      }
+    }
   }
 }
 
@@ -601,10 +681,18 @@ export function createMetricsCollector(options?: ObservabilityOptions): RuntimeM
   return new MetricsCollector(options);
 }
 
+function safeRecord(action: () => void): void {
+  try {
+    action();
+  } catch {
+    // Isolated: single instrument failure must not drop other telemetry or throw
+  }
+}
+
 /**
  * Attaches a duck-typed OpenTelemetry Meter to an AdaptiveRuntime instance.
  * Conforms strictly to zero-coercion: non-ok signal and budget readings
- * increment status counters and never record zero gauges.
+ * increment status counters and never record zero gauges or up-down counters.
  */
 export function attachOpenTelemetryMeter(
   runtime: AdaptiveRuntime,
@@ -662,113 +750,179 @@ export function attachOpenTelemetryMeter(
     description: "Total number of times runtime was closed.",
   });
 
+  const signalReadingUpDownCounter =
+    typeof meter.createUpDownCounter === "function"
+      ? meter.createUpDownCounter(`${prefix}_signal_reading`, {
+          description: "Current resource signal reading value.",
+        })
+      : undefined;
+
+  const budgetEngagedUpDownCounter =
+    typeof meter.createUpDownCounter === "function"
+      ? meter.createUpDownCounter(`${prefix}_budget_engaged`, {
+          description: "Current budget engagement state (1 engaged, 0 healthy).",
+        })
+      : undefined;
+
   const unsubs: Array<() => void> = [
     runtime.on("run:start", ({ operationId, strategyId }) => {
-      strategySelectionsCounter.add(
-        1,
-        mergeMetricAttributes(defaultAttrs, {
-          operation_id: operationId,
-          strategy_id: strategyId,
-        }),
-      );
+      safeRecord(() => {
+        strategySelectionsCounter.add(
+          1,
+          mergeMetricAttributes(defaultAttrs, {
+            operation_id: operationId,
+            strategy_id: strategyId,
+          }),
+        );
+      });
     }),
     runtime.on("run:success", ({ metadata }) => {
-      runsCounter.add(
-        1,
-        mergeMetricAttributes(defaultAttrs, {
-          operation_id: metadata.operationId,
-          result: "success",
-          strategy_id: metadata.strategyId,
-        }),
-      );
-      qualityCounter.add(
-        1,
-        mergeMetricAttributes(defaultAttrs, {
-          operation_id: metadata.operationId,
-          status: metadata.quality.status,
-          strategy_id: metadata.strategyId,
-        }),
-      );
-      runDurationHistogram.record(
-        metadata.durationMs / 1000,
-        mergeMetricAttributes(defaultAttrs, {
-          operation_id: metadata.operationId,
-          strategy_id: metadata.strategyId,
-        }),
-      );
+      safeRecord(() => {
+        runsCounter.add(
+          1,
+          mergeMetricAttributes(defaultAttrs, {
+            operation_id: metadata.operationId,
+            result: "success",
+            strategy_id: metadata.strategyId,
+          }),
+        );
+      });
+      safeRecord(() => {
+        qualityCounter.add(
+          1,
+          mergeMetricAttributes(defaultAttrs, {
+            operation_id: metadata.operationId,
+            status: metadata.quality.status,
+            strategy_id: metadata.strategyId,
+          }),
+        );
+      });
+      safeRecord(() => {
+        runDurationHistogram.record(
+          metadata.durationMs / 1000,
+          mergeMetricAttributes(defaultAttrs, {
+            operation_id: metadata.operationId,
+            strategy_id: metadata.strategyId,
+          }),
+        );
+      });
     }),
     runtime.on("run:error", ({ operationId, strategyId, durationMs }) => {
       const effectiveStrategyId = strategyId ?? "none";
-      runsCounter.add(
-        1,
-        mergeMetricAttributes(defaultAttrs, {
-          operation_id: operationId,
-          result: "error",
-          strategy_id: effectiveStrategyId,
-        }),
-      );
-      if (durationMs !== undefined) {
-        runDurationHistogram.record(
-          durationMs / 1000,
+      safeRecord(() => {
+        runsCounter.add(
+          1,
           mergeMetricAttributes(defaultAttrs, {
             operation_id: operationId,
+            result: "error",
             strategy_id: effectiveStrategyId,
           }),
         );
+      });
+      if (durationMs !== undefined) {
+        safeRecord(() => {
+          runDurationHistogram.record(
+            durationMs / 1000,
+            mergeMetricAttributes(defaultAttrs, {
+              operation_id: operationId,
+              strategy_id: effectiveStrategyId,
+            }),
+          );
+        });
       }
     }),
     runtime.on("decision", ({ decision }) => {
-      decisionsCounter.add(
-        1,
-        mergeMetricAttributes(defaultAttrs, {
-          changed: String(decision.changed),
-          kind: decision.kind,
-          operation_id: decision.operationId,
-        }),
-      );
+      safeRecord(() => {
+        decisionsCounter.add(
+          1,
+          mergeMetricAttributes(defaultAttrs, {
+            changed: String(decision.changed),
+            kind: decision.kind,
+            operation_id: decision.operationId,
+          }),
+        );
+      });
       for (const signal of decision.signals) {
-        if (signal.status !== "ok") {
-          signalStatusCounter.add(
-            1,
-            mergeMetricAttributes(defaultAttrs, {
-              operation_id: decision.operationId,
-              signal: signal.name,
-              status: signal.status,
-            }),
-          );
+        if (signal.status === "ok") {
+          if (
+            signalReadingUpDownCounter !== undefined &&
+            typeof signal.value === "number" &&
+            Number.isFinite(signal.value)
+          ) {
+            safeRecord(() => {
+              signalReadingUpDownCounter.add(
+                signal.value as number,
+                mergeMetricAttributes(defaultAttrs, {
+                  signal: signal.name,
+                  unit: signal.unit,
+                }),
+              );
+            });
+          }
+        } else {
+          safeRecord(() => {
+            signalStatusCounter.add(
+              1,
+              mergeMetricAttributes(defaultAttrs, {
+                operation_id: decision.operationId,
+                signal: signal.name,
+                status: signal.status,
+              }),
+            );
+          });
         }
       }
       for (const budget of decision.budgets) {
-        if (budget.status !== "ok") {
-          budgetStatusCounter.add(
-            1,
-            mergeMetricAttributes(defaultAttrs, {
-              budget_id: budget.id,
-              operation_id: decision.operationId,
-              status: budget.status,
-            }),
-          );
+        if (budget.status === "ok") {
+          if (budgetEngagedUpDownCounter !== undefined) {
+            safeRecord(() => {
+              const budgetName = (budget as unknown as { name?: string }).name ?? budget.id;
+              budgetEngagedUpDownCounter.add(
+                budget.engaged ? 1 : 0,
+                mergeMetricAttributes(defaultAttrs, {
+                  budget: budgetName,
+                }),
+              );
+            });
+          }
+        } else {
+          safeRecord(() => {
+            budgetStatusCounter.add(
+              1,
+              mergeMetricAttributes(defaultAttrs, {
+                budget_id: budget.id,
+                operation_id: decision.operationId,
+                status: budget.status,
+              }),
+            );
+          });
         }
       }
     }),
     runtime.on("provider:error", ({ providerId }) => {
-      providerErrorsCounter.add(
-        1,
-        mergeMetricAttributes(defaultAttrs, {
-          provider_id: providerId,
-        }),
-      );
+      safeRecord(() => {
+        providerErrorsCounter.add(
+          1,
+          mergeMetricAttributes(defaultAttrs, {
+            provider_id: providerId,
+          }),
+        );
+      });
     }),
     runtime.on("listener:error", ({ event }) => {
-      listenerErrorsCounter.add(
-        1,
-        mergeMetricAttributes(defaultAttrs, {
-          event,
-        }),
-      );
+      safeRecord(() => {
+        listenerErrorsCounter.add(
+          1,
+          mergeMetricAttributes(defaultAttrs, {
+            event,
+          }),
+        );
+      });
     }),
     runtime.on("runtime:closed", () => {
-      runtimeClosedCounter.add(1, defaultAttrs);
+      safeRecord(() => {
+        runtimeClosedCounter.add(1, defaultAttrs);
+      });
     }),
   ];
 

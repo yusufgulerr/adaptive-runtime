@@ -25,7 +25,9 @@ makes those choices explicit and returns the decision with the result.
 ## Prerequisites
 
 - Node.js `>=22.0.0`.
-- ESM. The package exposes only the root entry point; a CommonJS codebase needs
+- ESM. The package exposes the root entry point along with specialized subpaths
+  (`./core`, `./node`, `./web`, `./edge`, `./policy`, `./providers`,
+  `./observability`, `./testing`) and `./package.json`; a CommonJS codebase needs
   an ESM boundary or a dynamic import.
 - A local checkout installed as described in
   [Installation](../README.md#installation). The package is not on npm.

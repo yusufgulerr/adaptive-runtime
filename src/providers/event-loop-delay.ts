@@ -1,5 +1,11 @@
 import { monitorEventLoopDelay } from "node:perf_hooks";
-import type { ResourceSignal, SignalProvider, SignalReadContext } from "../types/signals.js";
+import { ConfigurationError } from "../errors/index.js";
+import type {
+  ResourceSignal,
+  SignalDescriptor,
+  SignalProvider,
+  SignalReadContext,
+} from "../types/signals.js";
 
 export interface HistogramLike {
   readonly count: number;
@@ -20,6 +26,32 @@ export interface EventLoopDelayProviderOptions {
   readonly histogramFactory?: (resolutionMs: number) => HistogramLike;
 }
 
+function validateId(id: string | undefined, defaultId: string): string {
+  if (id === undefined) {
+    return defaultId;
+  }
+  if (typeof id !== "string" || id.trim().length === 0) {
+    throw new ConfigurationError("Provider id must be a non-empty string.");
+  }
+  if (id !== id.trim()) {
+    throw new ConfigurationError("Provider id must not have leading or trailing whitespace.");
+  }
+  return id;
+}
+
+function validateSignalName(name: string | undefined, defaultName: string): string {
+  if (name === undefined) {
+    return defaultName;
+  }
+  if (typeof name !== "string" || name.trim().length === 0) {
+    throw new ConfigurationError("Signal name must be a non-empty string.");
+  }
+  if (name !== name.trim()) {
+    throw new ConfigurationError("Signal name must not have leading or trailing whitespace.");
+  }
+  return name;
+}
+
 /**
  * Samples event-loop delay with perf_hooks.monitorEventLoopDelay.
  *
@@ -29,7 +61,7 @@ export interface EventLoopDelayProviderOptions {
  */
 export class EventLoopDelayProvider implements SignalProvider {
   readonly id: string;
-  readonly signals;
+  readonly signals: readonly SignalDescriptor[];
   readonly #percentile: number;
   readonly #resolutionMs: number;
   readonly #histogramFactory: (resolutionMs: number) => HistogramLike;
@@ -38,19 +70,38 @@ export class EventLoopDelayProvider implements SignalProvider {
   #closed = false;
 
   constructor(options: EventLoopDelayProviderOptions = {}) {
-    this.id = options.id ?? "event-loop-delay";
+    if (options === null || typeof options !== "object") {
+      throw new ConfigurationError("EventLoopDelayProvider options must be an object.");
+    }
+    this.id = validateId(options.id, "event-loop-delay");
+    if (
+      options.percentile !== undefined &&
+      (typeof options.percentile !== "number" ||
+        !Number.isFinite(options.percentile) ||
+        options.percentile < 0 ||
+        options.percentile > 100)
+    ) {
+      throw new ConfigurationError("EventLoopDelayProvider percentile must be between 0 and 100.");
+    }
+    if (
+      options.resolutionMs !== undefined &&
+      (typeof options.resolutionMs !== "number" ||
+        !Number.isFinite(options.resolutionMs) ||
+        options.resolutionMs <= 0)
+    ) {
+      throw new ConfigurationError("EventLoopDelayProvider resolutionMs must be greater than 0.");
+    }
+    if (options.histogramFactory !== undefined && typeof options.histogramFactory !== "function") {
+      throw new ConfigurationError("EventLoopDelayProvider histogramFactory must be a function.");
+    }
     this.#percentile = options.percentile ?? 95;
     this.#resolutionMs = options.resolutionMs ?? 20;
-    if (!Number.isFinite(this.#percentile) || this.#percentile < 0 || this.#percentile > 100) {
-      throw new RangeError("EventLoopDelayProvider percentile must be between 0 and 100.");
-    }
-    if (!Number.isFinite(this.#resolutionMs) || this.#resolutionMs <= 0) {
-      throw new RangeError("EventLoopDelayProvider resolutionMs must be greater than 0.");
-    }
+
     const percentileLabel = Number.isInteger(this.#percentile)
       ? String(this.#percentile)
       : String(this.#percentile).replace(".", "_");
-    const signalName = options.signalName ?? `eventLoop.delay.p${percentileLabel}`;
+    const defaultSignalName = `eventLoop.delay.p${percentileLabel}`;
+    const signalName = validateSignalName(options.signalName, defaultSignalName);
     this.#histogramFactory =
       options.histogramFactory ??
       ((resolutionMs) => monitorEventLoopDelay({ resolution: resolutionMs }));

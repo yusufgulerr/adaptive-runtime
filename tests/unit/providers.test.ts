@@ -1,13 +1,18 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { ConfigurationError } from "../../src/errors/index.js";
 import {
   CpuUtilizationProvider,
+  type CpuUtilizationProviderOptions,
   EventLoopDelayProvider,
+  type EventLoopDelayProviderOptions,
   type HistogramLike,
   NetworkLatencyProvider,
+  type NetworkLatencyProviderOptions,
   PROCESS_MEMORY_HEAP_USED,
   PROCESS_MEMORY_RSS,
   ProcessMemoryProvider,
+  type ProcessMemoryProviderOptions,
 } from "../../src/providers/index.js";
 import { requireOk } from "../helpers/providers.js";
 
@@ -59,6 +64,79 @@ describe("ProcessMemoryProvider", () => {
       ["custom.heap", "custom.rss"],
     );
   });
+
+  it("validates id thoroughly", () => {
+    const invalidIds = ["", "   ", " leading", "trailing ", 123, null, {}];
+    for (const id of invalidIds) {
+      assert.throws(
+        () => new ProcessMemoryProvider({ id: id as unknown as string }),
+        ConfigurationError,
+      );
+    }
+  });
+
+  it("validates constructor options and signal names", () => {
+    assert.throws(
+      () => new ProcessMemoryProvider(null as unknown as ProcessMemoryProviderOptions),
+      ConfigurationError,
+    );
+    assert.throws(
+      () =>
+        new ProcessMemoryProvider({
+          memoryUsage: 123 as unknown as () => { heapUsed: number; rss: number },
+        }),
+      ConfigurationError,
+    );
+    assert.throws(() => new ProcessMemoryProvider({ heapSignalName: "" }), ConfigurationError);
+    assert.throws(
+      () => new ProcessMemoryProvider({ heapSignalName: " padded " }),
+      ConfigurationError,
+    );
+    assert.throws(() => new ProcessMemoryProvider({ rssSignalName: "" }), ConfigurationError);
+    assert.throws(
+      () => new ProcessMemoryProvider({ rssSignalName: " padded " }),
+      ConfigurationError,
+    );
+    assert.throws(
+      () =>
+        new ProcessMemoryProvider({
+          heapSignalName: "same.signal",
+          rssSignalName: "same.signal",
+        }),
+      ConfigurationError,
+    );
+  });
+
+  it("handles provider close() lifecycle and returns unsupported readings", () => {
+    const provider = new ProcessMemoryProvider({
+      memoryUsage: () => ({ heapUsed: 1234, rss: 5678 }),
+    });
+    const beforeClose = provider.read({ now: NOW, signal });
+    assert.equal(beforeClose.length, 2);
+    assert.equal(beforeClose[0]?.status, "ok");
+
+    provider.close();
+    provider.close(); // idempotent
+
+    const afterClose = provider.read({ now: NOW + 100, signal });
+    assert.equal(afterClose.length, 2);
+    assert.deepEqual(afterClose, [
+      {
+        name: PROCESS_MEMORY_HEAP_USED,
+        unit: "bytes",
+        status: "unsupported",
+        observedAt: NOW + 100,
+        error: "Provider is closed.",
+      },
+      {
+        name: PROCESS_MEMORY_RSS,
+        unit: "bytes",
+        status: "unsupported",
+        observedAt: NOW + 100,
+        error: "Provider is closed.",
+      },
+    ]);
+  });
 });
 
 describe("CpuUtilizationProvider", () => {
@@ -87,6 +165,53 @@ describe("CpuUtilizationProvider", () => {
     provider.read({ now: NOW, signal });
     const second = provider.read({ now: NOW, signal })[0];
     assert.equal(second?.status, "unknown");
+  });
+
+  it("validates id thoroughly", () => {
+    const invalidIds = ["", "   ", " leading", "trailing ", 456, null, {}];
+    for (const id of invalidIds) {
+      assert.throws(
+        () => new CpuUtilizationProvider({ id: id as unknown as string }),
+        ConfigurationError,
+      );
+    }
+  });
+
+  it("validates constructor options and signal name", () => {
+    assert.throws(
+      () => new CpuUtilizationProvider(null as unknown as CpuUtilizationProviderOptions),
+      ConfigurationError,
+    );
+    assert.throws(
+      () =>
+        new CpuUtilizationProvider({
+          cpuUsage: 123 as unknown as () => { user: number; system: number },
+        }),
+      ConfigurationError,
+    );
+    assert.throws(() => new CpuUtilizationProvider({ signalName: "" }), ConfigurationError);
+    assert.throws(
+      () => new CpuUtilizationProvider({ signalName: "  padded  " }),
+      ConfigurationError,
+    );
+  });
+
+  it("handles provider close() lifecycle and returns unsupported reading", () => {
+    const provider = new CpuUtilizationProvider({
+      cpuUsage: () => ({ user: 100, system: 50 }),
+    });
+    provider.close();
+    provider.close(); // idempotent
+
+    const readings = provider.read({ now: NOW, signal });
+    assert.equal(readings.length, 1);
+    assert.deepEqual(readings[0], {
+      name: "process.cpu.utilization",
+      unit: "ratio",
+      status: "unsupported",
+      observedAt: NOW,
+      error: "Provider is closed.",
+    });
   });
 });
 
@@ -141,8 +266,41 @@ describe("EventLoopDelayProvider", () => {
   });
 
   it("validates percentile and resolution", () => {
-    assert.throws(() => new EventLoopDelayProvider({ percentile: 101 }), RangeError);
-    assert.throws(() => new EventLoopDelayProvider({ resolutionMs: 0 }), RangeError);
+    assert.throws(() => new EventLoopDelayProvider({ percentile: 101 }), ConfigurationError);
+    assert.throws(() => new EventLoopDelayProvider({ percentile: -1 }), ConfigurationError);
+    assert.throws(() => new EventLoopDelayProvider({ percentile: Number.NaN }), ConfigurationError);
+    assert.throws(() => new EventLoopDelayProvider({ resolutionMs: 0 }), ConfigurationError);
+    assert.throws(() => new EventLoopDelayProvider({ resolutionMs: -5 }), ConfigurationError);
+    assert.throws(
+      () => new EventLoopDelayProvider({ resolutionMs: Number.NaN }),
+      ConfigurationError,
+    );
+  });
+
+  it("validates id, options object, histogramFactory, and signalName", () => {
+    const invalidIds = ["", "   ", " leading", "trailing ", 789, null];
+    for (const id of invalidIds) {
+      assert.throws(
+        () => new EventLoopDelayProvider({ id: id as unknown as string }),
+        ConfigurationError,
+      );
+    }
+    assert.throws(
+      () => new EventLoopDelayProvider(null as unknown as EventLoopDelayProviderOptions),
+      ConfigurationError,
+    );
+    assert.throws(
+      () =>
+        new EventLoopDelayProvider({
+          histogramFactory: 123 as unknown as (resolutionMs: number) => HistogramLike,
+        }),
+      ConfigurationError,
+    );
+    assert.throws(() => new EventLoopDelayProvider({ signalName: "" }), ConfigurationError);
+    assert.throws(
+      () => new EventLoopDelayProvider({ signalName: "  padded.signal  " }),
+      ConfigurationError,
+    );
   });
 
   it("uses default options and degrades to unknown before samples exist", () => {
@@ -209,8 +367,73 @@ describe("NetworkLatencyProvider", () => {
     assert.throws(
       // @ts-expect-error deliberately invalid runtime input
       () => new NetworkLatencyProvider({}),
-      TypeError,
+      ConfigurationError,
     );
+  });
+
+  it("validates id, options object, probe, and signal name", () => {
+    const invalidIds = ["", "   ", " leading", "trailing ", 999, null];
+    for (const id of invalidIds) {
+      assert.throws(
+        () =>
+          new NetworkLatencyProvider({
+            id: id as unknown as string,
+            probe: () => 1,
+          }),
+        ConfigurationError,
+      );
+    }
+    assert.throws(
+      () => new NetworkLatencyProvider(null as unknown as NetworkLatencyProviderOptions),
+      ConfigurationError,
+    );
+    assert.throws(
+      () =>
+        new NetworkLatencyProvider({
+          probe: "not a function" as unknown as () => number,
+        }),
+      ConfigurationError,
+    );
+    assert.throws(
+      () =>
+        new NetworkLatencyProvider({
+          probe: () => 1,
+          signalName: "",
+        }),
+      ConfigurationError,
+    );
+    assert.throws(
+      () =>
+        new NetworkLatencyProvider({
+          probe: () => 1,
+          signalName: " padded.latency ",
+        }),
+      ConfigurationError,
+    );
+  });
+
+  it("handles provider close() lifecycle and does not invoke probe", async () => {
+    let probeCalled = false;
+    const provider = new NetworkLatencyProvider({
+      probe: () => {
+        probeCalled = true;
+        return 15;
+      },
+    });
+
+    provider.close();
+    provider.close(); // idempotent
+
+    const readings = await provider.read({ now: NOW, signal });
+    assert.equal(probeCalled, false);
+    assert.equal(readings.length, 1);
+    assert.deepEqual(readings[0], {
+      name: "network.latency",
+      unit: "milliseconds",
+      status: "unsupported",
+      observedAt: NOW,
+      error: "Provider is closed.",
+    });
   });
 
   it("passes an abort signal to the user probe", async () => {

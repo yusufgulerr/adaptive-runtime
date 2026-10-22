@@ -47,6 +47,13 @@ export interface SignalReadContext {
   readonly signal: AbortSignal;
 }
 
+export interface SignalStartContext {
+  /** Clock value supplied by the runtime. */
+  readonly now: number;
+  /** Aborted on provider timeout, or when every caller waiting on the start has aborted. */
+  readonly signal: AbortSignal;
+}
+
 /**
  * Providers isolate measurement from policy. The runtime owns provider
  * lifecycle: start() is called lazily before the first read, close() on shutdown.
@@ -57,7 +64,7 @@ export interface SignalProvider {
   /** Declares every signal this provider may return. */
   readonly signals: readonly SignalDescriptor[];
   /** Awaited before the first read; a rejection marks the provider as failed. */
-  start?(): void | Promise<void>;
+  start?(context: SignalStartContext): void | Promise<void>;
   read(context: SignalReadContext): Promise<readonly ResourceSignal[]> | readonly ResourceSignal[];
   close?(): void | Promise<void>;
 }
