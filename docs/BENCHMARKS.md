@@ -49,10 +49,13 @@ verification are unchanged; only the presentation differs. JSON mode prints exac
 one document with no human-readable lines.
 
 ```bash
-npm run benchmark -- --json > current.json
+node --expose-gc --import tsx benchmarks/runtime-overhead.ts --json > current.json
 node scripts/compare-benchmarks.mjs baseline.json current.json
 node scripts/compare-benchmarks.mjs baseline.json current.json --max-regression-percent 15
 ```
+
+Use the direct Node command when redirecting the document to a file: `npm run`
+writes lifecycle headers to stdout, which would corrupt the JSON.
 
 The document uses `schemaVersion: 1`:
 
@@ -117,16 +120,21 @@ Median per sequential run:
 
 | Mode | µs/run | Relative to direct | Samples (µs/run) |
 | --- | ---: | ---: | --- |
-| Direct call | 0.257 | 1.00x | 0.32, 0.26, 0.26, 0.25, 0.26, 0.26, 0.25 |
-| Runtime, static policy | 3.332 | 12.95x | 4.24, 3.50, 3.33, 3.31, 3.47, 3.06, 3.00 |
-| Runtime, adaptive (fresh read) | 7.645 | 29.72x | 9.06, 8.69, 7.75, 7.64, 7.61, 7.15, 7.01 |
-| Runtime, adaptive (cached read) | 3.481 | 13.53x | 3.85, 3.48, 3.78, 3.47, 3.51, 3.20, 3.33 |
+| Direct call | 0.324 | 1.00x | 0.36, 0.32, 0.30, 0.31, 0.29, 0.62, 0.97 |
+| Runtime, static policy | 4.568 | 14.11x | 5.99, 4.38, 4.55, 4.57, 5.35, 4.45, 17.11 |
+| Runtime, adaptive (fresh read) | 9.955 | 30.75x | 11.40, 9.64, 9.80, 9.96, 10.09, 9.66, 39.37 |
+| Runtime, adaptive (cached read) | 5.099 | 15.75x | 4.90, 4.70, 5.10, 5.39, 4.95, 11.17, 16.47 |
 
 Approximate added overhead relative to direct call:
 
-- static policy: ~3.1 µs per run;
-- adaptive with a fresh in-memory read: ~7.4 µs per run;
-- adaptive with a cached snapshot: ~3.2 µs per run.
+- static policy: ~4.2 µs per run;
+- adaptive with a fresh in-memory read: ~9.6 µs per run;
+- adaptive with a cached snapshot: ~4.8 µs per run.
+
+A second run on the same machine immediately afterward measured 3.825 µs/run for
+static policy, 7.823 µs/run for adaptive with a fresh read, and 3.953 µs/run for
+adaptive with a cached read. Absolute medians move between runs; use the JSON
+trend comparison for directional evidence, not a fixed threshold.
 
 The adaptive fresh mode includes the ref-counted shared-read bookkeeping: a
 per-read abort controller, waiter accounting, and abort-aware waiting. A runtime

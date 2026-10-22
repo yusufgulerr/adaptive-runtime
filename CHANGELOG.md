@@ -20,6 +20,17 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) after 1.0.
 - Asynchronous `SignalProvider.start()` support. The collector awaits a returned
   promise before the first read, applies the provider timeout and caller abort
   signal, and caches failures instead of leaking rejected promises.
+- Post-publication verification is now an offline-testable CLI in
+  `scripts/verify-published-package.mjs`. The release workflow uses it to check
+  registry propagation, exact version, `sha512` integrity, repository metadata,
+  provenance, and a clean consumer install; metadata and attestation fixtures
+  allow network-free verification tests.
+- Machine-readable benchmark output with `schemaVersion: 1`, the
+  `benchmark:compare` CLI, and an observation-only weekly benchmark workflow that
+  uploads JSON artifacts without enforcing a performance threshold.
+- Automated zero-runtime-dependency and relative Markdown-link checks, plus a
+  read-only Security and documentation workflow that also runs a high-severity
+  production dependency audit.
 
 ### Fixed
 

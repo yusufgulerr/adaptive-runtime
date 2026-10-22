@@ -444,7 +444,7 @@ npm install
 npm run format      # Biome formatter
 npm run lint        # Biome
 npm run typecheck   # tsc, includes tests/examples/benchmarks
-npm test            # node:test, 292 tests
+npm test            # node:test, 313 tests
 npm run test:fuzz   # deterministic property/fuzz campaign
 npm run test:coverage
 npm run build       # emit ESM + declarations to dist/
@@ -455,7 +455,7 @@ npm run example:edge
 npm run benchmark
 npm run benchmark:concurrency
 npm pack --dry-run  # inspect the package file set
-npm run check       # lint + typecheck + test + build
+npm run check       # lint + typecheck + test + build + verification gates
 ```
 
 CI runs the suite on Node.js 22, 24, and 26 on Linux plus Windows and macOS. A
@@ -464,7 +464,7 @@ also verifies that `package.json` and `package-lock.json` contain no runtime
 dependencies, audits production dependencies at high severity, and checks every
 relative Markdown link on pull requests and `main`.
 
-Coverage from the verification run: **99.10% lines, 97.00% branches, 98.64%
+Coverage from the verification run: **99.08% lines, 96.93% branches, 98.68%
 functions** across `src/`, with every source file above 80% branch coverage.
 The property/fuzz suite uses `fast-check` as a dev-only dependency and covers
 budget hysteresis, candidate ordering, pure policy evaluation, and the
