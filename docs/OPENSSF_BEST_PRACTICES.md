@@ -84,6 +84,7 @@ Use absolute URLs in the BadgeApp form. These are the stable values:
 | Support | <https://github.com/yusufgulerr/adaptive-runtime/blob/main/SUPPORT.md> |
 | Static analysis | <https://github.com/yusufgulerr/adaptive-runtime/blob/main/.github/workflows/codeql.yml> |
 | CI | <https://github.com/yusufgulerr/adaptive-runtime/blob/main/.github/workflows/ci.yml> |
+| Security and documentation checks | <https://github.com/yusufgulerr/adaptive-runtime/blob/main/.github/workflows/security.yml> |
 | Verification record | <https://github.com/yusufgulerr/adaptive-runtime/blob/main/docs/VERIFICATION.md> |
 
 ## Criterion-by-criterion assessment
@@ -140,10 +141,10 @@ Use absolute URLs in the BadgeApp form. These are the stable values:
 | `build` | **Met** | `npm run build` runs `tsc -p tsconfig.json`; CI rebuilds from source on Node 22, 24, and 26. |
 | `build_common_tools` | **Met** | npm, TypeScript `tsc`, and Biome are standard, widely used tools for this ecosystem. |
 | `build_floss_tools` | **Met** | npm, TypeScript, Biome, tsx, fast-check, and the test runner are FLOSS tools. |
-| `test` | **Met** | `npm test` runs the public FLOSS test suite: 265 tests across 49 suites in `tests/unit`, `tests/integration`, and `tests/property`. |
+| `test` | **Met** | `npm test` runs the public FLOSS test suite: 292 tests across 51 suites in `tests/unit`, `tests/integration`, and `tests/property`. |
 | `test_invocation` | **Met** | `npm test` is the standard Node.js/npm invocation; `npm run test:coverage` adds the coverage gate and `npm run test:fuzz` runs the property/fuzz suite alone. |
 | `test_most` | **Met** | [VERIFICATION.md](VERIFICATION.md) records 99.10% lines, 97.00% branches, and 98.64% functions; every `src/**` file is above 80% branch coverage. |
-| `test_continuous_integration` | **Met** | [ci.yml](../.github/workflows/ci.yml) runs the suite on Node 22/24/26 and on Windows/macOS; [fuzz.yml](../.github/workflows/fuzz.yml) adds a weekly 10,000-run property campaign, a 1,000-run pull-request campaign for relevant paths, and manual dispatch. Pull requests and `main` are covered. |
+| `test_continuous_integration` | **Met** | [ci.yml](../.github/workflows/ci.yml) runs the suite on Node 22/24/26 and on Windows/macOS; [fuzz.yml](../.github/workflows/fuzz.yml) adds a weekly 10,000-run property campaign, a 1,000-run pull-request campaign for relevant paths, and manual dispatch; [security.yml](../.github/workflows/security.yml) verifies zero runtime dependencies, audits production dependencies at high severity, and checks relative Markdown links. Pull requests and `main` are covered. |
 | `test_policy` | **Met** | [CONTRIBUTING.md § Tests](../CONTRIBUTING.md#tests) requires regression tests for bug fixes, unit/integration tests for new behavior, and deterministic property/fuzz tests for policy/runtime invariants. |
 | `tests_are_added` | **Met** | Recent feature PRs added substantial tests: #8 (composite/web/edge providers), #10 (observability), #11 (testing SDK and packaging), #12 (export and PR-title checks), and the property/fuzz PR (budget hysteresis, selection, purity, and exactly-one execution). |
 | `tests_documented_added` | **Met** | The test policy is documented in CONTRIBUTING, the scheduled campaign and reproduction steps are in [FUZZING.md](FUZZING.md), and the pull-request checklist requires added or updated tests. |
@@ -184,6 +185,33 @@ Use absolute URLs in the BadgeApp form. These are the stable values:
 | `dynamic_analysis_unsafe` | **N/A** | The project is TypeScript/JavaScript and produces no memory-unsafe native code. |
 | `dynamic_analysis_enable_assertions` | **Met** | Tests use `node:test` assertions and fail on unexpected behavior; assertions are enabled in the test configuration. |
 | `dynamic_analysis_fixed` | **N/A** | No medium-or-higher severity vulnerability has been discovered through dynamic analysis. |
+
+## Continuous integration and documentation checks
+
+Three complementary workflows provide continuous integration:
+
+- [ci.yml](../.github/workflows/ci.yml) runs on pull requests, pushes to `main`,
+  and manual dispatch: lint, typecheck, the test suite with coverage, the build,
+  export verification, and package inspection on Node.js 22, 24, and 26, plus
+  Windows and macOS.
+- [fuzz.yml](../.github/workflows/fuzz.yml) runs the scheduled property/fuzz
+  campaign weekly, on relevant pull requests, and on manual dispatch.
+- [security.yml](../.github/workflows/security.yml) runs on pull requests, pushes
+  to `main`, and manual dispatch: it installs with `npm ci` under a read-only
+  token, then runs `node scripts/verify-zero-dependencies.mjs`,
+  `npm audit --omit=dev --audit-level=high`, and
+  `node scripts/check-markdown-links.mjs`.
+
+The zero-runtime-dependency check fails if `package.json` declares any
+`dependencies`, `optionalDependencies`, `peerDependencies`,
+`bundledDependencies`, or `bundleDependencies`, or if the version 3 lockfile
+contains a package that is not marked `dev`, `optional`, or `peer`. The Markdown
+check walks every `*.md` file outside generated and tooling directories and fails
+on a missing relative file or directory target. Both checks run locally through
+`npm run verify:zero-deps` and `npm run check:links`, and in the security
+workflow.
+
+These checks support the answers above; they do not imply an OpenSSF badge.
 
 ## Owner attestations
 
