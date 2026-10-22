@@ -92,7 +92,8 @@ Formatting is enforced by Biome. Run `npm run format` before committing.
 - Property/fuzz tests live in `tests/property` and use `fast-check` with a fixed
   default seed. They are part of `npm test`; run `npm run test:fuzz` for the
   property suite alone. Set `FUZZ_RUNS` and `FUZZ_SEED` to run a longer,
-  reproducible campaign. `fast-check` is a development-only dependency.
+  reproducible campaign. `fast-check` is a development-only dependency. See
+  [docs/FUZZING.md](docs/FUZZING.md) for the scheduled campaign and scope limits.
 - Provider tests should inject clocks/factories rather than depend on wall time.
 - Integration tests should exercise the public entry point and examples.
 - Keep the suite deterministic and fast. Tests must not require network access.

@@ -372,7 +372,8 @@ The full type and error reference is in [docs/API.md](docs/API.md). Design
 rationale is in [docs/API_DESIGN.md](docs/API_DESIGN.md), custom provider
 guidance is in [docs/PROVIDERS.md](docs/PROVIDERS.md), metrics guidance is in
 [docs/OBSERVABILITY.md](docs/OBSERVABILITY.md), common patterns are in
-[docs/COOKBOOK.md](docs/COOKBOOK.md), and adoption/upgrade guidance is in
+[docs/COOKBOOK.md](docs/COOKBOOK.md), fuzzing is covered in
+[docs/FUZZING.md](docs/FUZZING.md), and adoption/upgrade guidance is in
 [docs/MIGRATION.md](docs/MIGRATION.md).
 
 ## Error and cancellation semantics
@@ -460,8 +461,9 @@ functions** across `src/`, with every source file above 80% branch coverage.
 The property/fuzz suite uses `fast-check` as a dev-only dependency and covers
 budget hysteresis, candidate ordering, pure policy evaluation, and the
 exactly-one-execution runtime invariant. See
-[docs/VERIFICATION.md](docs/VERIFICATION.md) for the exact commands and
-results.
+[docs/FUZZING.md](docs/FUZZING.md) for the local campaign controls, scheduled
+workflow, and scope limits, and [docs/VERIFICATION.md](docs/VERIFICATION.md) for
+the exact commands and results.
 
 ## Project layout
 
@@ -483,8 +485,8 @@ examples/      runnable examples
 tests/         unit and integration tests
 benchmarks/    local overhead micro-benchmark
 docs/          architecture, API, API design, provider/observability guides,
-               cookbook, migration guide, release runbook, GitHub settings,
-               ADRs, roadmap
+               cookbook, fuzzing guide, migration guide, release runbook,
+               GitHub settings, ADRs, roadmap
 ```
 
 ## Architectural Boundaries and Operational Notes

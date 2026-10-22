@@ -1,0 +1,63 @@
+name: Fuzz
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/fuzz.yml"
+      - "tests/property/**"
+      - "src/policy/**"
+      - "src/runtime/**"
+      - "package.json"
+      - "package-lock.json"
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: Property-test runs per property
+        required: false
+        default: "10000"
+        type: string
+      seed:
+        description: Optional fast-check seed; empty uses the workflow run id
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  property-fuzz:
+    name: Property fuzzing
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install
+        run: npm ci
+      - name: Run property fuzz campaign
+        env:
+          FUZZ_RUNS: ${{ github.event_name == 'pull_request' && '1000' || github.event.inputs.runs || '10000' }}
+          FUZZ_SEED: ${{ github.event.inputs.seed || github.run_id }}
+        run: |
+          {
+            echo "### Property fuzz campaign"
+            echo ""
+            echo "- Runs per property: \`$FUZZ_RUNS\`"
+            echo "- Seed: \`$FUZZ_SEED\`"
+            echo "- Node.js: \`24\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          npm run test:fuzz

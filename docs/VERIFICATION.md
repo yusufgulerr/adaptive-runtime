@@ -32,6 +32,7 @@ release is published; npm publication remains pending.
 | `npm run typecheck` | **PASS** — `tsc -p tsconfig.check.json` |
 | `npm test` | **PASS** — 265 tests, 49 suites, 0 failures, 0 skipped |
 | `npm run test:fuzz` | **PASS** — 9 property tests, 4 suites, 0 failures |
+| `FUZZ_RUNS=5000 FUZZ_SEED=12345 npm run test:fuzz` | **PASS** — 5,000 runs per pure property, 50 runtime runs |
 | `npm run test:coverage` | **PASS** — 99.10% lines, 97.00% branches, 98.64% functions |
 | `npm run build` | **PASS** — ESM, declarations, and maps emitted to `dist/` |
 | `npm run verify:exports` | **PASS** — 10 export entries, 27 files, and 27 runtime symbols |
@@ -49,14 +50,15 @@ release is published; npm publication remains pending.
 | Portable source scan | **PASS** — zero `node:` / `process.` matches across 33 files |
 | `npm ls --omit=dev --depth=0` | **PASS** — `(empty)`; no runtime dependencies |
 | `npm audit` | **PASS** — 0 vulnerabilities (including dev dependencies) |
-| Markdown relative-link check | **PASS** — 191 Markdown files, 207 relative links, all targets exist |
+| Markdown relative-link check | **PASS** — 192 Markdown files, 219 relative links, all targets exist |
 
 The suite covers unit tests in `tests/unit/`, integration tests in
 `tests/integration/`, and deterministic property/fuzz tests in `tests/property/`,
 plus shared helpers. `node:test` reports 49 suites because of nested `describe`
 blocks. The property suite uses `fast-check` with a fixed default seed; set
-`FUZZ_RUNS` and `FUZZ_SEED` to run a longer reproducible campaign. The checks in
-this line include the testing SDK, entry-point isolation, package subpath
+`FUZZ_RUNS` and `FUZZ_SEED` to run a longer reproducible campaign. The scheduled
+campaign and scope limits are documented in [FUZZING.md](FUZZING.md). The checks
+in this line include the testing SDK, entry-point isolation, package subpath
 assertions, the built-package export verifier, the PR title validator, the
 portability source scan, and deterministic edge-example assertions.
 
