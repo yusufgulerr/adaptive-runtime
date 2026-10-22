@@ -3,9 +3,10 @@
 This document records the local and remote checks performed for the 0.3.0 line on
 **2026-10-22**. It distinguishes local verification, remote workflow evidence,
 GitHub repository settings, and npm registry status. The 0.3.0 tree was merged to
-`main` at `ad7fd2f`; the two-phase release change merged at `5504f21`. Remote CI,
-CodeQL, and Scorecard pass for both commits. The `v0.3.0` tag points to `5504f21`
-and the GitHub release is published; npm publication remains pending.
+`main` at `5504f21`; the release-workflow fix and the OpenSSF readiness
+documentation merged at `953a484` and `6f67ff3`. Remote CI, CodeQL, and Scorecard
+pass for all three commits. The `v0.3.0` tag points to `5504f21` and the GitHub
+release is published; npm publication remains pending.
 
 ## Environment
 
@@ -237,6 +238,12 @@ Current remote workflow evidence for the 0.3.0 release tree:
 
 | Workflow | Result |
 | --- | --- |
+| CI on `main` at `6f67ff3` | **PASS** — run [39707436345](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39707436345) |
+| CodeQL on `main` at `6f67ff3` | **PASS** — run [39707436457](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39707436457) |
+| OpenSSF Scorecard on `main` at `6f67ff3` | **PASS** — run [39707436347](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39707436347), score 7/10 |
+| CI on `main` at `953a484` | **PASS** — run [39706082330](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39706082330) |
+| CodeQL on `main` at `953a484` | **PASS** — run [39706082359](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39706082359) |
+| OpenSSF Scorecard on `main` at `953a484` | **PASS** — run [39706082319](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39706082319), score 7/10 |
 | CI on `main` at `5504f21` | **PASS** — run [39705496725](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39705496725) |
 | CodeQL on `main` at `5504f21` | **PASS** — run [39705496817](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39705496817) |
 | OpenSSF Scorecard on `main` at `5504f21` | **PASS** — run [39705496768](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39705496768), score 7/10 |
@@ -262,12 +269,14 @@ Historical remote workflow evidence from the 0.1.0 baseline commit:
 | Dependency Review on PR #6 | **PASS** — run [39636395231](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39636395231) |
 | Release `verify-publish` job | **NOT EXECUTED** — requires a `v*` tag and an approved publish |
 
-The 0.3.0 tree and the repository-automation changes are merged to `main` at
-`ad7fd2f`. Remote CI, CodeQL, and Scorecard pass for that commit, and the required
-checks are active. The `v0.3.0` tag points to `5504f21`; its verification job
-passed. The automated release step failed because `gh` had no git checkout, so the
-GitHub release was created manually from the same tag. The Unreleased changelog
-records the `GH_REPO` fix for the workflow.
+The 0.3.0 tree, repository automation, release-workflow fix, and OpenSSF
+readiness documentation are merged to `main` at `6f67ff3`. Remote CI, CodeQL, and
+Scorecard pass for that commit, and the required checks are active. The `v0.3.0`
+tag points to `5504f21`; its verification job passed. The automated release step
+failed because `gh` had no git checkout, so the GitHub release was created manually
+from the same tag. The `GH_REPO` fix merged at `953a484`. The OpenSSF Best
+Practices readiness record is prepared, but the badge has not been applied for or
+earned.
 
 ## Release status
 
