@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { cpus, platform, release, totalmem } from "node:os";
 import { createAdaptiveRuntime, type SignalProvider, type Strategy } from "../src/index.js";
 
@@ -14,6 +15,7 @@ const ITERATIONS = Number.parseInt(process.env.BENCH_ITERATIONS ?? "20000", 10);
 const ROUNDS = Number.parseInt(process.env.BENCH_ROUNDS ?? "7", 10);
 const WARMUP = Math.min(2_000, Math.floor(ITERATIONS / 4));
 const WORK = Array.from({ length: 64 }, (_, index) => (index * 17) % 29);
+const JSON_OUTPUT = process.argv.includes("--json");
 
 function work(input: number): number {
   let total = input + 1;
@@ -159,6 +161,103 @@ async function measure(mode: Mode, rounds: number): Promise<number[]> {
   return samples;
 }
 
+type ModeResult = {
+  readonly label: string;
+  readonly medianUsPerRun: number;
+  readonly relativeToDirect: number;
+  readonly samplesUsPerRun: readonly number[];
+};
+
+type PackageIdentity = {
+  readonly name: string;
+  readonly version: string;
+};
+
+type EnvironmentInfo = {
+  readonly node: string;
+  readonly platform: string;
+  readonly release: string;
+  readonly cpu: string;
+  readonly logicalCores: number;
+  readonly totalMemoryGiB: number;
+};
+
+type BenchmarkDocument = {
+  readonly schemaVersion: 1;
+  readonly generatedAt: string;
+  readonly package: PackageIdentity;
+  readonly environment: EnvironmentInfo;
+  readonly config: {
+    readonly iterations: number;
+    readonly rounds: number;
+    readonly warmup: number;
+  };
+  readonly verification: {
+    readonly input: number;
+    readonly expected: number;
+  };
+  readonly modes: readonly ModeResult[];
+};
+
+function readPackageIdentity(): PackageIdentity {
+  const raw = readFileSync(new URL("../package.json", import.meta.url), "utf8");
+  const parsed: unknown = JSON.parse(raw);
+  if (
+    typeof parsed !== "object" ||
+    parsed === null ||
+    !("name" in parsed) ||
+    !("version" in parsed) ||
+    typeof parsed.name !== "string" ||
+    typeof parsed.version !== "string"
+  ) {
+    throw new Error("package.json must define string name and version fields.");
+  }
+  return { name: parsed.name, version: parsed.version };
+}
+
+function describeEnvironment(): EnvironmentInfo {
+  const cpuModel = cpus()[0]?.model.trim();
+  return {
+    node: process.version,
+    platform: platform(),
+    release: release(),
+    cpu: cpuModel !== undefined && cpuModel.length > 0 ? cpuModel : "unknown",
+    logicalCores: cpus().length,
+    totalMemoryGiB: Number((totalmem() / 1024 ** 3).toFixed(1)),
+  };
+}
+
+function buildDocument(modes: readonly ModeResult[], verification: number): BenchmarkDocument {
+  const document: BenchmarkDocument = {
+    schemaVersion: 1,
+    generatedAt: new Date().toISOString(),
+    package: readPackageIdentity(),
+    environment: describeEnvironment(),
+    config: { iterations: ITERATIONS, rounds: ROUNDS, warmup: WARMUP },
+    verification: { input: 42, expected: verification },
+    modes,
+  };
+
+  if (!Number.isFinite(verification)) {
+    throw new Error("Benchmark verification value is not finite.");
+  }
+  if (!Number.isFinite(document.environment.totalMemoryGiB)) {
+    throw new Error("Benchmark total memory value is not finite.");
+  }
+  for (const mode of modes) {
+    if (!Number.isFinite(mode.medianUsPerRun) || mode.medianUsPerRun <= 0) {
+      throw new Error(`Benchmark median for "${mode.label}" is not a finite positive number.`);
+    }
+    if (!Number.isFinite(mode.relativeToDirect) || mode.relativeToDirect <= 0) {
+      throw new Error(`Benchmark relative-to-direct value for "${mode.label}" is not finite.`);
+    }
+    if (mode.samplesUsPerRun.some((sample) => !Number.isFinite(sample))) {
+      throw new Error(`Benchmark samples for "${mode.label}" contain a non-finite value.`);
+    }
+  }
+  return document;
+}
+
 async function main(): Promise<void> {
   if (!Number.isInteger(ITERATIONS) || ITERATIONS < 100) {
     throw new Error("BENCH_ITERATIONS must be an integer >= 100.");
@@ -198,9 +297,27 @@ async function main(): Promise<void> {
     await Promise.all(modes.map((mode) => mode.close?.()));
   }
 
+  const directMedian = median(results.get("direct call") ?? [Number.NaN]);
+  const modeResults: readonly ModeResult[] = modes.map((mode) => {
+    const samples = results.get(mode.label) ?? [];
+    const value = median(samples);
+    return {
+      label: mode.label,
+      medianUsPerRun: value,
+      relativeToDirect: value / directMedian,
+      samplesUsPerRun: samples,
+    };
+  });
+
+  if (JSON_OUTPUT) {
+    console.log(JSON.stringify(buildDocument(modeResults, verification), null, 2));
+    return;
+  }
+
+  const environment = describeEnvironment();
   console.log("Adaptive Runtime local micro-benchmark");
   console.log(
-    `Node ${process.version}; ${platform()} ${release()}; ${cpus()[0]?.model ?? "unknown CPU"}; ${cpus().length} logical cores; ${(totalmem() / 1024 ** 3).toFixed(1)} GiB RAM`,
+    `Node ${environment.node}; ${environment.platform} ${environment.release}; ${environment.cpu}; ${environment.logicalCores} logical cores; ${environment.totalMemoryGiB.toFixed(1)} GiB RAM`,
   );
   console.log(
     `${ITERATIONS.toLocaleString("en-US")} runs per round, ${ROUNDS} rounds, ${WARMUP.toLocaleString("en-US")} warmup runs per round; median per run.`,
@@ -209,13 +326,9 @@ async function main(): Promise<void> {
   console.log(
     "mode                              median µs/run   relative to direct   samples (µs)",
   );
-  const directMedian = median(results.get("direct call") ?? [Number.NaN]);
-  for (const mode of modes) {
-    const samples = results.get(mode.label) ?? [];
-    const value = median(samples);
-    const relative = value / directMedian;
+  for (const modeResult of modeResults) {
     console.log(
-      `${mode.label.padEnd(33)} ${value.toFixed(3).padStart(13)}   ${`${relative.toFixed(2)}x`.padStart(18)}   ${samples
+      `${modeResult.label.padEnd(33)} ${modeResult.medianUsPerRun.toFixed(3).padStart(13)}   ${`${modeResult.relativeToDirect.toFixed(2)}x`.padStart(18)}   ${modeResult.samplesUsPerRun
         .map((sample) => sample.toFixed(2))
         .join(", ")}`,
     );

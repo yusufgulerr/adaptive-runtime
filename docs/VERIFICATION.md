@@ -10,6 +10,33 @@ at `8441299` and the scheduled campaign merged at `3d846ea`; a manual
 commits. The `v0.3.0` tag points to `5504f21` and the GitHub release is
 published; npm publication remains pending.
 
+## Wave 2 quality-gate verification
+
+The Wave 2 quality-gate tree based on `1cc7f10` was verified locally on
+2026-10-22. This section records the headline quality-gate evidence; the detailed
+tables below are updated for the current tree where the command was re-run, while
+the historical 0.3.0 release notes remain in place.
+
+| Command | Result |
+| --- | --- |
+| `npm run format` | **PASS** — 92 files checked, no fixes applied |
+| `npm run check` | **PASS** — lint, typecheck, 313 tests / 54 suites, build, 10 exports, zero dependencies, 38 Markdown files / 229 links |
+| `npm run test:coverage` | **PASS** — 99.08% lines, 96.93% branches, 98.68% functions |
+| `FUZZ_RUNS=10000 npm run test:fuzz` | **PASS** — 9 property tests, 4 suites, 0 failures |
+| Six `npm run example:*` commands | **PASS** — basic, search, planning, quick-start, observability, edge |
+| `npm run benchmark` | **PASS** — 20,000 runs per round, 7 rounds; results in [BENCHMARKS.md](BENCHMARKS.md) |
+| `npm run benchmark:concurrency` | **PASS** — local concurrency and retained-heap observations |
+| `node --expose-gc --import tsx benchmarks/runtime-overhead.ts --json` + `benchmark:compare` | **PASS** — schemaVersion 1, 4 modes, 0.00% self-comparison |
+| `node scripts/verify-published-package.mjs --help` | **PASS** — online and fixture-based verification paths documented |
+| Published-package verification tests | **PASS** — 11 tests, offline metadata/attestation fixtures, no npm contact |
+| `npm audit --omit=dev --audit-level=high` | **PASS** — 0 vulnerabilities |
+| `npm pack --dry-run` | **PASS** — 168 files, 148.6 kB packed, 686.5 kB unpacked |
+
+The benchmark comparison remains informational by default; no CI performance
+threshold was added. Remote CI, CodeQL, and Scorecard results for the integration
+commit are recorded in the pull request and Actions, not asserted by this local
+section.
+
 ## Environment
 
 | Item | Value |
@@ -29,13 +56,12 @@ published; npm publication remains pending.
 
 | Command | Result |
 | --- | --- |
-| `npm run format` | **PASS** — 83 files checked, no fixes applied |
-| `npm run lint` | **PASS** — 83 files checked, no fixes applied |
+| `npm run format` | **PASS** — 92 files checked, no fixes applied |
+| `npm run lint` | **PASS** — 92 files checked, no fixes applied |
 | `npm run typecheck` | **PASS** — `tsc -p tsconfig.check.json` |
-| `npm test` | **PASS** — 265 tests, 49 suites, 0 failures, 0 skipped |
-| `npm run test:fuzz` | **PASS** — 9 property tests, 4 suites, 0 failures |
-| `FUZZ_RUNS=5000 FUZZ_SEED=12345 npm run test:fuzz` | **PASS** — 5,000 runs per pure property, 50 runtime runs |
-| `npm run test:coverage` | **PASS** — 99.10% lines, 97.00% branches, 98.64% functions |
+| `npm test` | **PASS** — 313 tests, 54 suites, 0 failures, 0 skipped |
+| `FUZZ_RUNS=10000 npm run test:fuzz` | **PASS** — 9 property tests, 4 suites, 0 failures |
+| `npm run test:coverage` | **PASS** — 99.08% lines, 96.93% branches, 98.68% functions |
 | `npm run build` | **PASS** — ESM, declarations, and maps emitted to `dist/` |
 | `npm run verify:exports` | **PASS** — 10 export entries, 27 files, and 27 runtime symbols |
 | `npm run example:basic` | **PASS** — selected `high-quality`, quality check passed |
@@ -46,23 +72,28 @@ published; npm publication remains pending.
 | `npm run example:edge` | **PASS** — deterministic three-tier sequence and Prometheus text |
 | `npm run benchmark` | **PASS** — results below |
 | `npm run benchmark:concurrency` | **PASS** — concurrency and retained-heap observations below |
-| `npm pack --dry-run` | **PASS** — 168 files, 144.7 kB packed, 672.7 kB unpacked |
-| Clean consumer install from tarball | **PASS** — all ten documented subpaths imported; core run, web/edge reads, testing SDK, and observability collector succeeded |
-| Clean consumer TypeScript compile | **PASS** — all subpaths resolve under NodeNext with `@types/node` |
+| `node --expose-gc --import tsx benchmarks/runtime-overhead.ts --json` | **PASS** — schemaVersion 1, 4 modes, self-comparison 0.00% |
+| `npm run benchmark:compare -- <baseline.json> <current.json>` | **PASS** — informational by default; explicit threshold opt-in tested |
+| `node --import tsx --test tests/integration/published-package-verification.test.ts` | **PASS** — 11 offline metadata/attestation tests, no npm contact |
+| `npm pack --dry-run` | **PASS** — 168 files, 148.6 kB packed, 686.5 kB unpacked |
+| Clean consumer install from tarball | **PASS (historical 0.3.0 package inspection)** — all ten documented subpaths imported; source package surface is unchanged in this wave |
+| Clean consumer TypeScript compile | **PASS (historical 0.3.0 package inspection)** — all subpaths resolve under NodeNext with `@types/node` |
 | Portable source scan | **PASS** — zero `node:` / `process.` matches across 33 files |
-| `npm ls --omit=dev --depth=0` | **PASS** — `(empty)`; no runtime dependencies |
-| `npm audit` | **PASS** — 0 vulnerabilities (including dev dependencies) |
-| Markdown relative-link check | **PASS** — 192 Markdown files, 219 relative links, all targets exist |
+| `npm run verify:zero-deps` | **PASS** — 64 lockfile entries, no production packages |
+| `npm audit --omit=dev --audit-level=high` | **PASS** — 0 vulnerabilities |
+| `npm run check:links` | **PASS** — 38 Markdown files, 229 relative links, all targets exist |
 
 The suite covers unit tests in `tests/unit/`, integration tests in
 `tests/integration/`, and deterministic property/fuzz tests in `tests/property/`,
-plus shared helpers. `node:test` reports 49 suites because of nested `describe`
+plus shared helpers. `node:test` reports 54 suites because of nested `describe`
 blocks. The property suite uses `fast-check` with a fixed default seed; set
 `FUZZ_RUNS` and `FUZZ_SEED` to run a longer reproducible campaign. The scheduled
 campaign and scope limits are documented in [FUZZING.md](FUZZING.md). The checks
 in this line include the testing SDK, entry-point isolation, package subpath
 assertions, the built-package export verifier, the PR title validator, the
-portability source scan, and deterministic edge-example assertions.
+portability source scan, deterministic edge-example assertions, offline
+published-package verification, benchmark JSON/comparison checks,
+zero-runtime-dependency verification, and Markdown-link validation.
 
 ## Coverage
 
@@ -70,9 +101,9 @@ Global result from `npm run test:coverage`:
 
 | Metric | Result | Threshold | Status |
 | --- | ---: | ---: | --- |
-| Lines | 99.10% | 80% | PASS |
-| Branches | 97.00% | 80% | PASS |
-| Functions | 98.64% | 80% | PASS |
+| Lines | 99.08% | 80% | PASS |
+| Branches | 96.93% | 80% | PASS |
+| Functions | 98.68% | 80% | PASS |
 
 Every `src/**` file is above 80% branch coverage. The lowest per-file branch
 results are:
@@ -80,17 +111,17 @@ results are:
 | File | Branch coverage |
 | --- | ---: |
 | `providers/cpu-utilization.ts` | 83.33% |
-| `runtime/runtime.ts` | 90.21% |
+| `runtime/runtime.ts` | 90.73% |
 | `providers/event-loop-delay.ts` | 91.18% |
 | `runtime/executor.ts` | 91.30% |
-| `observability/index.ts` | 93.44% |
+| `observability/index.ts` | 92.39% |
 
 The entry points (`core.ts`, `node.ts`, `web.ts`, `edge.ts`), the composite
 provider, the testing SDK, the observability module, the web providers, and the
 edge provider are covered by integration and unit tests. V8 coverage can move by
 a few tenths of a percentage point between runs because cooperative-cancellation
 paths depend on timer scheduling; this final run remains above 99.0% lines and
-96.7% branches, and every per-file branch result stays above 80%.
+96.9% branches, and every per-file branch result stays above 80%.
 
 ## Examples
 
@@ -103,7 +134,7 @@ Search:
 
 ```text
 exhaustive (100% recall), balanced (60%), balanced (60%),
-economy (25-item cap), economy, exhaustive (100%)
+economy (169 scanned, 0.9% recall), economy, exhaustive (100%)
 ```
 
 Planning:
@@ -132,7 +163,7 @@ The integration test asserts the sequence, decision kinds, pressure scores,
 `0.3`, and `edge_gateway_runtime_closed_total 1`.
 
 The basic example runs against the real `ProcessMemoryProvider` and selected the
-high-quality path on this machine (heap 9.3 MB, RSS 52.0 MB); it does not assert
+high-quality path on this machine (heap 9.4 MB, RSS 51.6 MB); it does not assert
 machine-dependent values. The quick-start example selected `iterative` and
 returned `50005000`. The observability example mapped events into an in-memory
 sink and printed counters, gauges, and histograms for one success and one pinned
@@ -145,10 +176,10 @@ Command: `npm run benchmark` (Node 24.15.0, `--expose-gc`, 20,000 runs per round
 
 | Mode | Median µs/run | Relative to direct |
 | --- | ---: | ---: |
-| Direct call | 0.257 | 1.00x |
-| Runtime, static policy | 3.332 | 12.95x |
-| Runtime, adaptive (fresh in-memory read) | 7.645 | 29.72x |
-| Runtime, adaptive (cached read) | 3.481 | 13.53x |
+| Direct call | 0.324 | 1.00x |
+| Runtime, static policy | 4.568 | 14.11x |
+| Runtime, adaptive (fresh in-memory read) | 9.955 | 30.75x |
+| Runtime, adaptive (cached read) | 5.099 | 15.75x |
 
 Every mode returned `299533` for the checked input, so the runtime path was not
 dead-code-eliminated. This is sequential call overhead, not throughput or
@@ -158,13 +189,13 @@ production performance. Timings vary between runs; see
 A separate concurrency/memory observation (`npm run benchmark:concurrency`)
 measured 1/4/16/64 worker loops with distinct and same operation ids:
 
-- distinct-id median throughput: 218,078 / 264,897 / 262,283 / 266,104 runs/s;
-- same-id median throughput: 280,494 / 288,298 / 285,559 / 250,044 runs/s;
+- distinct-id median throughput: 184,823 / 222,155 / 239,535 / 213,791 runs/s;
+- same-id median throughput: 239,032 / 287,618 / 261,196 / 281,087 runs/s;
 - with 64 concurrent callers and a provider resolving on a later macrotask,
   64 `run()` calls were in flight and **1 provider read** was observed in
-  2.76 ms;
-- the fixed-id retained-heap sample had a median delta of **+16.3 KiB**
-  (+1.66 B/run), with samples of +25.2 KiB, +16.3 KiB, and +1.6 KiB.
+  3.03 ms;
+- the fixed-id retained-heap sample had a median delta of **+23.4 KiB**
+  (+2.39 B/run), with samples of +38.4 KiB, +23.4 KiB, and -388.8 KiB.
 
 These are single-event-loop observations, not multi-core scaling, production
 throughput, or leak tests. Heap deltas vary with GC timing and JIT state. Full
@@ -173,9 +204,9 @@ results are in
 
 ## Package inspection
 
-- `npm pack --dry-run` reports **168 files**, **144.7 kB packed**, and
-  **672.7 kB unpacked**, version **0.3.0**, shasum
-  `928546bd5ca2a11db75685900062d1274e1a0b58`.
+- `npm pack --dry-run` reports **168 files**, **148.6 kB packed**, and
+  **686.5 kB unpacked**, version **0.3.0**, shasum
+  `41c95cb82db228f856c51474da45118ec0be9532`.
 - The tarball contains `dist/`, `README.md`, `LICENSE`, `NOTICE`, and
   `package.json`. No `src/`, `tests/`, `examples/`, `benchmarks/`, `docs/`,
   coverage, or `node_modules/` files are included.
@@ -243,10 +274,13 @@ as described in [GITHUB_SETTINGS.md](GITHUB_SETTINGS.md). The first Scorecard ru
 on `main` succeeded and published a score; see the current evidence below.
 
 Current remote workflow evidence for the 0.3.0 release tree and post-0.3.0
-fuzzing work:
+fuzzing and hardening work:
 
 | Workflow | Result |
 | --- | --- |
+| CI on `main` at `1cc7f10` | **PASS** — run [39817549386](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39817549386) |
+| CodeQL on `main` at `1cc7f10` | **PASS** — run [39817549416](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39817549416) |
+| OpenSSF Scorecard on `main` at `1cc7f10` | **PASS** — run [39817549342](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39817549342) |
 | CI on `main` at `3d846ea` | **PASS** — run [39808546723](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39808546723) |
 | CodeQL on `main` at `3d846ea` | **PASS** — run [39808546967](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39808546967) |
 | OpenSSF Scorecard on `main` at `3d846ea` | **PASS** — run [39808547104](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39808547104), score 7.6/10, `Fuzzing` 10/10 |
@@ -332,10 +366,12 @@ npm dispatch.
 
 ## Release assessment
 
-Local verification for 0.3.0 is complete: 265 tests, 99.10% line / 97.00% branch /
-98.64% function coverage, build, six examples, both benchmarks, package
-inspection, all documented subpath imports, a strict TypeScript consumer, the
-built-package export verifier, and the zero-Node portability scan. The source is
+Local verification for the current quality-gate tree is complete: 313 tests,
+99.08% line / 96.93% branch / 98.68% function coverage, build, six examples, both
+benchmarks, a 168-file package inspection, the built-package export verifier, the
+zero-Node portability scan, zero runtime dependencies, and 38 Markdown files with
+229 relative links. The historical 0.3.0 package inspection above also covered all
+documented subpath imports and a strict TypeScript consumer. The source is
 coherent for the 0.x line.
 
 The 0.3.0 source is merged at `5504f21` and tagged `v0.3.0`; the GitHub release is

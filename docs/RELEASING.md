@@ -151,10 +151,47 @@ The workflow does not re-create or move the GitHub release during the npm phase.
 
 ## 6. Post-publication verification
 
-The workflow's `verify-publish` job performs the registry propagation, version,
-integrity, provenance, and clean-consumer checks automatically. Treat the commands
-below as an independent owner check and as the evidence to record, rather than
-assuming the workflow result is sufficient.
+The workflow's `verify-publish` job runs
+`scripts/verify-published-package.mjs` against the tag version. The script waits
+for registry propagation, checks the exact version, `dist.integrity`
+(`sha512-`), and `repository.url`, verifies the provenance attestation, then
+installs the package in a clean temporary consumer and imports the root,
+`/policy`, and `/providers` entry points before running one operation and
+closing the runtime.
+
+Run the same verification locally:
+
+```bash
+node scripts/verify-published-package.mjs --version 0.3.0
+node scripts/verify-published-package.mjs --version 0.3.0 --json
+node scripts/verify-published-package.mjs --help
+```
+
+`--json` prints exactly one machine-readable summary to stdout. Failures go to
+stderr and exit non-zero.
+
+For an offline dry run or script test, supply fixtures and skip the install:
+
+```bash
+node scripts/verify-published-package.mjs --version 0.3.0 \
+  --metadata-file ./metadata.json \
+  --attestations-file ./attestations.json \
+  --skip-consumer
+```
+
+- `--metadata-file` reads registry metadata from JSON and disables all registry
+  access, including the consumer install.
+- `--attestations-file` reads the provenance record from JSON instead of
+  `npm view`.
+- `--skip-provenance` and `--skip-consumer` skip those checks entirely.
+- `--wait-attempts` and `--wait-delay-ms` tune registry propagation polling.
+
+The integration test
+`tests/integration/published-package-verification.test.ts` uses these switches
+and never contacts npm.
+
+Treat the commands below as an independent owner check and as the evidence to
+record, rather than assuming the workflow result is sufficient.
 
 ```bash
 npm view adaptive-runtime version
@@ -175,6 +212,10 @@ node --input-type=module -e "import { createAdaptiveRuntime } from 'adaptive-run
 Verify provenance and the published tarball according to the npm documentation.
 Record the registry version, integrity, provenance result, GitHub release URL, CI
 run, and clean-consumer result in [VERIFICATION.md](VERIFICATION.md).
+
+The automated job and offline dry runs do not replace owner approval:
+`npm publish` requires explicit owner approval for that version, as described
+in Section 5.
 
 ## 7. If something fails
 

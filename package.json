@@ -113,8 +113,12 @@
     "example:edge": "tsx examples/multi-runtime-edge/index.ts",
     "benchmark": "node --expose-gc --import tsx benchmarks/runtime-overhead.ts",
     "benchmark:concurrency": "node --expose-gc --import tsx benchmarks/concurrency.ts",
+    "benchmark:compare": "node scripts/compare-benchmarks.mjs",
     "verify:exports": "node scripts/verify-package-exports.mjs",
-    "check": "npm run lint && npm run typecheck && npm test && npm run build && npm run verify:exports",
+    "verify:publish": "node scripts/verify-published-package.mjs",
+    "verify:zero-deps": "node scripts/verify-zero-dependencies.mjs",
+    "check:links": "node scripts/check-markdown-links.mjs",
+    "check": "npm run lint && npm run typecheck && npm test && npm run build && npm run verify:exports && npm run verify:zero-deps && npm run check:links",
     "prepack": "npm run build",
     "prepublishOnly": "npm run check"
   },

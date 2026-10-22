@@ -127,8 +127,12 @@ tests/
       ├── policy-evaluation.test.ts
       └── runtime-invariants.test.ts
 scripts/
+  ├── check-markdown-links.mjs
   ├── check-pr-title.mjs
-  └── verify-package-exports.mjs
+  ├── compare-benchmarks.mjs
+  ├── verify-package-exports.mjs
+  ├── verify-published-package.mjs
+  └── verify-zero-dependencies.mjs
 examples/
   └── multi-runtime-edge/
       ├── edge-gateway.ts
@@ -138,13 +142,14 @@ examples/
 
 ## Verification status
 
-- 265 tests across 49 suites, 0 failures, 0 skipped.
-- 99.10% lines, 97.00% branches, 98.64% functions; every `src/**` file is above
+- 313 tests across 54 suites, 0 failures, 0 skipped.
+- 99.08% lines, 96.93% branches, 98.68% functions; every `src/**` file is above
   80% branch coverage.
 - Full local gate passed on 2026-10-22: format, lint, typecheck, tests, coverage,
-  build, six examples, both benchmarks, `npm pack --dry-run`, zero-Node source
-  scan, and a clean-consumer install with all documented subpaths plus a NodeNext
-  TypeScript compile.
+  build, six examples, both benchmarks, JSON benchmark comparison,
+  `npm pack --dry-run`, zero-Node source scan, zero-runtime-dependency check, and
+  Markdown-link validation. The historical 0.3.0 clean-consumer install and
+  NodeNext compile remain recorded in [docs/VERIFICATION.md](docs/VERIFICATION.md).
 - The `v0.3.0` tag, GitHub release, and npm publication are separate
   owner-approved release steps. See [docs/RELEASING.md](docs/RELEASING.md) and
   [docs/VERIFICATION.md](docs/VERIFICATION.md).
