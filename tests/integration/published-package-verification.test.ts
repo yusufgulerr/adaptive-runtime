@@ -221,7 +221,10 @@ describe("published package verification", () => {
 
       assert.equal(result.status, 0, `${label}: ${result.stderr}`);
       assert.match(result.stdout, /Provenance: verified from file/);
-      assert.match(result.stdout, /registry\.npmjs\.org/);
+      assert.ok(
+        result.stdout.includes(`https://registry.npmjs.org/-/npm/v1/attestations/${label}.json`),
+        `${label}: ${result.stdout}`,
+      );
     }
   });
 
