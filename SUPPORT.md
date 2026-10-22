@@ -11,8 +11,10 @@
 
 ## Questions and bugs
 
-- **Usage questions / design discussion:** use GitHub Discussions or the usage
-  question issue form.
+- **Usage questions / design discussion:** use
+  [GitHub Discussions](https://github.com/yusufgulerr/adaptive-runtime/discussions)
+  as the primary channel. The usage question issue form remains available when a
+  report needs issue tracking.
 - **Bug reports:** use the bug report issue form and include a minimal
   reproduction, Node version, package version, and expected/actual behavior.
 - **Feature requests:** use the feature request issue form and describe the
@@ -35,8 +37,9 @@ Do not include secrets, tokens, customer data, or unredacted production logs.
 
 ## Scope and expectations
 
-Support is provided by the maintainer as capacity allows. There is no paid
-support tier or guaranteed response time. The project does not provide:
+Community and maintainer support is provided via GitHub Discussions and the issue
+tracker on a best-effort basis. There is no paid support tier or guaranteed
+response time. The project does not provide:
 
 - production incident support;
 - consulting or integration services;

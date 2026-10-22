@@ -1,11 +1,84 @@
 # Observability guide
 
-Adaptive Runtime does not ship a metrics client, exporter, background collector,
-or network telemetry. It provides typed events, per-operation decisions, and
-cumulative stats. Your application chooses the sink and the retention policy.
+Adaptive Runtime ships a zero-dependency, platform-neutral observability bridge
+in `adaptive-runtime/observability`. It includes an in-memory metrics collector
+with Prometheus text exposition and a structural OpenTelemetry meter adapter. It
+does not start a background exporter, network client, or telemetry agent, and it
+never sends data anywhere by itself. Your application chooses the sink and the
+retention policy.
 
-This guide suggests a small, low-cardinality metrics mapping. It is a starting
-point, not a required schema.
+The runtime also exposes typed events, per-operation decisions, and cumulative
+stats for custom pipelines. This guide describes both surfaces.
+
+## Built-in collector
+
+```ts
+import { createAdaptiveRuntime } from "adaptive-runtime/core";
+import { createMetricsCollector } from "adaptive-runtime/observability";
+
+const runtime = createAdaptiveRuntime({ providers, policy });
+const collector = createMetricsCollector({
+  prefix: "adaptive_runtime",              // default
+  defaultAttributes: { service: "search" },
+  buckets: [0.001, 0.01, 0.1, 1],          // seconds
+});
+const detach = collector.attach(runtime);
+
+await runtime.run(operation);
+
+const snapshot = collector.getSnapshot();
+const prometheus = collector.toPrometheusText();
+console.log(prometheus);
+detach();
+```
+
+`attach()` returns a detach function and subscribes to `decision`, `run:start`,
+`run:success`, `run:error`, `provider:error`, `listener:error`, and
+`runtime:closed`. `reset()` clears the in-memory registry. Snapshot counters
+cover runs, decisions, strategy selections, signal statuses, budget statuses,
+quality checks, provider errors, listener errors, and runtime closes. Gauges
+cover `ok` signal readings and budget engagement. Histograms cover run duration
+in seconds.
+
+| Metric | Type | Labels |
+| --- | --- | --- |
+| `<prefix>_runs_total` | counter | `operation_id`, `strategy_id`, `result` |
+| `<prefix>_run_duration_seconds` | histogram | `operation_id`, `strategy_id` |
+| `<prefix>_decisions_total` | counter | `operation_id`, `kind`, `changed` |
+| `<prefix>_strategy_selections_total` | counter | `operation_id`, `strategy_id` |
+| `<prefix>_signal_reading` | gauge | `operation_id`, `signal`, `status` |
+| `<prefix>_signal_status_total` | counter | `operation_id`, `signal`, `status` |
+| `<prefix>_budget_engaged` | gauge | `operation_id`, `budget_id` |
+| `<prefix>_budget_status_total` | counter | `operation_id`, `budget_id`, `status` |
+| `<prefix>_quality_total` | counter | `operation_id`, `strategy_id`, `status` |
+| `<prefix>_provider_errors_total` | counter | `provider_id` |
+| `<prefix>_listener_errors_total` | counter | `event` |
+| `<prefix>_runtime_closed_total` | counter | — |
+
+Critical rule: when a signal status is not `ok`, the collector increments
+`<prefix>_signal_status_total{status="unknown|stale|unsupported|error|missing"}`
+and **does not write the gauge**. It never exports unavailable data as `0`.
+Prometheus label values escape backslashes, double quotes, and newlines.
+
+## OpenTelemetry bridge
+
+`attachOpenTelemetryMeter` accepts any object that structurally matches the
+OpenTelemetry `Meter` interface. No `@opentelemetry/api` dependency is required
+at build time or runtime.
+
+```ts
+import { attachOpenTelemetryMeter } from "adaptive-runtime/observability";
+
+const detachMeter = attachOpenTelemetryMeter(runtime, meter, {
+  prefix: "adaptive_runtime",
+  defaultAttributes: { service: "search" },
+});
+```
+
+The adapter creates counters, a duration histogram, and (when available) an
+up-down counter for signal readings, then forwards runtime events to them. It is
+best-effort: a meter instrument that throws does not fail a run. Call the
+returned detach function before discarding the runtime.
 
 ## Surfaces
 
@@ -29,8 +102,9 @@ is not shared across processes.
 
 ## Recommended metrics
 
-Use stable names and bounded labels. The names below are suggestions, not
-exported constants.
+Use stable names and bounded labels. These are the names emitted by the built-in
+collector with the default `adaptive_runtime` prefix; a custom pipeline should
+copy the same mapping.
 
 | Metric | Type | Labels | Source |
 | --- | --- | --- | --- |
@@ -39,10 +113,13 @@ exported constants.
 | `adaptive_runtime_decisions_total` | counter | `operation_id`, `kind`, `changed` | `decision` |
 | `adaptive_runtime_strategy_selections_total` | counter | `operation_id`, `strategy_id` | `run:start` |
 | `adaptive_runtime_signal_reading` | gauge | `operation_id`, `signal`, `status` | `decision.signals` |
+| `adaptive_runtime_signal_status_total` | counter | `operation_id`, `signal`, `status` | `decision.signals` |
 | `adaptive_runtime_budget_engaged` | gauge | `operation_id`, `budget_id` | `decision.budgets` |
+| `adaptive_runtime_budget_status_total` | counter | `operation_id`, `budget_id`, `status` | `decision.budgets` |
 | `adaptive_runtime_quality_total` | counter | `operation_id`, `strategy_id`, `status` | `metadata.quality` |
 | `adaptive_runtime_provider_errors_total` | counter | `provider_id` | `provider:error` |
 | `adaptive_runtime_listener_errors_total` | counter | `event` | `listener:error` |
+| `adaptive_runtime_runtime_closed_total` | counter | — | `runtime:closed` |
 
 For `adaptive_runtime_signal_reading`, emit `value` only when
 `status === "ok"`. For unavailable statuses, either omit the sample or record a

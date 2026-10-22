@@ -4,10 +4,38 @@ All notable changes are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project intends
 to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) after 1.0.
 
-## [Unreleased]
+## [0.3.0] — unreleased
 
 ### Added
 
+- Multi-runtime entry points: `adaptive-runtime/core`, `/node`, `/web`, and
+  `/edge`, plus `/observability` and `/testing`. The root entry point remains the
+  Node.js default. Every subpath declares `types`, `import`, and `default`
+  conditions.
+- `DeviceMemoryProvider`, `NetworkInformationProvider`, and `FrameTimingProvider`
+  for browsers and Web-compatible runtimes. They use structural interfaces,
+  require no DOM type library, and keep unavailable data explicit.
+- `ExecutionBudgetProvider` for WinterCG, serverless, and edge runtimes, with
+  remaining wall-clock time, used-budget ratio, and concurrency saturation.
+- `CompositeSignalProvider` with validated rules, passthrough inputs, child
+  lifecycle forwarding, and status propagation (`error` > `stale` >
+  `unsupported` > `unknown`).
+- `Policy.customSelector` and the `custom-selector` decision reason. The selector
+  refines eligible automatic candidates and remains subject to applicability,
+  quality bounds, hysteresis, and stability gates.
+- `adaptive-runtime/observability`: `createMetricsCollector` with in-memory
+  counters/gauges/histograms and Prometheus text exposition, plus
+  `attachOpenTelemetryMeter` for structural OpenTelemetry meters. Non-`ok` signal
+  statuses increment status counters and never write a zero gauge.
+- `adaptive-runtime/testing`: `createFakeClock`, `ScriptedSignalProvider`, and
+  `runProviderConformanceCheck`.
+- `examples/multi-runtime-edge`: deterministic core + edge + observability
+  example with an execution budget, composite pressure score, three-tier strategy
+  ladder, and Prometheus output.
+- ADRs 0007 (multi-runtime and composite providers) and 0008 (custom selector,
+  observability, and testing SDK).
+- Source-scan portability test, entry-point integration tests, and package
+  subpath assertions.
 - `Policy.maxTrackedOperations`: bounds all operation-keyed state with
   deterministic LRU eviction. Pinned, selecting, and executing operations are
   never evicted.
@@ -19,33 +47,55 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) after 1.0.
 - `adaptive-runtime/policy` subpath: platform-neutral policy types,
   `definePolicy`, `resolvePolicy`, `createInitialPolicyState`, and
   `evaluatePolicy`.
-- `adaptive-runtime/providers` subpath: the four built-in Node.js providers and
-  their signal-name constants.
+- `adaptive-runtime/providers` subpath: every built-in provider (Node.js, web,
+  edge, and composite) and their signal-name constants. This barrel is mixed and
+  not platform-neutral.
 - Dependency Review workflow pinned to
   `actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48`.
 - Cross-platform CI job on Windows and macOS.
 - ADR 0006 documenting bounded operation state and subpath exports.
+- `verify-publish` release job: registry propagation retry, version, integrity,
+  repository metadata, provenance attestation, and clean-consumer import checks.
 
 ### Changed
 
+- Package version is `0.3.0`. The root entry point now re-exports the Node.js
+  entry point; platform-specific modules should import `/core`, `/web`, or
+  `/edge` explicitly.
+- The package description, keywords, README, API reference, architecture,
+  provider guide, observability guide, roadmap, verification record, and agent
+  rules now describe the multi-runtime surface.
+- Expanded branch coverage for the new entry points, providers, testing SDK, and
+  portability checks to 251 tests and 99.08% line / 96.71% branch / 98.64%
+  function coverage.
 - Split the policy core into `budgets.ts`, `candidates.ts`, `stability.ts`, and a
   coordinating `engine.ts`. `evaluatePolicy` semantics and the public contract are
   unchanged; `src/policy/` remains free of Node.js imports.
 - Identifier validation is consistent: `operationId` is trimmed, while strategy,
   provider, signal, budget, and fallback identifiers reject leading or trailing
   whitespace.
+- Governance documents define a four-level contributor ladder (Community
+  Contributor, Triage Collaborator, Committer/Reviewer, Core Maintainer/Owner)
+  with recorded promotion and access-review rules.
 - The release workflow uses npm trusted publishing (OIDC) with provenance and an
-  optional `NPM_TOKEN` fallback; the npm cache is disabled for release jobs.
+  optional `NPM_TOKEN` fallback; the npm cache is disabled for release jobs. The
+  tag/version check reads `package.json` without CommonJS `require`.
 - Published package contents are limited to `dist`, `README.md`, `LICENSE`, and
   `NOTICE`.
-- Expanded branch coverage for providers, runtime validation, and public subpath
-  integration to 96 tests and 97.42% line / 92.59% branch / 97.76% function
-  coverage.
 
 ### Fixed
 
 - Per-operation maps no longer grow without bound when `maxTrackedOperations` is
   configured.
+
+### Notes
+
+- Version 0.3.0 is prepared for publication but is not published. npm and GitHub
+  release publication require explicit owner approval.
+- The portable `/core`, `/web`, `/edge`, `/policy`, `/observability`, and
+  `/testing` modules contain no Node.js built-in imports and do not read the
+  Node.js `process` object.
+- The runtime remains a trusted-code library, not a sandbox.
 
 ## [0.1.0] — 2026-10-21
 

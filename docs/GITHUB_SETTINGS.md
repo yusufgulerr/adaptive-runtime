@@ -11,7 +11,7 @@ request that updates this file, `GOVERNANCE.md`, or both.
 
 | Item | Value |
 | --- | --- |
-| Description | `Deterministic, resource-aware adaptive execution runtime for TypeScript and Node.js — dynamically orchestrating algorithmic strategies via explicit resource signals, budgets, and hysteresis policies.` |
+| Description | `Deterministic, resource-aware adaptive execution runtime for TypeScript & Node.js — dynamic strategy orchestration via explicit signals, budgets, and hysteresis.` |
 | Homepage | `https://github.com/yusufgulerr/adaptive-runtime#readme` |
 | Topics | `adaptive-runtime`, `nodejs`, `typescript`, `policy-engine`, `resource-management`, `graceful-degradation`, `load-shedding`, `hysteresis`, `resilience`, `observability`, `performance`, `quality-of-service`, `zero-dependencies`, `esm` |
 | Discussions | Enabled |
@@ -44,7 +44,7 @@ push, pull-request approval, or release rights.
 
 Use **Settings → Branches → Add branch protection rule** for `main` (the current
 setup), or the equivalent repository ruleset. Branch protection is used because
-it supports required code-owner reviews and the solo-maintainer admin bypass
+it supports required code-owner reviews and the owner admin bypass
 described below.
 
 | Setting | Value |
@@ -64,9 +64,10 @@ described below.
 | Enforce for administrators (`enforce_admins`) | Disabled; owner-only bypass documented below |
 
 `enforce_admins` is intentionally off so the owner can merge their own pull
-requests. GitHub does not allow a user to approve their own pull request, and this
-is a single-maintainer project. External pull requests still require the owner's
-code-owner approval; no other collaborator has write access to satisfy it.
+requests. GitHub does not allow a user to approve their own pull request, and the
+project currently has one write-capable maintainer. External pull requests still
+require the owner's code-owner approval; no other collaborator has write access to
+satisfy it. See the contributor ladder in [GOVERNANCE.md](../GOVERNANCE.md).
 
 The `.github/CODEOWNERS` file assigns every path, including the critical runtime,
 policy, provider, documentation, and workflow directories, to `@yusufgulerr`.

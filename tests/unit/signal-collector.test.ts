@@ -307,4 +307,172 @@ describe("SignalCollector", () => {
     assert.equal(requireOk(second.readings[0]).value, 3);
     assert.equal(reads, 2);
   });
+
+  it("rejects pre-aborted callers and normalizes non-Error abort reasons", async () => {
+    const provider = new FunctionSignalProvider({
+      read: () => new Promise<readonly ResourceSignal[]>(() => undefined),
+    });
+    const { collector, clock } = makeCollector([provider], { providerTimeoutMs: 0 });
+
+    const reason = new Error("already cancelled");
+    const first = new AbortController();
+    first.abort(reason);
+    await assert.rejects(
+      collector.collect(clock.now(), first.signal),
+      (error: unknown) => error === reason,
+    );
+
+    const second = new AbortController();
+    second.abort("not an Error");
+    await assert.rejects(
+      collector.collect(clock.now(), second.signal),
+      (error: unknown) =>
+        error instanceof Error && error.message === "Signal collection was aborted.",
+    );
+  });
+
+  it("does not reuse a snapshot with a negative age", async () => {
+    const provider = new SequenceSignalProvider({ values: [1, 2] });
+    const { collector, clock } = makeCollector([provider], { evaluationIntervalMs: 1000 });
+    const now = clock.now();
+
+    const first = await collector.collect(now, new AbortController().signal);
+    assert.equal(requireOk(first.readings[0]).value, 1);
+    assert.equal(first.cached, false);
+
+    const second = await collector.collect(now - 1, new AbortController().signal);
+    assert.equal(second.cached, false);
+    assert.equal(requireOk(second.readings[0]).value, 2);
+
+    const third = await collector.collect(now + 500, new AbortController().signal);
+    assert.equal(third.cached, true);
+    assert.equal(requireOk(third.readings[0]).value, 2);
+  });
+
+  it("reports a provider start failure once and reuses the error readings", async () => {
+    let starts = 0;
+    let reads = 0;
+    const provider: SignalProvider = {
+      id: "start-failure",
+      signals: [{ name: PROVIDER_SIGNAL, unit: "bytes" }],
+      start: () => {
+        starts += 1;
+        throw new Error("start failed");
+      },
+      read: () => {
+        reads += 1;
+        return [];
+      },
+    };
+    const { collector, clock, errors } = makeCollector([provider], { evaluationIntervalMs: 0 });
+
+    const first = await collector.collect(clock.now(), new AbortController().signal);
+    assert.equal(first.readings[0]?.status, "error");
+    assert.match(first.readings[0]?.error ?? "", /start failed/);
+
+    const second = await collector.collect(clock.now(), new AbortController().signal);
+    assert.equal(second.readings[0]?.status, "error");
+    assert.equal(starts, 1);
+    assert.equal(reads, 0);
+    assert.equal(errors.length, 1);
+    assert.equal(errors[0]?.providerId, "start-failure");
+  });
+
+  it("contains provider close failures and still resolves close", async () => {
+    const provider: SignalProvider = {
+      id: "close-failure",
+      signals: [{ name: PROVIDER_SIGNAL, unit: "bytes" }],
+      read: (context) => [okSignal(PROVIDER_SIGNAL, 1, context.now)],
+      close: () => {
+        throw new Error("close failed");
+      },
+    };
+    const { collector, clock, errors } = makeCollector([provider]);
+    await collector.collect(clock.now(), new AbortController().signal);
+    await collector.close();
+    await collector.close();
+    assert.equal(errors.length, 1);
+    assert.equal(errors[0]?.providerId, "close-failure");
+    assert.match(errors[0]?.error.message ?? "", /close failed/);
+  });
+
+  it("validates every malformed reading shape", async () => {
+    const duplicate = {
+      name: PROVIDER_SIGNAL,
+      unit: "bytes",
+      status: "ok",
+      value: 1,
+      observedAt: 1,
+    };
+    const cases: readonly { label: string; raw: unknown; match: RegExp }[] = [
+      { label: "non-array", raw: { readings: [] }, match: /must return an array/ },
+      { label: "non-object", raw: [null], match: /non-object reading/ },
+      {
+        label: "undeclared",
+        raw: [{ ...duplicate, name: "other.signal" }],
+        match: /undeclared signal/,
+      },
+      { label: "duplicate", raw: [duplicate, duplicate], match: /more than once/ },
+      {
+        label: "negative observedAt",
+        raw: [{ ...duplicate, observedAt: -1 }],
+        match: /invalid observedAt/,
+      },
+      {
+        label: "NaN observedAt",
+        raw: [{ ...duplicate, observedAt: Number.NaN }],
+        match: /invalid observedAt/,
+      },
+      {
+        label: "non-number observedAt",
+        raw: [{ ...duplicate, observedAt: "1" }],
+        match: /invalid observedAt/,
+      },
+      {
+        label: "invalid status",
+        raw: [{ ...duplicate, status: "bogus" }],
+        match: /invalid status/,
+      },
+      {
+        label: "non-finite value",
+        raw: [{ ...duplicate, value: Number.POSITIVE_INFINITY }],
+        match: /non-finite value/,
+      },
+      {
+        label: "negative confidence",
+        raw: [{ ...duplicate, confidence: -0.1 }],
+        match: /confidence/,
+      },
+      {
+        label: "confidence above one",
+        raw: [{ ...duplicate, confidence: 1.1 }],
+        match: /confidence/,
+      },
+      {
+        label: "non-finite confidence",
+        raw: [{ ...duplicate, confidence: Number.NaN }],
+        match: /confidence/,
+      },
+      {
+        label: "non-string error",
+        raw: [{ ...duplicate, status: "error", value: undefined, error: 42 }],
+        match: /error must be a string/,
+      },
+    ];
+
+    for (const testCase of cases) {
+      const provider: SignalProvider = {
+        id: "malformed-readings",
+        signals: [{ name: PROVIDER_SIGNAL, unit: "bytes" }],
+        read: () => testCase.raw as readonly ResourceSignal[],
+      };
+      const { collector, clock, errors } = makeCollector([provider], {
+        evaluationIntervalMs: 0,
+      });
+      const snapshot = await collector.collect(clock.now(), new AbortController().signal);
+      assert.equal(snapshot.readings[0]?.status, "error", testCase.label);
+      assert.match(snapshot.readings[0]?.error ?? "", testCase.match, testCase.label);
+      assert.equal(errors.length, 1, testCase.label);
+    }
+  });
 });

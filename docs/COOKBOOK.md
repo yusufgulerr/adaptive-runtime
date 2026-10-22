@@ -1,7 +1,8 @@
 # Cookbook
 
-> **Status:** Adaptive Runtime 0.1.0 is the current release line. Registry
-> publication is produced by the tag-driven OIDC workflow.
+> **Status:** Adaptive Runtime 0.3.0 is the current development line. Registry
+> publication is produced by the tag-driven OIDC workflow and is pending owner
+> approval.
 > These patterns target the API in [API.md](API.md) and run against a local
 > checkout. See [Installation](../README.md#installation) for the local install
 > command. If a snippet and the API reference disagree, the reference wins.

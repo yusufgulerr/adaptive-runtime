@@ -15,8 +15,8 @@ the compatibility process described below.
    status, unit, timestamp, and source.
 3. Policy decisions must be deterministic for the same inputs, state, and clock.
 4. Every run must say which strategy ran and why.
-5. The runtime stays lean: ESM only, no runtime dependencies, no background
-   service, and no hidden network traffic.
+5. The core runtime must remain lean and zero-dependency: ESM-native, low memory
+   footprint, and zero hidden background or network activity.
 6. Failure at the edges must not take down application work by default.
 
 ## Non-goals

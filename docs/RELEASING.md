@@ -20,6 +20,20 @@ treated as an owner-only operation. The current publication status is tracked in
 - The `release` environment requires the owner's approval.
 - The owner has explicitly approved publishing this version.
 
+### Configuring npm Trusted Publishing (OIDC)
+
+To configure tokenless OIDC publishing on npm:
+
+1. Sign in to your npm account at [npmjs.com](https://www.npmjs.com) as `@yusufgulerr`.
+2. For an existing package: navigate to `adaptive-runtime` → **Settings** → **Publishing Access** → **Trusted Publishers** → **Add Trusted Publisher**.
+3. For a first publication: navigate to your account **Settings** → **Publishing Access** → **Trusted Publishers** → **Add Trusted Publisher**.
+4. Select **GitHub Actions** as the provider and configure:
+   - **Repository Owner / Organization:** `yusufgulerr`
+   - **Repository Name:** `adaptive-runtime`
+   - **Workflow Filename:** `release.yml`
+   - **Environment Name:** `release`
+5. Save the configuration. GitHub Actions jobs running `.github/workflows/release.yml` targeting the `release` environment will now receive short-lived OIDC tokens directly from npm during `npm publish --provenance`, requiring zero static secrets.
+
 Do not put `NPM_TOKEN` in repository-wide secrets, a committed `.npmrc`, a shell
 history, or a pull request comment. Prefer OIDC. Use an environment secret only
 for the fallback path and rotate it if it is exposed.
@@ -72,8 +86,8 @@ Use an annotated tag on the exact release commit:
 ```bash
 git switch main
 git pull --ff-only
-git tag -a v0.1.0 -m "adaptive-runtime 0.1.0"
-git push origin v0.1.0
+git tag -a v0.3.0 -m "adaptive-runtime 0.3.0"
+git push origin v0.3.0
 ```
 
 The tag ruleset restricts creation, update, and deletion to the repository admin.
@@ -90,7 +104,10 @@ Never force-push or move a published tag.
    - runs `npm pack --dry-run`;
    - publishes with `npm publish --provenance --access public`, preferring OIDC
      trusted publishing and falling back to `NPM_TOKEN` only when it is set;
-   - creates the GitHub release with generated notes.
+   - creates the GitHub release with generated notes;
+   - then runs the `verify-publish` job, which waits for registry propagation,
+     checks version, integrity, and repository metadata, verifies the provenance
+     attestation, and installs the package in a clean consumer.
 
    The release job does not use the npm download cache; it always resolves the
    registry metadata fresh.
@@ -99,12 +116,15 @@ Do not approve the environment until the tag and version are confirmed.
 
 ## 5. Post-publication verification
 
-After the workflow succeeds, verify the registry rather than assuming success:
+The workflow's `verify-publish` job performs the registry propagation, version,
+integrity, provenance, and clean-consumer checks automatically. Treat the commands
+below as an independent owner check and as the evidence to record, rather than
+assuming the workflow result is sufficient.
 
 ```bash
 npm view adaptive-runtime version
-npm view adaptive-runtime@0.1.0 dist.integrity
-npm view adaptive-runtime@0.1.0 repository.url
+npm view adaptive-runtime@0.3.0 dist.integrity
+npm view adaptive-runtime@0.3.0 repository.url
 ```
 
 Install and import from a clean temporary directory:
@@ -113,7 +133,7 @@ Install and import from a clean temporary directory:
 mkdir adaptive-runtime-smoke
 cd adaptive-runtime-smoke
 npm init -y
-npm install adaptive-runtime@0.1.0
+npm install adaptive-runtime@0.3.0
 node --input-type=module -e "import { createAdaptiveRuntime } from 'adaptive-runtime'; const r = createAdaptiveRuntime(); console.log(typeof r.run); await r.close();"
 ```
 
@@ -144,5 +164,6 @@ run, and clean-consumer result in [VERIFICATION.md](VERIFICATION.md).
       fallback is required and only in the `release` environment.
 - [ ] The owner approved the irreversible publish.
 - [ ] The `release` environment deployment was approved.
-- [ ] Registry, provenance, GitHub release, and clean-consumer checks pass.
+- [ ] Registry, provenance, GitHub release, and clean-consumer checks pass,
+      including the automated `verify-publish` job.
 - [ ] Results are recorded in `docs/VERIFICATION.md`.

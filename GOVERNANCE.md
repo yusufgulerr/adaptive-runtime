@@ -2,26 +2,46 @@
 
 ## Current model
 
-Adaptive Runtime is a single-maintainer open-source project owned by
+Adaptive Runtime is an open-source project founded and currently owned by
 [@yusufgulerr](https://github.com/yusufgulerr). The repository is public: anyone
-may fork it, open an issue, or submit a pull request. Only the owner has write or
-admin access.
+may fork it, open an issue, start a Discussion, or submit a pull request.
 
-This model is intentionally conservative for the 0.x line. It keeps the release
-path, security settings, and dependency updates under one accountable maintainer
-while still allowing public review and contribution.
+Responsibility grows through the staged contributor ladder below. Access is
+granted in explicit, recorded steps rather than all at once, so that review
+quality, security boundaries, and release integrity are preserved as the
+contributor base expands. Only the owner currently holds write and admin access.
 
-## Roles
+## Contributor ladder
 
-| Role | Who | Access |
-| --- | --- | --- |
-| Owner / maintainer | [@yusufgulerr](https://github.com/yusufgulerr) | Admin: repository settings, access, security, releases, tags, and branch rules |
-| Contributor | Anyone with a GitHub account | Fork, open issues, submit pull requests, and review/comment; no write access |
-| Future maintainer | Not assigned | Would require an explicit owner decision and the access review below |
+| Level | Role | Responsibilities | Access and limits |
+| --- | --- | --- | --- |
+| 1 | **Community Contributor** | Report reproducible issues, join Discussions, propose RFCs, submit pull requests from a fork, review and comment on changes. | Public read and fork access. No write access to the repository. |
+| 2 | **Triage Collaborator** | Reproduce reports, request missing information, apply `status:*`, `area:*`, and `priority:*` labels, close duplicates, and keep the issue tracker actionable. Granted by the owner after a record of accurate, constructive triage. | Triage role on issues and pull requests only. No code push, no pull-request approval, no release or settings access. |
+| 3 | **Committer / Reviewer** | Take sustained ownership of a defined area such as providers, documentation, benchmarks, or the policy core; review pull requests in that area; mentor contributors. Granted after a sustained record of merged, well-tested contributions and sound review judgment. | Scoped write or review access recorded in `CODEOWNERS` or the access review. Approval rights apply only to the assigned area. No release, tag, security-setting, or repository-admin rights. |
+| 4 | **Core Maintainer / Owner** | Own architectural integrity, the public contract, security policy, `CODEOWNERS` approval, dependency and supply-chain decisions, releases, and protected tags. | Repository admin. The owner is the final decision-maker for the 0.x line. |
+
+Progression is based on demonstrated work, not on request volume: reviewed
+contributions, test quality, deterministic behavior, documentation, and judgment
+under security or compatibility pressure. A promotion is recorded in a pull
+request that updates this file and, where relevant, `CODEOWNERS`. There is no
+automatic promotion path, and no level is granted for a one-off contribution.
 
 No outside collaborator, deploy key, or GitHub App is granted write access by
-default. Triage access, if ever granted for issue management, does not grant code
-push, approval, or release rights.
+default. Triage access does not grant code push, approval, or release rights. A
+Committer/Reviewer who later needs broader access must go through the same
+recorded review as any other change to the access model.
+
+## Access review
+
+Access is reviewed whenever a role changes, a release is prepared, or a security
+incident involves credentials. The review confirms:
+
+1. the smallest role that supports the work;
+2. two-factor authentication on the account;
+3. no standing deploy keys or write-capable GitHub Apps without an explicit
+   decision;
+4. `CODEOWNERS` still routes every path to a responsible reviewer; and
+5. the release environment and tag rules still require owner approval.
 
 ## Pull requests and review
 
@@ -39,26 +59,27 @@ push, approval, or release rights.
   deleted automatically.
 - GitHub does not allow a user to approve their own pull request. The owner can
   use the administrator bypass to merge their own pull requests; this is the only
-  solo-maintainer exception. External pull requests still require the owner's
+  owner-bypass exception. External pull requests still require the owner's
   approval.
 
 The owner reviews for correctness, deterministic behavior, test quality, API
 surface, documentation, and security. Review is mandatory for every change;
 scheduling depends on maintainer availability.
 
-## Becoming a maintainer
+## Maintainer promotion
 
-There is no automatic promotion path today. A future maintainer would be added
-only after:
+Moving to Core Maintainer / Owner is deliberately stricter than the earlier
+levels. It requires:
 
-1. a sustained record of reviewed contributions and good judgment;
+1. a sustained record of reviewed contributions and sound judgment;
 2. an explicit owner decision recorded in a pull request;
 3. review of the access, release, and security responsibilities;
 4. two-factor authentication on the account; and
 5. a documented change to this file and `CODEOWNERS`.
 
-Write access is never granted for a one-off contribution, a dependency update, or
-a request made only in an issue comment.
+Access is never granted for a one-off contribution, a dependency update, or a
+request made only in an issue comment. A rejected promotion can be revisited
+after the missing evidence exists; the decision and its reasoning stay on record.
 
 ## Releases and tags
 
