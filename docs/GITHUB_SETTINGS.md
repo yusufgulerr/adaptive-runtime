@@ -174,10 +174,12 @@ Use **Settings → Actions → General**:
 
 The workflows declare the minimum permissions they need. CI adds a cross-platform
 job on Windows and macOS without changing the required Linux check names. The
-release workflow is the only workflow that requests `contents: write`;
-`security-events: write` is limited to CodeQL and Scorecard, and `id-token: write`
-is limited to the release workflow and the Scorecard badge publication. The
-release job is additionally gated by the `release` environment.
+release workflow's `github-release` job is the only job that requests
+`contents: write`; `security-events: write` is limited to CodeQL and Scorecard, and
+`id-token: write` is limited to the npm publication job and the Scorecard badge
+publication. The npm publication job is additionally gated by the `release`
+environment. GitHub release creation is a separate tag-push step and does not
+publish to npm.
 
 `actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294`
 (v5.0.0) runs on every pull request and fails on high-severity vulnerable
@@ -195,8 +197,9 @@ its full SHA in **Settings → Actions → General → Allow specified actions**
 create --generate-notes` categorizes pull requests into Breaking Changes,
 Features, Bug Fixes, Performance, Documentation, Dependencies, Tooling and CI,
 and Other Changes. Add one of the matching labels before merging; use
-`skip-changelog` for changes that should not appear. The release workflow creates
-generated notes; it does not create or move tags.
+`skip-changelog` for changes that should not appear. The tag-push path creates
+generated notes; it does not publish to npm or move tags. npm publication is a
+separate `workflow_dispatch` against the existing tag.
 
 ## Discussions templates
 
@@ -267,7 +270,7 @@ Use **Settings → Environments → release**:
 - Environment secret: `NPM_TOKEN` only if the OIDC fallback is required; never add
   it to repository-wide secrets
 
-The `release` environment is the irreversible publish gate. OIDC trusted
+The `release` environment is the irreversible npm publish gate. OIDC trusted
 publishing needs no long-lived npm token: the job requests `id-token: write` and
 npm verifies the workflow identity. See [RELEASING.md](RELEASING.md) for the
 runbook and [VERIFICATION.md](VERIFICATION.md) for the current publication status.

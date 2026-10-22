@@ -139,5 +139,6 @@ examples/
   build, six examples, both benchmarks, `npm pack --dry-run`, zero-Node source
   scan, and a clean-consumer install with all documented subpaths plus a NodeNext
   TypeScript compile.
-- npm publication, the `v0.3.0` tag, and the GitHub release are pending explicit
-  owner approval. See [docs/VERIFICATION.md](docs/VERIFICATION.md).
+- The `v0.3.0` tag, GitHub release, and npm publication are separate
+  owner-approved release steps. See [docs/RELEASING.md](docs/RELEASING.md) and
+  [docs/VERIFICATION.md](docs/VERIFICATION.md).

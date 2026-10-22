@@ -84,8 +84,9 @@ The [threat model](docs/THREAT_MODEL.md) explains these boundaries in detail.
 - Development dependencies are locked by `package-lock.json`.
 - CI runs CodeQL, and Dependabot is configured for npm and GitHub Actions.
 - Dependency Review blocks pull requests that introduce vulnerable dependencies.
-- The release workflow is tag-driven, uses npm trusted publishing (OIDC) with
-  provenance, and keeps a token fallback only for accounts that cannot use OIDC.
+- The GitHub release is tag-driven; npm publication uses a separate owner-approved
+  OIDC dispatch with provenance and keeps a token fallback only for accounts that
+  cannot use OIDC.
 - The public baseline passes CI and CodeQL. Verify the status of the exact commit
   you deploy, and verify the npm provenance attestation before pinning versions in
   production.

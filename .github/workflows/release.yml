@@ -1,11 +1,20 @@
 name: Release
 
-# Tag-driven only. Publishing is an irreversible external side effect and must be
-# approved through the protected "release" environment before this job runs.
+# Tag pushes verify the release and create a GitHub release. npm publication is a
+# separate, manually dispatched step so the GitHub release can exist before the
+# registry account is ready. Publish later with:
+#   gh workflow run release.yml --ref v0.3.0 -f publish_npm=true
 on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      publish_npm:
+        description: "Publish the selected tag to npm"
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -15,14 +24,10 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  publish:
-    name: Publish to npm and create GitHub release
+  verify:
+    name: Verify release tag
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    environment: release
-    permissions:
-      contents: write
-      id-token: write
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -46,6 +51,57 @@ jobs:
             echo "Tag ${GITHUB_REF_NAME} does not match package version v${package_version}" >&2
             exit 1
           fi
+
+  github-release:
+    name: Create GitHub release
+    needs: verify
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Create release if missing
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            echo "GitHub release ${GITHUB_REF_NAME} already exists."
+          else
+            gh release create "${GITHUB_REF_NAME}" --generate-notes --verify-tag
+          fi
+
+  publish-npm:
+    name: Publish to npm
+    needs: verify
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_npm == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: Install
+        run: npm ci
+      - name: Verify tag matches package version
+        run: |
+          set -euo pipefail
+          package_version="$(node --input-type=module -e "import { readFileSync } from 'node:fs'; console.log(JSON.parse(readFileSync('package.json', 'utf8')).version)")"
+          if [ "${GITHUB_REF_NAME}" != "v${package_version}" ]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match package version v${package_version}" >&2
+            exit 1
+          fi
+      # setup-node's registry-url writes an empty _authToken line that prevents
+      # npm from starting the OIDC exchange, so the fallback configures npm only
+      # when a token is actually present.
       - name: Detect npm credentials
         id: npm-auth
         env:
@@ -57,9 +113,6 @@ jobs:
           else
             echo "mode=oidc" >> "${GITHUB_OUTPUT}"
           fi
-      # setup-node's registry-url writes an empty _authToken line that prevents
-      # npm from starting the OIDC exchange, so the fallback configures npm only
-      # when a token is actually present.
       - name: Configure npm token fallback
         if: steps.npm-auth.outputs.mode == 'token'
         run: |
@@ -74,14 +127,10 @@ jobs:
         run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-      - name: Create GitHub release
-        run: gh release create "${GITHUB_REF_NAME}" --generate-notes --verify-tag
-        env:
-          GH_TOKEN: ${{ github.token }}
 
   verify-publish:
     name: Verify published package
-    needs: publish
+    needs: publish-npm
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:

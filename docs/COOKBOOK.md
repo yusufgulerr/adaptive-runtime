@@ -1,8 +1,8 @@
 # Cookbook
 
-> **Status:** Adaptive Runtime 0.3.0 is the current development line. Registry
-> publication is produced by the tag-driven OIDC workflow and is pending owner
-> approval.
+> **Status:** Adaptive Runtime 0.3.0 is the current development line. The GitHub
+> release is tag-driven; npm publication is a separate owner-approved OIDC
+> workflow dispatch and is pending.
 > These patterns target the API in [API.md](API.md) and run against a local
 > checkout. See [Installation](../README.md#installation) for the local install
 > command. If a snippet and the API reference disagree, the reference wins.

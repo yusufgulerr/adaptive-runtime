@@ -4,7 +4,7 @@ All notable changes are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project intends
 to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) after 1.0.
 
-## [0.3.0] — unreleased
+## [0.3.0] — 2026-10-22
 
 ### Added
 
@@ -98,6 +98,9 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) after 1.0.
 - The release workflow uses npm trusted publishing (OIDC) with provenance and an
   optional `NPM_TOKEN` fallback; the npm cache is disabled for release jobs. The
   tag/version check reads `package.json` without CommonJS `require`.
+- Release publication is two-phase: a `v*` tag push verifies the tagged tree and
+  creates the GitHub release, while npm publication is a separate
+  `workflow_dispatch` with `publish_npm=true`, gated by the `release` environment.
 - Published package contents are limited to `dist`, `README.md`, `LICENSE`, and
   `NOTICE`.
 
@@ -108,8 +111,9 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) after 1.0.
 
 ### Notes
 
-- Version 0.3.0 is prepared for publication but is not published. npm and GitHub
-  release publication require explicit owner approval.
+- Version 0.3.0 uses a two-phase release: the tag and GitHub release are created
+  from the release commit, and npm publication remains a separate owner-approved
+  `workflow_dispatch`.
 - The portable `/core`, `/web`, `/edge`, `/policy`, `/observability`, and
   `/testing` modules contain no Node.js built-in imports and do not read the
   Node.js `process` object.

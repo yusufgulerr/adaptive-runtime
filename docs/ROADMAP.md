@@ -1,9 +1,9 @@
 # Roadmap
 
 This roadmap describes intent, not commitments or dates. Priorities may change
-with feedback and evidence. The 0.3.0 line is implemented and verified locally;
-npm publication remains prepared through the tag-driven workflow and requires
-owner approval.
+with feedback and evidence. The 0.3.0 line is implemented and verified locally and
+on remote CI/CodeQL. The GitHub release is tag-driven; npm publication is a
+separate owner-approved workflow dispatch and remains pending.
 
 ## 0.1.0 — Foundation (delivered)
 
@@ -88,7 +88,7 @@ Resolved through 0.3.0:
 4. **Inconsistent identifier validation.** `operationId` is trimmed; strategy,
    provider, signal, budget, and fallback identifiers reject surrounding
    whitespace. The rule is documented in [API.md](API.md).
-5. **Post-publish verification.** The release workflow now runs a separate
+5. **Post-publish verification.** The npm publication phase runs a separate
    `verify-publish` job after publishing: it retries registry propagation, checks
    version, `dist.integrity`, and `repository.url`, verifies the provenance
    attestation, and installs the package in a clean consumer that imports every
@@ -137,7 +137,7 @@ Delivered:
 Not yet delivered:
 
 - npm publication and remote verification of the 0.3.0 tarball. Both require
-  explicit owner approval and a tagged release.
+  explicit owner approval and an npm dispatch against the tagged release.
 - Post-0.3.0 work below remains candidate work, contingent on user demand.
 
 Candidate work after 0.3.0:

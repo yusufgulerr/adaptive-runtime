@@ -198,9 +198,11 @@ availability; the quality gate itself is not optional.
 2. Update `CHANGELOG.md` and the version in `package.json`.
 3. Run `npm run check`, `npm run test:coverage`, `npm run build`, and
    `npm pack --dry-run`.
-4. Confirm the npm name and repository metadata immediately before publishing.
-5. Tag the release and publish through the release workflow with provenance.
-6. Verify a clean consumer install and import from the published tarball.
+4. Tag the release to verify the tagged tree and create the GitHub release.
+5. Confirm the npm name and repository metadata immediately before publishing.
+6. Dispatch the npm publication step with `publish_npm=true`, approve the
+   `release` environment, and let the workflow publish with provenance.
+7. Verify a clean consumer install and import from the published tarball.
 
 The complete tag, approval, verification, and failure-handling checklist is in
 [docs/RELEASING.md](docs/RELEASING.md). No one should publish from an unverified

@@ -1,8 +1,8 @@
 # Migrating from a manual fast/slow flag
 
-> **Status:** Adaptive Runtime 0.3.0 is the current development line. Registry
-> publication is produced by the tag-driven OIDC workflow and is pending owner
-> approval.
+> **Status:** Adaptive Runtime 0.3.0 is the current development line. The GitHub
+> release is tag-driven; npm publication is a separate owner-approved OIDC
+> workflow dispatch and is pending.
 > This guide describes adopting the runtime from a local checkout. It does not
 > describe upgrading a published package, because no published package exists
 > yet. See [Status and limitations](../README.md#status-and-limitations).
