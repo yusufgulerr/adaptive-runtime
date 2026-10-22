@@ -115,11 +115,17 @@ tests/
   │   ├── observability.test.ts
   │   ├── testing-sdk.test.ts
   │   └── isolation.test.ts
-  └── integration/
+  ├── integration/
       ├── examples.test.ts
       ├── entrypoints.test.ts
       ├── public-api.test.ts
       └── pr-title.test.ts
+  └── property/
+      ├── support.ts
+      ├── policy-budget-model.test.ts
+      ├── policy-selection.test.ts
+      ├── policy-evaluation.test.ts
+      └── runtime-invariants.test.ts
 scripts/
   ├── check-pr-title.mjs
   └── verify-package-exports.mjs
@@ -132,8 +138,8 @@ examples/
 
 ## Verification status
 
-- 256 tests across 45 suites, 0 failures, 0 skipped.
-- 99.10% lines, 96.91% branches, 98.64% functions; every `src/**` file is above
+- 265 tests across 49 suites, 0 failures, 0 skipped.
+- 99.10% lines, 97.00% branches, 98.64% functions; every `src/**` file is above
   80% branch coverage.
 - Full local gate passed on 2026-10-22: format, lint, typecheck, tests, coverage,
   build, six examples, both benchmarks, `npm pack --dry-run`, zero-Node source

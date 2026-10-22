@@ -8,6 +8,10 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) after 1.0.
 
 ### Added
 
+- Deterministic property/fuzz suite using `fast-check` as a development-only
+  dependency. It covers budget hysteresis, candidate ordering, pure policy
+  evaluation, and the exactly-one-execution runtime invariant; the runtime still
+  has zero runtime dependencies.
 - OpenSSF Best Practices passing-level self-assessment, evidence map, and
   application checklist in `docs/OPENSSF_BEST_PRACTICES.md`.
 

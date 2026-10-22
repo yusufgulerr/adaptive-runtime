@@ -443,7 +443,8 @@ npm install
 npm run format      # Biome formatter
 npm run lint        # Biome
 npm run typecheck   # tsc, includes tests/examples/benchmarks
-npm test            # node:test, 256 tests
+npm test            # node:test, 265 tests
+npm run test:fuzz   # deterministic property/fuzz campaign
 npm run test:coverage
 npm run build       # emit ESM + declarations to dist/
 npm run verify:exports  # import every built subpath and check named exports
@@ -454,9 +455,12 @@ npm pack --dry-run  # inspect the package file set
 npm run check       # lint + typecheck + test + build
 ```
 
-Coverage from the verification run: **99.10% lines, 96.91% branches, 98.64%
+Coverage from the verification run: **99.10% lines, 97.00% branches, 98.64%
 functions** across `src/`, with every source file above 80% branch coverage.
-See [docs/VERIFICATION.md](docs/VERIFICATION.md) for the exact commands and
+The property/fuzz suite uses `fast-check` as a dev-only dependency and covers
+budget hysteresis, candidate ordering, pure policy evaluation, and the
+exactly-one-execution runtime invariant. See
+[docs/VERIFICATION.md](docs/VERIFICATION.md) for the exact commands and
 results.
 
 ## Project layout
