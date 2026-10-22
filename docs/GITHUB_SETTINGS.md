@@ -232,6 +232,10 @@ The Scorecard result appears only after the first successful run on `main`.
 Adding or changing the workflow does not prove a score; check the workflow run and
 the badge before citing a result.
 
+The separate OpenSSF Best Practices passing-level readiness assessment is in
+[OPENSSF_BEST_PRACTICES.md](OPENSSF_BEST_PRACTICES.md). The project has not
+registered for or earned that badge; the assessment is not a badge claim.
+
 ## Citation and editor metadata
 
 `CITATION.cff` provides the repository citation metadata shown by GitHub's **Cite

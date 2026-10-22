@@ -138,6 +138,10 @@ Not yet delivered:
 
 - npm publication and remote verification of the 0.3.0 tarball. Both require
   explicit owner approval and an npm dispatch against the tagged release.
+- OpenSSF Best Practices passing badge. The self-assessment, evidence map, and
+  application checklist are ready in
+  [OPENSSF_BEST_PRACTICES.md](OPENSSF_BEST_PRACTICES.md); BadgeApp registration
+  and the two owner attestations are pending.
 - Post-0.3.0 work below remains candidate work, contingent on user demand.
 
 Candidate work after 0.3.0:
