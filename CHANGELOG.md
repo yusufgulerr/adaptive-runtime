@@ -6,6 +6,11 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) after 1.0.
 
 ## [Unreleased]
 
+### Added
+
+- OpenSSF Best Practices passing-level self-assessment, evidence map, and
+  application checklist in `docs/OPENSSF_BEST_PRACTICES.md`.
+
 ### Fixed
 
 - The tag-push GitHub release job sets `GH_REPO` for `gh release` commands when it

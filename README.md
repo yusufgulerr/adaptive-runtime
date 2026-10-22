@@ -513,6 +513,13 @@ Do not report vulnerabilities in a public issue. Use the repository's private
 **Security → Report a vulnerability** flow and read [SECURITY.md](SECURITY.md).
 The runtime is not a sandbox; treat strategies and providers as trusted code.
 
+## OpenSSF Best Practices
+
+The passing-level self-assessment, evidence map, and BadgeApp application
+checklist are in
+[docs/OPENSSF_BEST_PRACTICES.md](docs/OPENSSF_BEST_PRACTICES.md). The project has
+not registered for or earned the badge, so no badge is claimed.
+
 ## Contributing
 
 Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md),

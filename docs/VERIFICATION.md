@@ -216,16 +216,17 @@ re-queried for this local 0.3.0 run:
 | Homepage | `https://github.com/yusufgulerr/adaptive-runtime#readme` |
 | Discussions | Enabled |
 | Topics | 14, including `adaptive-runtime`, `policy-engine`, `hysteresis`, and `zero-dependencies` |
-| Labels | 28 recorded labels (`type:*`, `area:*`, `priority:*`, status, accessibility, and defaults); add `skip-changelog` if release-note exclusion is needed |
+| Labels | 28 recorded labels (`type:*`, `area:*`, `priority:*`, status, accessibility, `skip-changelog`, and defaults) |
 | Collaborators | `@yusufgulerr` only, role `admin` |
 | Deploy keys | 0 |
 | Branch protection | PR required, 1 approval, code-owner review, stale approvals dismissed, last push approved, conversations resolved, linear history, no force push/deletion, admin bypass |
-| Required checks | `Node 22`, `Node 24`, `Node 26`, `Analyze JavaScript/TypeScript`; add `PR title` when the new job is enabled |
+| Required checks | `Node 22`, `Node 24`, `Node 26`, `Analyze JavaScript/TypeScript`, `PR title` |
 | Tag ruleset | `Protect release tags`, `refs/tags/v*`, creation/update/deletion restricted, admin bypass only |
 | Actions | Selected actions (GitHub-owned plus the SHA-pinned `ossf/scorecard-action`), SHA pinning required, read-only default token, external forks require approval |
 | Security | Private vulnerability reporting, secret scanning, push protection, Dependabot alerts, and automated security fixes enabled |
 | Release environment | `release`, required reviewer `@yusufgulerr`, tag deployment policy |
 | Repository automation | Release-note categories, Discussion forms, PR title validator, citation metadata, Scorecard workflow, required checks, labels, and action allow-list configured and verified |
+| OpenSSF Best Practices | **NOT APPLIED** — passing-level self-assessment prepared; badge not registered or earned. See [OPENSSF_BEST_PRACTICES.md](OPENSSF_BEST_PRACTICES.md) |
 
 The `PR title` required check, `ossf/scorecard-action` allow-list entry,
 `status:needs-triage` and `skip-changelog` labels, and Discussions are configured

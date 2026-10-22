@@ -142,3 +142,6 @@ examples/
 - The `v0.3.0` tag, GitHub release, and npm publication are separate
   owner-approved release steps. See [docs/RELEASING.md](docs/RELEASING.md) and
   [docs/VERIFICATION.md](docs/VERIFICATION.md).
+- The OpenSSF Best Practices passing-level self-assessment is documented in
+  [docs/OPENSSF_BEST_PRACTICES.md](docs/OPENSSF_BEST_PRACTICES.md). BadgeApp
+  registration and the two owner attestations are pending; no badge is claimed.
