@@ -1,9 +1,31 @@
 # Architecture
 
-Adaptive Runtime is organized around a pure policy core surrounded by an
-orchestration layer that owns provider lifecycle, execution, bounded operation
-state, and observability. There are no runtime dependencies and no background
-scheduler.
+Adaptive Runtime is architected with a strict separation of concerns: a pure,
+platform-agnostic policy core surrounded by a low-overhead orchestration layer
+that owns provider lifecycle, execution, bounded operation state, and
+observability. There are no runtime dependencies and no background scheduler.
+
+## Runtime targets and entry points
+
+One implementation serves Node.js, browsers, and WinterCG runtimes. The
+isolation boundary is enforced at the module graph level, not by build flags:
+
+```text
+src/core.ts   platform-neutral runtime + policy + network latency + composite
+src/node.ts   core + process memory / CPU / event-loop providers
+src/web.ts    core + device memory / network information / frame timing
+src/edge.ts   core + execution budget
+src/index.ts  Node.js default (re-exports src/node.ts)
+```
+
+`src/policy/**`, `src/runtime/**`, `src/signals/**`, `src/types/**`,
+`src/errors/**`, `src/observability/**`, `src/testing/**`,
+`src/providers/web/**`, `src/providers/edge/**`, and
+`src/providers/composite.ts` contain no Node.js built-in imports and never read
+the Node.js `process` object. The test suite enforces this with a source scan.
+Web providers accept structural `navigator`/`performance` shapes through optional
+injection points, so the package compiles under `"lib": ["ES2022"]` without DOM
+types.
 
 ## Component map
 
@@ -22,16 +44,25 @@ scheduler.
                                │                      │
                      ┌─────────▼────────┐    ┌────────▼─────────┐
                      │ SignalProvider[] │    │ executeStrategy  │
-                     │ Node / custom    │    │ timeout / abort  │
+                     │ Node/web/edge/composite │ timeout / abort │
                      └──────────────────┘    └──────────────────┘
                                │                      │
                      ┌─────────▼──────────────────────▼─────────┐
                      │ RuntimeEmitter + StatsRegistry           │
                      └──────────────────────────────────────────┘
+                               │
+                     ┌─────────▼────────────────────────────────┐
+                     │ observability: collector / OTel bridge  │
+                     │ (subscriber, never on the critical path)│
+                     └──────────────────────────────────────────┘
 ```
 
 | Path | Responsibility |
 | --- | --- |
+| `src/core.ts` | Platform-neutral entry point: runtime, policy helper, errors, types, network latency, composite signals |
+| `src/node.ts` | Node.js entry point: core plus process providers |
+| `src/web.ts` | Browser entry point: core plus web providers |
+| `src/edge.ts` | WinterCG entry point: core plus the execution-budget provider |
 | `src/runtime/runtime.ts` | Public orchestration, operation validation, serialization, LRU state, pins, stats, events |
 | `src/policy/engine.ts` | Pure policy orchestration and decision assembly |
 | `src/policy/budgets.ts` | Budget hysteresis and consecutive-sample transitions |
@@ -43,7 +74,9 @@ scheduler.
 | `src/runtime/executor.ts` | Exactly-once strategy invocation, timeout and abort races |
 | `src/runtime/emitter.ts` | Typed events with listener isolation |
 | `src/runtime/stats.ts` | Per-operation counters and duration samples |
-| `src/providers/` | Node-specific measurements |
+| `src/providers/` | Node.js, web, edge, and composite signal providers |
+| `src/observability/index.ts` | In-memory metrics collector, Prometheus text, OpenTelemetry bridge |
+| `src/testing/index.ts` | Fake clock, scripted provider, provider conformance runner |
 | `src/types/` | Public contracts |
 
 The policy modules import only types, errors, and each other. They do not import
@@ -179,6 +212,20 @@ candidates do not accumulate credit. When the current strategy is no longer in
 the candidate pool, the runtime switches immediately and records
 `current-strategy-inapplicable`.
 
+### Custom selector hook
+
+After budgets, clamping, and the default candidate are resolved, but before the
+stability gates, `evaluatePolicy` may call `policy.customSelector` with a
+snapshot of eligible candidates, signals, operation id, and clock value. The
+selector may return a strategy id, `{ strategyId, reason }`, or `null`/
+`undefined` to keep the default. The returned id must match an applicable
+candidate inside the quality bounds; otherwise the decision fails with
+`ConfigurationError`. A valid choice adds a `custom-selector` reason and then
+passes through the normal `minimumModeDurationMs` and `consecutiveSamples` gates.
+The selector therefore refines, but cannot bypass, applicability, quality bounds,
+hysteresis, or mode stability. The context is a fresh snapshot; the policy core
+does not retain it.
+
 ## Signal collection
 
 `SignalCollector` owns providers and raw readings.
@@ -202,6 +249,18 @@ the candidate pool, the runtime switches immediately and records
   `unknown`.
 - Sequence numbers increase only for fresh snapshots. The policy uses the
   sequence, not the cache flag alone, to decide whether counters advance.
+
+### Composite signals
+
+`CompositeSignalProvider` is an ordinary `SignalProvider` that wraps child
+providers. Its constructor validates the provider list, rule list, input
+declarations, unique rule names, and collisions with passthrough inputs. On
+`read()`, it awaits every child with `Promise.all`, indexes readings by name, and
+evaluates each rule only when every input is `ok`. Otherwise it synthesizes the
+highest-priority unavailable status (`error` > `stale` > `unsupported` >
+`unknown`) and never calls `compute`. A thrown compute or non-finite result
+becomes an `error` reading. Lifecycle hooks are forwarded to every child. The
+composite is platform-neutral and belongs to the core entry point.
 
 ### Shared read cancellation
 
@@ -310,6 +369,24 @@ from crashing application work.
 Events are observability, not control flow. A listener cannot veto a decision or
 change a result.
 
+## Observability and testing layers
+
+These layers are optional and sit outside the decision path.
+
+The in-memory collector subscribes to runtime events and maintains counters,
+gauges, and a duration histogram. It is pull-based: no timers, sockets, or
+background flush. `toPrometheusText()` renders the registry deterministically.
+The OpenTelemetry adapter accepts a structural meter and forwards the same
+events; instrument failures are contained. Neither layer changes a decision or a
+run result, and neither turns an unavailable signal into a zero gauge.
+
+The testing SDK provides a deterministic clock, a scripted provider, and a
+provider conformance runner. It is platform-neutral, depends only on public
+types and `ConfigurationError`, and is excluded from the runtime's hot path. The
+conformance runner validates descriptors, lifecycle, reading shape, units,
+timestamps, status codes, values, confidence, and error strings, returning a
+report rather than throwing.
+
 ## Design trade-offs
 
 | Choice | Benefit | Cost |
@@ -327,13 +404,16 @@ change a result.
 ## Extension points
 
 - Implement `SignalProvider` for custom metrics. Use `context.now` for
-  `observedAt` and honor `context.signal`.
+  `observedAt` and honor `context.signal`. Validate with
+  `runProviderConformanceCheck`.
+- Combine providers or derive policy signals with `CompositeSignalProvider`
+  instead of duplicating measurement logic.
 - Implement `Strategy` for algorithms. Use `isApplicable` for input-dependent
   eligibility and `checkQuality` for cheap invariants.
-- Inject a `Clock` for deterministic tests.
-- Subscribe to events for logs or metrics.
+- Inject a `Clock` for deterministic tests. Use `createFakeClock` from
+  `adaptive-runtime/testing`.
+- Use `policy.customSelector` to refine the automatic choice without bypassing
+  eligibility or stability gates.
+- Subscribe to events for logs or metrics, or attach the built-in collector /
+  OpenTelemetry bridge.
 - Use pins and `setAdaptationEnabled` for operational controls.
-
-Extension points do not include custom selection functions in 0.1.0. The policy
-is intentionally fixed so decisions remain explainable. A custom policy hook is
-on the roadmap, behind a separate design.

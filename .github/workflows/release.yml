@@ -41,7 +41,7 @@ jobs:
       - name: Verify tag matches package version
         run: |
           set -euo pipefail
-          package_version="$(node -p "require('./package.json').version")"
+          package_version="$(node --input-type=module -e "import { readFileSync } from 'node:fs'; console.log(JSON.parse(readFileSync('package.json', 'utf8')).version)")"
           if [ "${GITHUB_REF_NAME}" != "v${package_version}" ]; then
             echo "Tag ${GITHUB_REF_NAME} does not match package version v${package_version}" >&2
             exit 1
@@ -78,3 +78,91 @@ jobs:
         run: gh release create "${GITHUB_REF_NAME}" --generate-notes --verify-tag
         env:
           GH_TOKEN: ${{ github.token }}
+
+  verify-publish:
+    name: Verify published package
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - name: Wait for registry propagation
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          for attempt in $(seq 1 30); do
+            published="$(npm view "adaptive-runtime@${version}" version 2>/dev/null || true)"
+            if [ "${published}" = "${version}" ]; then
+              echo "Registry serves adaptive-runtime@${version} after ${attempt} attempt(s)."
+              exit 0
+            fi
+            echo "Attempt ${attempt}/30: registry has not served adaptive-runtime@${version} yet."
+            sleep 10
+          done
+          echo "Registry did not serve adaptive-runtime@${version} within 5 minutes." >&2
+          exit 1
+      - name: Check registry metadata and integrity
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          metadata="$(npm view "adaptive-runtime@${version}" --json)"
+          METADATA="${metadata}" VERSION="${version}" node --input-type=module -e "
+          const metadata = JSON.parse(process.env.METADATA);
+          const expected = process.env.VERSION;
+          if (metadata.version !== expected) throw new Error('version mismatch: ' + metadata.version);
+          if (!metadata.dist || typeof metadata.dist.integrity !== 'string' || !metadata.dist.integrity.startsWith('sha512-')) {
+            throw new Error('missing sha512 dist.integrity');
+          }
+          if (metadata.repository?.url !== 'git+https://github.com/yusufgulerr/adaptive-runtime.git') {
+            throw new Error('unexpected repository.url: ' + metadata.repository?.url);
+          }
+          console.log('registry metadata OK; integrity=' + metadata.dist.integrity);
+          "
+      - name: Install and import from a clean consumer
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          consumer="${RUNNER_TEMP}/adaptive-runtime-consumer"
+          mkdir -p "${consumer}"
+          cd "${consumer}"
+          npm init -y >/dev/null
+          npm install "adaptive-runtime@${version}"
+          node --input-type=module -e "
+          import { createAdaptiveRuntime, ProcessMemoryProvider } from 'adaptive-runtime';
+          import { definePolicy, resolvePolicy } from 'adaptive-runtime/policy';
+          import { EventLoopDelayProvider } from 'adaptive-runtime/providers';
+          const policy = definePolicy({ evaluationIntervalMs: 0 });
+          if (resolvePolicy(policy).evaluationIntervalMs !== 0) throw new Error('policy subpath mismatch');
+          const runtime = createAdaptiveRuntime({
+            providers: [new ProcessMemoryProvider(), new EventLoopDelayProvider()],
+            policy,
+          });
+          const result = await runtime.run({
+            operationId: 'post-publish-smoke',
+            input: 10,
+            strategies: [{ id: 'sum', qualityTier: 1, run: ({ input }) => input + 1 }],
+          });
+          if (result.value !== 11) throw new Error('unexpected strategy result');
+          if (result.metadata.strategyId !== 'sum') throw new Error('unexpected strategy id');
+          await runtime.close();
+          console.log('clean consumer import, run, subpaths, and close OK');
+          "
+      - name: Verify provenance attestation
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          npm view "adaptive-runtime@${version}" dist.attestations --json > "${RUNNER_TEMP}/attestations.json"
+          node --input-type=module -e "
+          import { readFileSync } from 'node:fs';
+          const parsed = JSON.parse(readFileSync(process.env.RUNNER_TEMP + '/attestations.json', 'utf8'));
+          const attestations = Array.isArray(parsed) ? parsed[0] : parsed;
+          if (!attestations || typeof attestations.url !== 'string' || attestations.url.length === 0) {
+            throw new Error('missing provenance attestation');
+          }
+          console.log('provenance attestation present: ' + attestations.url);
+          "

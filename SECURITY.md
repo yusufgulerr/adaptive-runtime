@@ -2,13 +2,13 @@
 
 ## Supported versions
 
-Version **0.1.0** is the current release line. Security fixes are issued for the
-latest 0.x minor line; older lines require an upgrade.
+Version **0.3.0** is the current development line. Security fixes are issued for
+the latest 0.x minor line; older lines require an upgrade.
 
 | Version | Supported |
 | --- | --- |
-| 0.1.x | Yes |
-| < 0.1 | Not released |
+| 0.3.x | Supported (security patches applied to the latest 0.x minor release) |
+| < 0.3 | Not released |
 
 ## Reporting a vulnerability
 
@@ -33,9 +33,11 @@ Please include, in the private report:
 
 ## What to expect
 
-There is no bug bounty and no guaranteed response time. Maintainers will:
+Security reports are prioritized by the maintainers under a coordinated-disclosure
+model. While commercial SLAs are not bundled with the open-source license,
+maintainers aim to acknowledge reports within 72 hours. Maintainers will:
 
-1. acknowledge a report within a reasonable period;
+1. acknowledge the report and confirm the private channel;
 2. reproduce and assess severity;
 3. prepare a fix and tests;
 4. coordinate disclosure and credit if desired;
@@ -84,5 +86,6 @@ The [threat model](docs/THREAT_MODEL.md) explains these boundaries in detail.
 - Dependency Review blocks pull requests that introduce vulnerable dependencies.
 - The release workflow is tag-driven, uses npm trusted publishing (OIDC) with
   provenance, and keeps a token fallback only for accounts that cannot use OIDC.
-- CI and CodeQL pass on the public repository. Verify the npm provenance
-  attestation and pin versions in production.
+- The public baseline passes CI and CodeQL. Verify the status of the exact commit
+  you deploy, and verify the npm provenance attestation before pinning versions in
+  production.

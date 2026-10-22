@@ -1,8 +1,11 @@
 # API reference
 
-Package entry points: `adaptive-runtime`, `adaptive-runtime/policy`, and
-`adaptive-runtime/providers` (ESM only). In this repository, examples and tests
-import from `src/index.ts`.
+Package entry points (ESM only): `adaptive-runtime` (root, Node.js),
+`adaptive-runtime/core`, `adaptive-runtime/node`, `adaptive-runtime/web`,
+`adaptive-runtime/edge`, `adaptive-runtime/policy`,
+`adaptive-runtime/providers`, `adaptive-runtime/observability`, and
+`adaptive-runtime/testing`. In this repository, examples and tests import from
+the matching `src/*.ts` files.
 
 ```ts
 import {
@@ -15,9 +18,13 @@ import {
 } from "adaptive-runtime";
 ```
 
-All types are exported from the root entry point unless noted otherwise. The
-`/policy` and `/providers` subpaths expose the platform-neutral policy surface
-and the built-in Node.js providers respectively.
+All core and Node.js types are exported from the root entry point. Web and edge
+provider option types are exported from their matching `/web` and `/edge`
+subpaths. The `/core` subpath is platform-neutral and excludes every Node.js
+provider. The `/node`, `/web`, and `/edge` subpaths each re-export the core plus
+their platform's providers. `/providers` is a mixed barrel that includes Node.js,
+web, and edge providers, so it is not platform-neutral. `/observability` and
+`/testing` are platform-neutral.
 
 ## `createAdaptiveRuntime(options?)`
 
@@ -268,6 +275,7 @@ interface Policy {
   readonly qualityCheck?: "report" | "error";
   readonly budgets?: readonly BudgetRule[];
   readonly maxTrackedOperations?: number | null;
+  readonly customSelector?: CustomPolicySelector;
 }
 ```
 
@@ -285,6 +293,50 @@ interface Policy {
 | `qualityCheck` | `"report"` | `"report"` or `"error"` |
 | `budgets` | `[]` | Unique budget ids |
 | `maxTrackedOperations` | `null` | `null` or a positive safe integer |
+| `customSelector` | unset | Function; validated during policy resolution |
+
+### `CustomPolicySelector`
+
+```ts
+interface CustomSelectorCandidate {
+  readonly candidate: PolicyCandidate;
+  readonly estimatedCost: number | null;
+  readonly estimatedLatencyMs: number | null;
+  readonly id?: string;
+  readonly qualityTier?: number;
+  readonly costTier?: number;
+  readonly applicable?: boolean;
+}
+
+interface CustomPolicySelectorContext {
+  readonly operation: string;
+  readonly operationId?: string;
+  readonly candidates: readonly CustomSelectorCandidate[];
+  readonly signals: Readonly<Record<string, SignalReading>>;
+  readonly now: number;
+}
+
+interface CustomPolicySelection {
+  readonly strategyId: string;
+  readonly reason?: string;
+}
+
+type CustomPolicySelector = (
+  context: CustomPolicySelectorContext,
+) => CustomPolicySelection | string | null | undefined;
+```
+
+The selector runs after budgets and the default target tier have been evaluated,
+but before `minimumModeDurationMs` and `consecutiveSamples` gates. Returning
+`null`/`undefined` keeps the default selection. Returning a strategy id (or
+`{ strategyId, reason }`) must reference an eligible candidate — applicable and
+inside the quality bounds — otherwise the run fails with `ConfigurationError`.
+A valid choice records a `custom-selector` reason and then goes through the same
+stability gates, so a selector cannot bypass hysteresis or mode-duration
+protection. `candidates` contains only eligible automatic candidates.
+`estimatedCost` mirrors `costTier` when present; `estimatedLatencyMs` is
+currently `null` because the runtime does not estimate latency. The context is a
+snapshot; do not mutate it. Selector exceptions fail the run.
 
 ### `BudgetRule`
 
@@ -433,6 +485,115 @@ throw inside the provider and become error readings. The probe receives an abort
 signal that is aborted on provider timeout or when every caller waiting on the
 shared read has aborted.
 
+#### Web providers (`adaptive-runtime/web`)
+
+These providers use structural interfaces and optional chaining instead of the
+DOM library, so they compile under `"lib": ["ES2022"]` and run in browsers,
+Deno, Bun, and workers that expose the same globals.
+
+##### `DeviceMemoryProvider`
+
+```ts
+new DeviceMemoryProvider({
+  id?: string,
+  getEnvironment?: () => {
+    deviceMemory?: number;
+    memory?: { usedJSHeapSize: number; totalJSHeapSize?: number; jsHeapSizeLimit: number };
+  } | undefined,
+});
+```
+
+Signals: `web.device.memoryGib` (`custom`) and `web.jsHeap.usedRatio` (`ratio`).
+`deviceMemory` is reported as `ok` only when it is finite and `> 0`; absence is
+`unsupported`, an invalid number is `error`. Heap ratio requires
+`usedJSHeapSize >= 0` and `jsHeapSizeLimit > 0`; otherwise the reading is
+`unsupported` (not `0`).
+
+##### `NetworkInformationProvider`
+
+```ts
+new NetworkInformationProvider({
+  id?: string,
+  getConnection?: () => {
+    rtt?: number;
+    downlink?: number;
+    saveData?: boolean;
+    effectiveType?: string;
+  } | undefined,
+});
+```
+
+Signals: `web.network.rttMs` (`milliseconds`), `web.network.downlinkMbps`
+(`custom`), `web.network.saveData` (`count`; `1` enabled, `0` disabled). When
+`navigator.connection` is absent, all three are `unsupported`. A present but
+invalid field is `unknown`.
+
+##### `FrameTimingProvider`
+
+```ts
+new FrameTimingProvider({
+  id?: string,
+  targetFrameBudgetMs?: number, // default 16.67, must be > 0
+  windowSize?: number,          // default 60, minimum 5
+  minSamples?: number,          // default 3, >= 1 and <= windowSize
+});
+```
+
+Signals: `web.frame.durationP95Ms` (`milliseconds`) and
+`web.frame.droppedRatio` (`ratio`, `0..1`). Call `recordFrameDuration(ms)` from
+your `requestAnimationFrame` loop; negative or non-finite durations throw
+`ConfigurationError`. With fewer than `minSamples`, both readings are `unknown`.
+`clearSamples()` and `close()` reset the window.
+
+#### `ExecutionBudgetProvider` (`adaptive-runtime/edge`)
+
+```ts
+new ExecutionBudgetProvider({
+  id?: string,
+  getBudgetSnapshot: (context) => {
+    totalBudgetMs?: number;
+    elapsedMs?: number;
+    activeRequests?: number;
+    maxConcurrency?: number;
+  } | Promise<...>,
+});
+```
+
+Signals: `edge.execution.remainingMs` (`milliseconds`),
+`edge.execution.usedRatio` (`ratio`), and `edge.concurrency.saturation` (`ratio`).
+`remainingMs = max(0, totalBudgetMs - elapsedMs)` and
+`usedRatio = elapsedMs / totalBudgetMs` are `ok` only when
+`totalBudgetMs > 0` and `elapsedMs >= 0`. Saturation is `ok` only when
+`activeRequests >= 0` and `maxConcurrency > 0`. Missing fields produce
+`unknown`; invalid fields produce `error`. The snapshot function may be async
+and receives the provider's abort signal.
+
+#### `CompositeSignalProvider` (`adaptive-runtime/core`)
+
+```ts
+new CompositeSignalProvider({
+  id?: string,
+  providers: readonly SignalProvider[],
+  passthroughInputs?: boolean, // default true
+  rules: readonly {
+    name: string;
+    unit: SignalUnit;
+    description?: string;
+    inputs: readonly string[];
+    compute: (values: Readonly<Record<string, number>>) => number;
+  }[],
+});
+```
+
+The constructor validates that providers and rules are non-empty, that every
+input name is declared by a child provider, that rule names are unique, and that
+derived names do not collide with passthrough inputs. `read()` runs child reads
+with `Promise.all`. Each rule propagates the highest-priority unavailable status
+(`error` > `stale` > `unsupported` > `unknown`) and calls `compute` only when all
+inputs are `ok`. A throw or non-finite compute result becomes an `error` reading.
+`start()` and `close()` are forwarded to every child provider. Composite output
+can feed budgets exactly like a built-in signal.
+
 ## Decisions
 
 ```ts
@@ -479,7 +640,8 @@ including `engaged`, `status`, `value`, `ageMs`, `limit`, `recoverBelow`, and
 `budget-recovered`, `quality-floor-clamped`, `target-tier-clamped`,
 `minimum-mode-duration`, `candidate-stability`, `current-strategy-inapplicable`,
 `pinned-strategy`, `adaptation-disabled`, `missing-signal-hold`,
-`missing-signal-ignored`, `missing-signal-fallback`, `cached-sample`.
+`missing-signal-ignored`, `missing-signal-fallback`, `cached-sample`,
+`custom-selector`.
 
 ## Run result and metadata
 
@@ -579,19 +741,118 @@ use `setTimeout`; signal age and mode duration use `now()`. Values must be
 monotonic in practice for meaningful behavior; the runtime clamps negative
 durations to zero but does not repair a backwards clock.
 
+## Observability (`adaptive-runtime/observability`)
+
+The observability bridge is zero-dependency and platform-neutral. It accepts
+structural OpenTelemetry-compatible meters and also provides an in-memory
+collector with Prometheus text exposition.
+
+```ts
+interface ObservabilityOptions {
+  readonly prefix?: string;                    // default "adaptive_runtime"
+  readonly defaultAttributes?: MetricAttributesLike;
+  readonly buckets?: readonly number[];        // seconds; +Inf is appended
+}
+
+interface RuntimeMetricsCollector {
+  attach(runtime: AdaptiveRuntime): () => void;
+  getSnapshot(): MetricsSnapshot;
+  toPrometheusText(): string;
+  reset(): void;
+}
+
+function createMetricsCollector(options?: ObservabilityOptions): RuntimeMetricsCollector;
+
+function attachOpenTelemetryMeter(
+  runtime: AdaptiveRuntime,
+  meter: OpenTelemetryMeterLike,
+  options?: ObservabilityOptions,
+): () => void;
+```
+
+`attach()` subscribes to `decision`, `run:start`, `run:success`, `run:error`,
+`provider:error`, `listener:error`, and `runtime:closed`, and returns a
+detach function. Snapshot counters include runs, decisions, strategy selections,
+signal statuses, provider errors, quality checks, budget statuses, listener
+errors, and runtime closes. Gauges include the latest `ok` signal readings and
+budget engagement. Durations are recorded in seconds.
+
+Non-`ok` signals increment `*_signal_status_total{status="..."}` only. They are
+**never** written to the `*_signal_reading` gauge as `0`, so unavailable data is
+not confused with a real zero measurement. Prometheus label values escape
+backslashes, quotes, and newlines. See
+[OBSERVABILITY.md](OBSERVABILITY.md) for the metric name table and examples.
+
+## Testing SDK (`adaptive-runtime/testing`)
+
+```ts
+const clock = createFakeClock(1_000);
+clock.advance(250);          // fires due timers and moves time
+clock.set(5_000);            // sets time without firing timers
+clock.pendingTimers();       // uncancelled, unfired timers
+
+const provider = new ScriptedSignalProvider({
+  id?: string,
+  repeatLast?: boolean,      // default true
+  script: [{
+    name: string,
+    unit: SignalUnit,
+    description?: string,
+    values: readonly (number | { status: Exclude<SignalStatus, "ok">; error?: string })[],
+  }],
+});
+
+const report = await runProviderConformanceCheck(provider, {
+  now?: number,              // default 1_000_000
+  signal?: AbortSignal,      // default fresh, un-aborted signal
+});
+// { ok, providerId, checksPassed, failures }
+```
+
+`createFakeClock` starts at `0` by default and rejects negative or non-finite
+times. Timers execute in time order, then insertion order; timers scheduled by a
+callback can fire within the same `advance()`. `set()` does not fire timers, so
+overdue timers fire on the next `advance(0)`.
+
+`ScriptedSignalProvider` validates its script at construction. A finite number
+becomes an `ok` reading with `confidence: 1`; a status object becomes an explicit
+unavailable reading. After the script is exhausted, the last value repeats by
+default or the provider emits `unknown` when `repeatLast: false`. `reset()`
+restarts the sequence; `close()` makes all readings `unsupported`.
+
+`runProviderConformanceCheck` invokes `start()` and `close()` once, calls
+`read()` once, and validates the provider id, descriptors, signal names and
+units, `observedAt === context.now`, status codes, finite `ok` values, confidence
+bounds, and error strings. It reports failures instead of throwing. It does not
+enforce a timeout; wrap a provider that may hang in your own deadline.
+
 ## Exports
 
 The package exports:
 
-- root (`adaptive-runtime`): `createAdaptiveRuntime`, `definePolicy`, the four
-  providers, their signal-name constants, all public types, and all error
-  classes;
+- root (`adaptive-runtime`): the Node.js entry point — core plus
+  `ProcessMemoryProvider`, `CpuUtilizationProvider`, `EventLoopDelayProvider`,
+  `NetworkLatencyProvider`, `CompositeSignalProvider`, all public types, and all
+  error classes;
+- `adaptive-runtime/core`: platform-neutral runtime, policy helper, errors,
+  types, `NetworkLatencyProvider`, and `CompositeSignalProvider`;
+- `adaptive-runtime/node`: core plus the three process-level providers;
+- `adaptive-runtime/web`: core plus `DeviceMemoryProvider`,
+  `NetworkInformationProvider`, and `FrameTimingProvider`;
+- `adaptive-runtime/edge`: core plus `ExecutionBudgetProvider`;
 - `adaptive-runtime/policy`: policy types and defaults, `definePolicy`,
   `resolvePolicy`, `createInitialPolicyState`, `evaluatePolicy`, and the
   decision/state types needed to call it;
-- `adaptive-runtime/providers`: the four built-in providers and their signal-name
-  constants.
+- `adaptive-runtime/providers`: every built-in provider (Node.js, web, edge, and
+  composite) plus signal-name constants; this mixed barrel is not
+  platform-neutral;
+- `adaptive-runtime/observability`: `createMetricsCollector`,
+  `attachOpenTelemetryMeter`, and the metrics types;
+- `adaptive-runtime/testing`: `createFakeClock`, `ScriptedSignalProvider`, and
+  `runProviderConformanceCheck`;
+- `adaptive-runtime/package.json`: package metadata.
 
 Internal modules (`src/runtime`, `src/signals`, `src/policy/*` implementation
-files) are not importable as package subpaths. The policy entry point is
-platform-neutral and does not import `node:*`.
+files, `src/providers/*` implementation files) are not importable as package
+subpaths. `/core`, `/web`, `/edge`, `/policy`, `/observability`, and `/testing`
+do not import Node.js built-ins or read the Node.js `process` object.

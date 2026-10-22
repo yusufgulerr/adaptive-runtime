@@ -22,13 +22,16 @@ strategies with declared quality and cost tiers. The runtime reads the signals
 you supply, applies a deterministic policy, and runs exactly one strategy with
 inspectable metadata explaining the choice.
 
-> **Status: v0.1.0 source release.** The public repository is live and CI/CodeQL
-> pass on Node.js 22, 24, and 26. The 0.1.0 release ships a verified core
-> architecture with **97% line coverage**, **zero runtime dependencies**, and a
-> fully typed ESM surface with root, policy, and provider entry points. The
-> public API follows semantic versioning; the 0.x series may still make
-> documented breaking changes. npm publication is produced by a tag-driven
-> OIDC/provenance workflow. See
+> **Status: v0.3.0 source line.** The public repository is live and its baseline
+> passes CI/CodeQL on Node.js 22, 24, and 26. The 0.3.0 tree provides a verified
+> multi-runtime core for Node.js, browsers, and WinterCG edge runtimes with
+> **zero runtime dependencies** and a fully typed ESM surface. It includes web
+> and edge signal providers, composite signals, custom policy selectors, an
+> in-memory OpenTelemetry-compatible metrics bridge with Prometheus exposition,
+> and a testing SDK. The 0.3.0 tree is verified locally and awaits its first
+> remote CI run. The public API follows semantic versioning; the 0.x series may
+> still make documented breaking changes. npm publication is produced by a
+> tag-driven OIDC/provenance workflow and is pending owner approval. See
 > [Architectural boundaries](#architectural-boundaries-and-operational-notes).
 
 ## Why
@@ -42,6 +45,7 @@ choice is often a flag, an environment variable, or an ad-hoc `if` on
 - **stable** — hysteresis, consecutive samples, and a minimum mode duration avoid flapping;
 - **inspectable** — every run returns the signal snapshot, budget states, reasons, and mode history;
 - **safe at the edges** — missing, stale, unsupported, timed-out, and failed readings are distinct;
+- **portable by construction** — one platform-neutral core with Node.js, browser, and WinterCG entry points;
 - **low-overhead & zero-dependency** — sub-10µs dispatch overhead, ESM-native, built strictly on standard platform primitives with zero external supply-chain risk.
 
 It is **not** a sandbox, a scheduler, an autoscaler, or a verifier of algorithmic
@@ -52,6 +56,8 @@ correctness. Strategies are trusted code supplied by the application.
 | Item | Supported |
 | --- | --- |
 | Node.js | `>=22.0.0` (`engines`) |
+| Browsers | Modern evergreen browsers with ESM (web providers use structural globals) |
+| Edge / WinterCG | Cloudflare Workers, Vercel Edge, Deno, Bun, and compatible runtimes |
 | Local verification | Node.js 24.15.0, npm 11.12.1 |
 | CI matrix | Node.js 22, 24, and 26 |
 | Module system | ESM only |
@@ -160,6 +166,7 @@ npm run example:basic
 npm run example:search
 npm run example:planning
 npm run example:observability
+npm run example:edge
 ```
 
 | Example | Demonstrates | Deterministic sequence |
@@ -168,6 +175,7 @@ npm run example:observability
 | `examples/resource-aware-search` | Recall/work trade-off under simulated heap pressure | `exhaustive, balanced, balanced, economy, economy, exhaustive` |
 | `examples/resource-pressure-planning` | Two budgets, hysteresis, stability gate, recovery | `optimal, optimal, optimal, economy, economy, economy, economy, optimal` |
 | `examples/observability` | Event-to-metrics mapping with an in-memory sink | one success plus one pinned failure |
+| `examples/multi-runtime-edge` | Core + edge + observability only: execution budget, composite pressure signal, three-tier ladder, Prometheus text | `deep-rerank, deep-rerank, fast-vector, cached-lexical, deep-rerank` |
 
 ## How selection works
 
@@ -189,8 +197,10 @@ strategy is retried automatically.
 7. **Clamp** to `minQualityTier` and to the tiers actually available.
 8. **Choose** the highest-quality applicable strategy at or below the target
    tier; ties break on lower `costTier`, then code-unit `id` order.
-9. **Stabilize** switches with `minimumModeDurationMs` and `consecutiveSamples`.
-10. **Execute** the strategy once, optionally run `checkQuality`, and return metadata.
+9. **Apply the custom selector** (if configured) to the eligible candidate set,
+   validate its choice, and record a `custom-selector` reason.
+10. **Stabilize** switches with `minimumModeDurationMs` and `consecutiveSamples`.
+11. **Execute** the strategy once, optionally run `checkQuality`, and return metadata.
 
 `baseQualityTier` is the highest declared tier across all strategies for the
 operation, capped by `maxQualityTier`.
@@ -246,17 +256,26 @@ timeout (`providerTimeoutMs`); `0` disables the timeout.
 
 ### Built-in providers
 
-| Provider | Signals | Notes |
-| --- | --- | --- |
-| `ProcessMemoryProvider` | `process.memory.heapUsed`, `process.memory.rss` | This process only |
-| `CpuUtilizationProvider` | `process.cpu.utilization` | Ratio relative to one core; can exceed 1; first read is `unknown` |
-| `EventLoopDelayProvider` | `eventLoop.delay.p95` (configurable) | Scheduling delay, not CPU percentage |
-| `NetworkLatencyProvider` | `network.latency` | Requires an application-supplied probe; the library creates no traffic |
+Node.js providers are available from the root entry point and from
+`adaptive-runtime/node`. Web and edge providers live in their own subpaths so a
+bundler never pulls Node.js built-ins into a browser or worker build.
+
+| Provider | Entry point | Signals | Notes |
+| --- | --- | --- | --- |
+| `ProcessMemoryProvider` | root, `/node` | `process.memory.heapUsed`, `process.memory.rss` | This process only |
+| `CpuUtilizationProvider` | root, `/node` | `process.cpu.utilization` | Ratio relative to one core; can exceed 1; first read is `unknown` |
+| `EventLoopDelayProvider` | root, `/node` | `eventLoop.delay.p95` (configurable) | Scheduling delay, not CPU percentage |
+| `NetworkLatencyProvider` | root, `/core`, `/node` | `network.latency` | Requires an application-supplied probe; the library creates no traffic |
+| `DeviceMemoryProvider` | `/web` | `web.device.memoryGib`, `web.jsHeap.usedRatio` | Reads structural `navigator`/`performance` globals; unavailable fields stay explicit |
+| `NetworkInformationProvider` | `/web` | `web.network.rttMs`, `web.network.downlinkMbps`, `web.network.saveData` | W3C Network Information API; `saveData` is `1`/`0` |
+| `FrameTimingProvider` | `/web` | `web.frame.durationP95Ms`, `web.frame.droppedRatio` | Sliding frame window; call `recordFrameDuration()` from your render loop |
+| `ExecutionBudgetProvider` | `/edge` | `edge.execution.remainingMs`, `edge.execution.usedRatio`, `edge.concurrency.saturation` | App-supplied wall-clock and concurrency snapshot; ideal for serverless deadlines |
+| `CompositeSignalProvider` | root, `/core`, `/edge` | Derived names and units from rules | Combines child provider readings; propagates `error` > `stale` > `unsupported` > `unknown` and never coerces unavailable inputs |
 
 You may implement `SignalProvider` directly. Providers are started lazily before
 their first read and closed by `runtime.close()`. See
-[docs/PROVIDERS.md](docs/PROVIDERS.md) for the authoring guide and a worked
-example.
+[docs/PROVIDERS.md](docs/PROVIDERS.md) for the authoring guide, web/edge
+examples, composite rules, and the conformance test helper.
 
 Concurrent runs share one in-flight read per runtime. Cancellation is
 **ref-counted**: one caller's abort rejects only that caller; providers are
@@ -295,18 +314,36 @@ clears counters without discarding decisions, pins, or policy state.
 
 ### Subpath exports
 
-The package exposes two additional entry points for narrower dependency graphs:
+The package exposes platform-targeted entry points for narrow dependency graphs:
 
 ```ts
-import { definePolicy, evaluatePolicy, resolvePolicy } from "adaptive-runtime/policy";
-import { ProcessMemoryProvider, EventLoopDelayProvider } from "adaptive-runtime/providers";
+import { createAdaptiveRuntime, CompositeSignalProvider } from "adaptive-runtime/core";
+import { ProcessMemoryProvider, EventLoopDelayProvider } from "adaptive-runtime/node";
+import { DeviceMemoryProvider, FrameTimingProvider } from "adaptive-runtime/web";
+import { ExecutionBudgetProvider } from "adaptive-runtime/edge";
+import { createMetricsCollector } from "adaptive-runtime/observability";
+import { createFakeClock, ScriptedSignalProvider } from "adaptive-runtime/testing";
 ```
 
-- `adaptive-runtime/policy` — platform-neutral policy types, resolution, and the
-  pure `evaluatePolicy` core. It imports no Node.js APIs.
-- `adaptive-runtime/providers` — the built-in Node.js signal providers.
+| Subpath | Contents | Portable? |
+| --- | --- | --- |
+| `adaptive-runtime` | Core plus Node.js providers | No (Node.js) |
+| `adaptive-runtime/core` | Runtime, errors, types, policy helper, network latency, composite signals | Yes |
+| `adaptive-runtime/node` | Core plus process, CPU, and event-loop providers | No (Node.js) |
+| `adaptive-runtime/web` | Core plus browser providers | Yes |
+| `adaptive-runtime/edge` | Core plus execution-budget provider | Yes |
+| `adaptive-runtime/policy` | Pure policy types, resolution, and evaluation | Yes |
+| `adaptive-runtime/providers` | Every built-in provider, including Node.js | No (mixed) |
+| `adaptive-runtime/observability` | In-memory metrics collector, Prometheus text, OpenTelemetry meter bridge | Yes |
+| `adaptive-runtime/testing` | Fake clock, scripted provider, conformance runner | Yes |
+| `adaptive-runtime/package.json` | Package metadata | n/a |
 
-The root entry point remains the recommended surface for applications.
+The `/core`, `/web`, `/edge`, `/policy`, `/observability`, and `/testing`
+subpaths import no Node.js built-ins and never read the Node.js `process`
+object. Prefer `/providers` only when a Node.js build genuinely needs every
+provider; platform bundles should use `/core`, `/web`, or `/edge`.
+
+The root entry point remains the recommended surface for Node.js applications.
 
 Events: `decision`, `run:start`, `run:success`, `run:error`, `provider:error`,
 `listener:error`, `runtime:closed`. Listener exceptions are isolated and reported
@@ -314,6 +351,19 @@ through `listener:error`; they do not fail the run.
 
 `definePolicy(policy)` is an optional identity helper that preserves the literal
 type of a policy object for editor completion; it does not validate or clone.
+
+A custom selector can refine the automatic choice without bypassing
+applicability, quality bounds, or the stability gates:
+
+```ts
+const runtime = createAdaptiveRuntime({
+  policy: definePolicy({
+    budgets: [/* ... */],
+    customSelector: ({ candidates }) =>
+      candidates.find((candidate) => candidate.id === "fast-vector")?.id,
+  }),
+});
+```
 
 The full type and error reference is in [docs/API.md](docs/API.md). Design
 rationale is in [docs/API_DESIGN.md](docs/API_DESIGN.md), custom provider
@@ -360,7 +410,8 @@ selection and quality checks.
 - Choosing a strategy based on measured output correctness or latency percentiles.
 - Automatic retries, hedging, or speculative execution.
 - Distributed coordination between processes.
-- Browser, Deno, and Bun runtimes.
+- Providing a DOM, fetch, or telemetry implementation; web and edge providers adapt
+  to the structural globals your runtime already exposes.
 
 ## Benchmarks
 
@@ -386,18 +437,20 @@ for methodology and caveats.
 
 ```bash
 npm install
+npm run format      # Biome formatter
 npm run lint        # Biome
 npm run typecheck   # tsc, includes tests/examples/benchmarks
-npm test            # node:test, 96 tests
+npm test            # node:test, 251 tests
 npm run test:coverage
 npm run build       # emit ESM + declarations to dist/
+npm run example:edge
 npm run benchmark
 npm run benchmark:concurrency
-npm pack --dry-run  # inspect the published file set
+npm pack --dry-run  # inspect the package file set
 npm run check       # lint + typecheck + test + build
 ```
 
-Coverage from the verification run: **97.42% lines, 92.59% branches, 97.76%
+Coverage from the verification run: **99.08% lines, 96.71% branches, 98.64%
 functions** across `src/`, with every source file above 80% branch coverage.
 See [docs/VERIFICATION.md](docs/VERIFICATION.md) for the exact commands and
 results.
@@ -406,10 +459,16 @@ results.
 
 ```text
 src/
+  core.ts      platform-neutral entry point
+  node.ts      Node.js entry point
+  web.ts       browser entry point
+  edge.ts      WinterCG/serverless entry point
   policy/      pure decision engine and policy resolution
-  providers/   Node.js signal providers
+  providers/   Node.js, web, edge, and composite signal providers
   runtime/     orchestration, execution, events, stats
   signals/     provider lifecycle, caching, timeouts, validation
+  observability/ in-memory metrics and OpenTelemetry/Prometheus bridge
+  testing/     fake clock, scripted provider, conformance runner
   types/       public contracts
   errors/      public error classes
 examples/      runnable examples
@@ -438,9 +497,9 @@ responsible for:
   coordinated. Bound it with `maxTrackedOperations` or release it with
   `removeOperation`.
 - The public source repository is at
-  <https://github.com/yusufgulerr/adaptive-runtime>; CI and CodeQL pass there.
-  See [docs/VERIFICATION.md](docs/VERIFICATION.md) for the current release
-  evidence.
+  <https://github.com/yusufgulerr/adaptive-runtime>; its baseline passes CI and
+  CodeQL there, while the 0.3.0 tree awaits its first remote run. See
+  [docs/VERIFICATION.md](docs/VERIFICATION.md) for the verification record.
 
 See [docs/ROADMAP.md](docs/ROADMAP.md) and [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
 

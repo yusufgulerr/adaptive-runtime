@@ -1,10 +1,11 @@
 # Roadmap
 
 This roadmap describes intent, not commitments or dates. Priorities may change
-with feedback and evidence. The 0.1.0 release is implemented and verified; npm
-publication is prepared through the tag-driven workflow.
+with feedback and evidence. The 0.3.0 line is implemented and verified locally;
+npm publication remains prepared through the tag-driven workflow and requires
+owner approval.
 
-## 0.1.0 — Foundation (current)
+## 0.1.0 — Foundation (delivered)
 
 Delivered:
 
@@ -39,7 +40,7 @@ Not done in 0.1.0:
 - Published API stability guarantees. Treat 0.x as pre-1.0.
 - Fuzzing, long-run load testing, soak testing, or an independent security audit.
 
-## 0.2.0 — Operational confidence
+## 0.2.0 — Operational confidence (delivered locally)
 
 Goals:
 
@@ -70,10 +71,10 @@ Exit criteria:
 
 ## Maintainability and technical debt
 
-These are known, non-blocking issues. None changes the documented 0.1.0
+These are known, non-blocking issues. None changes the documented 0.x
 semantics, and the existing tests cover the current behavior.
 
-Resolved in 0.1.0:
+Resolved through 0.3.0:
 
 1. **Per-operation state growth.** `Policy.maxTrackedOperations` now bounds all
    operation-keyed maps with LRU eviction, and `removeOperation(operationId)`
@@ -83,18 +84,18 @@ Resolved in 0.1.0:
    `budgets.ts`, `candidates.ts`, and `stability.ts` while preserving the
    `evaluatePolicy` contract.
 3. **Per-file coverage.** Every `src/**` file is above 80% branch coverage; the
-   lowest is 81.20% (`signals/collector.ts`).
+   lowest is 83.33% (`providers/cpu-utilization.ts`).
 4. **Inconsistent identifier validation.** `operationId` is trimmed; strategy,
    provider, signal, budget, and fallback identifiers reject surrounding
    whitespace. The rule is documented in [API.md](API.md).
+5. **Post-publish verification.** The release workflow now runs a separate
+   `verify-publish` job after publishing: it retries registry propagation, checks
+   version, `dist.integrity`, and `repository.url`, verifies the provenance
+   attestation, and installs the package in a clean consumer that imports every
+   documented entry point. See [RELEASING.md](RELEASING.md).
 
 Open:
 
-5. **Post-publish verification is manual (medium).** The release workflow proves
-   the publish command ran, not that the registry serves an installable package.
-   After the first successful manual release, add a post-publish job that retries
-   registry propagation, checks the version and integrity, and performs a clean
-   consumer import.
 6. **No benchmark regression tracking (low).** Benchmarks are intentionally not a
    CI gate because they are noisy on shared runners. Record a trend over time
    before considering a loose, non-blocking threshold.
@@ -106,15 +107,37 @@ Open:
    another selection for the same operation id is not observed until the lock is
    released. Consider an abort-aware queue if this becomes a production issue.
 
-## 0.3.0 — Extensibility without losing determinism
+## 0.3.0 — Extensibility without losing determinism (delivered locally)
 
-Candidate work, contingent on user demand:
+Delivered:
 
-- **Custom policy hook.** A pure function that receives the same evaluation input
-  and candidate set and returns a target tier or strategy id, with validation and
-  a required reason. The built-in policy remains the default.
-- **Composite signals.** Derive a signal from multiple readings with explicit
-  arithmetic and units, rather than encouraging hidden logic inside providers.
+- **Multi-runtime providers and entry points.** `adaptive-runtime/core`,
+  `/node`, `/web`, and `/edge`; browser providers for device memory, network
+  information, and frame timing; an edge execution-budget provider; structural
+  interfaces and no DOM type-library requirement.
+- **Composite signals.** `CompositeSignalProvider` derives named, unit-bearing
+  signals from child providers, propagates unavailable statuses, and rejects
+  invalid rules at construction.
+- **Custom policy selector.** `Policy.customSelector` refines the eligible
+  candidate choice while preserving applicability, quality bounds, and stability
+  gates. Choices record a `custom-selector` reason.
+- **Observability bridge.** Zero-dependency in-memory metrics with Prometheus
+  text exposition and a structural OpenTelemetry meter adapter. Non-`ok` signals
+  increment status counters and never write a zero gauge.
+- **Testing SDK.** Deterministic fake clock, scripted signal provider, and a
+  provider conformance runner under `adaptive-runtime/testing`.
+- **Packaging and example.** All documented entry points, a deterministic
+  core/edge/observability example, a portability source scan, entry-point
+  integration tests, a clean-consumer check, and ADRs 0007/0008.
+
+Not yet delivered:
+
+- npm publication and remote verification of the 0.3.0 tarball. Both require
+  explicit owner approval and a tagged release.
+- Post-0.3.0 work below remains candidate work, contingent on user demand.
+
+Candidate work after 0.3.0:
+
 - **Async applicability.** Only if a clear need appears; it complicates selection
   latency and determinism.
 - **Per-operation policy overrides.** Useful for multi-tenant services, but needs
@@ -155,7 +178,11 @@ remain application responsibilities.
 
 `engines.node` is `>=22.0.0`. The package uses only stable Node APIs:
 `process.memoryUsage`, `process.cpuUsage`, `perf_hooks.monitorEventLoopDelay`,
-`AbortSignal`, and standard timers.
+`AbortSignal`, and standard timers. Portable entry points use only
+`AbortController`, `Promise`, standard timers, and structural globals; they do
+not depend on a specific browser, worker, or edge vendor version. Verify
+`AbortSignal` and ESM support in your target runtime before adopting the edge or
+web entry point.
 
 The support window will follow the Node.js release schedule: current and active
 LTS lines plus the next LTS during its transition. Dropping a Node line is a

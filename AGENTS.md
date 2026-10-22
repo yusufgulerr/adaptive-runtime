@@ -21,24 +21,41 @@
 
 ## Current position
 
-- Version 0.1.0 on the 0.x line. The public repository exists and CI/CodeQL pass
-  remotely on Node 22/24/26. npm publication is prepared but not yet performed.
-- The core runtime is implemented: bounded operation state, modular policy core,
-  root/policy/provider subpath exports, observability, and release automation.
-- Continue hardening: post-publish verification, benchmark trend tracking, and
-  the remaining 0.2/0.3 roadmap items.
+- Version 0.3.0 on the 0.x line. The public repository exists and its baseline
+  passes CI/CodeQL remotely on Node 22/24/26. The 0.3.0 tree is verified locally;
+  its remote CI run is pending. npm publication is prepared but not yet
+  performed; it requires explicit owner approval.
+- The runtime is multi-platform: one portable core plus Node.js, browser, web, and
+  WinterCG entry points. It includes bounded operation state
+  (`maxTrackedOperations`, `removeOperation`, `resetStats`), a modular policy core
+  (`budgets`/`candidates`/`stability`/`engine`), custom policy selectors,
+  composite signals, web/edge providers, an observability bridge, a testing SDK,
+  and release automation.
+- Positioning is production-oriented: a deterministic, resource-aware,
+  low-overhead, zero-dependency runtime. Do not use diminishing language about
+  the project's size, maturity, or production readiness.
+- Continue hardening: post-publish verification, benchmark trend tracking, and the
+  remaining post-0.3.0 roadmap items.
 - Node.js `>=22.0.0`; locally verified on Node 24.15.0, CI configured for
   22/24/26.
 
 ## Commands
 
 ```bash
+npm run format
 npm run lint
 npm run typecheck
 npm test
 npm run test:coverage
 npm run build
+npm run example:basic
+npm run example:search
+npm run example:planning
+npm run example:quick-start
+npm run example:observability
+npm run example:edge
 npm run benchmark
+npm run benchmark:concurrency
 npm pack --dry-run
 ```
 
@@ -60,6 +77,16 @@ not expectations.
 - Provider and listener failures must not crash the operation.
 - Keep the public API minimal and intentional. Document new public behavior in
   `docs/API.md`, `CHANGELOG.md`, and tests.
+- Bound per-operation state: `maxTrackedOperations` must evict only unpinned,
+  non-selecting, non-executing operations; `removeOperation` must not disturb an
+  active selection, and `resetStats` must not discard decisions or policy state.
+- Keep `adaptive-runtime/policy` platform-neutral. Keep `adaptive-runtime/core`,
+  `/web`, `/edge`, `/observability`, and `/testing` free of Node.js built-in
+  imports and Node.js `process` access. `adaptive-runtime/providers` is a mixed
+  barrel and is not platform-neutral.
+- Keep `src/policy/`, `src/runtime/`, `src/signals/`, `src/types/`,
+  `src/errors/`, `src/observability/`, `src/testing/`, `src/providers/web/`,
+  `src/providers/edge/`, and `src/providers/composite.ts` portable.
 - Add an ADR for decisions that change semantics or public contracts.
 - No placeholders, TODOs, disabled tests, or invented measurements.
 

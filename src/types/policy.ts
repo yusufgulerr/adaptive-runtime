@@ -34,7 +34,7 @@ export interface CustomPolicySelection {
 
 export type CustomPolicySelector = (
   context: CustomPolicySelectorContext,
-) => CustomPolicySelection | null | undefined;
+) => CustomPolicySelection | string | null | undefined;
 
 /**
  * A soft budget rule. When the signal exceeds `limit`, the policy reduces the

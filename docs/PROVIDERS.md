@@ -175,11 +175,101 @@ The budget is a **selection threshold**, not an admission-control mechanism. A
 queue at 101 items reduces the target quality tier; it does not make the queue
 shorter.
 
+## Platform providers
+
+The same provider contract works on every runtime. Import from the narrowest
+subpath so a bundler does not pull Node.js built-ins into a browser or worker.
+
+### Web: structural globals
+
+Web providers never assume the DOM type library is present. They define
+structural interfaces and read `globalThis` with optional chaining.
+
+```ts
+import { DeviceMemoryProvider, FrameTimingProvider } from "adaptive-runtime/web";
+
+const deviceMemory = new DeviceMemoryProvider();
+const frameTiming = new FrameTimingProvider({ targetFrameBudgetMs: 16.67 });
+
+function renderFrame(durationMs: number): void {
+  frameTiming.recordFrameDuration(durationMs);
+}
+```
+
+`DeviceMemoryProvider` reads `navigator.deviceMemory` and
+`performance.memory`. `NetworkInformationProvider` reads
+`navigator.connection`. `FrameTimingProvider` is fed by your render loop.
+Absent APIs produce `unsupported`; invalid values produce `unknown` or `error`.
+Never replace them with zero. All three accept injection options for tests.
+
+### Edge: wall-clock and concurrency budgets
+
+Serverless runtimes expose deadlines differently, so `ExecutionBudgetProvider`
+takes an application-supplied snapshot:
+
+```ts
+import { ExecutionBudgetProvider, EDGE_EXECUTION_USED_RATIO } from "adaptive-runtime/edge";
+
+const budget = new ExecutionBudgetProvider({
+  getBudgetSnapshot: () => ({
+    totalBudgetMs: 30_000,
+    elapsedMs: Date.now() - requestStartedAt,
+    activeRequests: inFlight.size,
+    maxConcurrency: 20,
+  }),
+});
+```
+
+Use `edge.execution.usedRatio` for deadline pressure and
+`edge.concurrency.saturation` for queue pressure. `remainingMs` is convenient
+for logs and composite rules. Missing snapshot fields are `unknown`, not zero.
+
+### Composite: derive a policy signal
+
+`CompositeSignalProvider` wraps one or more providers and computes derived
+signals. All inputs must be `ok` before `compute` runs; otherwise the unavailable
+status propagates in priority order `error` > `stale` > `unsupported` >
+`unknown`.
+
+```ts
+import { CompositeSignalProvider } from "adaptive-runtime/core";
+import {
+  EDGE_CONCURRENCY_SATURATION,
+  EDGE_EXECUTION_USED_RATIO,
+  ExecutionBudgetProvider,
+} from "adaptive-runtime/edge";
+
+const composite = new CompositeSignalProvider({
+  providers: [new ExecutionBudgetProvider({ getBudgetSnapshot })],
+  rules: [
+    {
+      name: "edge.pressure.score",
+      unit: "ratio",
+      inputs: [EDGE_EXECUTION_USED_RATIO, EDGE_CONCURRENCY_SATURATION],
+      compute: (values) => {
+        const used = values[EDGE_EXECUTION_USED_RATIO];
+        const saturation = values[EDGE_CONCURRENCY_SATURATION];
+        if (used === undefined || saturation === undefined) {
+          return Number.NaN;
+        }
+        return 0.6 * used + 0.4 * saturation;
+      },
+    },
+  ],
+});
+```
+
+The constructor rejects empty providers/rules, unknown inputs, duplicate rule
+names, and name collisions with passthrough inputs. A rule that throws or returns
+a non-finite number becomes an `error` reading. The local lookup above turns an
+impossible missing input into an explicit error instead of a zero reading.
+
 ## Testing a provider
 
 Test the provider directly and through a runtime. Keep tests deterministic: pass
 `now` explicitly and inject the measurement function instead of relying on the
-machine.
+machine. The `adaptive-runtime/testing` subpath provides `ScriptedSignalProvider`
+for runtime scenarios and `runProviderConformanceCheck` for contract checks.
 
 ```ts
 import assert from "node:assert/strict";
@@ -212,8 +302,30 @@ test("does not use zero for missing data", () => {
 ```
 
 For built-in providers, use their injection points rather than real hardware:
-`memoryUsage`, `cpuUsage`, `histogramFactory`, and the network `probe`. See
+`memoryUsage`, `cpuUsage`, `histogramFactory`, and the network `probe`. Web and
+edge providers accept `getEnvironment`, `getConnection`, and
+`getBudgetSnapshot`; the frame provider accepts recorded durations. See
 [API.md](API.md#built-in-providers).
+
+Run the conformance check once per provider in your test suite:
+
+```ts
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { runProviderConformanceCheck } from "adaptive-runtime/testing";
+import { QueueDepthProvider } from "./queue-depth-provider.js";
+
+test("queue depth provider conforms to the signal contract", async () => {
+  const report = await runProviderConformanceCheck(new QueueDepthProvider({ length: 7 }));
+  assert.equal(report.ok, true, report.failures.join("; "));
+});
+```
+
+The check invokes `start()` and `close()` once, calls `read()` once, and verifies
+the provider id, descriptor names/units, reading names/units, `observedAt`,
+status codes, finite `ok` values, confidence bounds, and error strings. It
+reports failures instead of throwing, so one bad provider does not abort the
+suite. It does not enforce a timeout.
 
 For runtime integration, use a fake `Clock` and a provider that returns a fixed
 reading. Assert the selected strategy, the decision reasons, and the signal

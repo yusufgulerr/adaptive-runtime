@@ -6,6 +6,8 @@
 - [0004 — Explicit signal statuses and provider isolation](0004-explicit-signals-provider-isolation.md)
 - [0005 — Ref-counted shared provider reads](0005-ref-counted-shared-reads.md)
 - [0006 — Bounded operation state and subpath exports](0006-bounded-operation-state-and-subpath-exports.md)
+- [0007 — Multi-runtime web and edge providers, and composite signals](0007-multi-runtime-web-edge-and-composite-providers.md)
+- [0008 — Custom policy selector, observability bridge, and testing SDK](0008-custom-policy-selector-observability-and-testing-sdk.md)
 
 ## Decision map
 
@@ -20,6 +22,8 @@ duplicating records:
 | Signal provider model and unavailable data | [0004](0004-explicit-signals-provider-isolation.md) |
 | Shared provider reads and ref-counted abort | [0005](0005-ref-counted-shared-reads.md) |
 | Bounded state, modular policy core, and subpaths | [0006](0006-bounded-operation-state-and-subpath-exports.md) |
+| Web/edge providers, portable core, composite signals | [0007](0007-multi-runtime-web-edge-and-composite-providers.md) |
+| Custom selector, observability, testing SDK | [0008](0008-custom-policy-selector-observability-and-testing-sdk.md) |
 
 New decisions use the same structure: status, date, context, decision,
 consequences, alternatives, and follow-up. A decision that changes public

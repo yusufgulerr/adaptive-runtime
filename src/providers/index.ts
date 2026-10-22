@@ -1,9 +1,28 @@
+/**
+ * Provider barrel. It includes Node.js, web, and edge providers, so it is not a
+ * platform-neutral entry point. Prefer `adaptive-runtime/web`,
+ * `adaptive-runtime/edge`, or `adaptive-runtime/core` for portable bundles.
+ */
+
+export {
+  CompositeSignalProvider,
+  type CompositeSignalProviderOptions,
+  type CompositeSignalRule,
+} from "./composite.js";
 export {
   type CpuUsageSnapshot,
   CpuUtilizationProvider,
   type CpuUtilizationProviderOptions,
   PROCESS_CPU_UTILIZATION,
 } from "./cpu-utilization.js";
+export {
+  EDGE_CONCURRENCY_SATURATION,
+  EDGE_EXECUTION_REMAINING_MS,
+  EDGE_EXECUTION_USED_RATIO,
+  ExecutionBudgetProvider,
+  type ExecutionBudgetProviderOptions,
+  type ExecutionBudgetSnapshot,
+} from "./edge/execution-budget.js";
 export {
   EventLoopDelayProvider,
   type EventLoopDelayProviderOptions,
@@ -22,3 +41,25 @@ export {
   ProcessMemoryProvider,
   type ProcessMemoryProviderOptions,
 } from "./process-memory.js";
+export {
+  type DeviceMemoryEnvironmentLike,
+  DeviceMemoryProvider,
+  type DeviceMemoryProviderOptions,
+  type MemoryInfoLike,
+  WEB_DEVICE_MEMORY_GIB,
+  WEB_JS_HEAP_USED_RATIO,
+} from "./web/device-memory.js";
+export {
+  FrameTimingProvider,
+  type FrameTimingProviderOptions,
+  WEB_FRAME_DROPPED_RATIO,
+  WEB_FRAME_DURATION_P95_MS,
+} from "./web/frame-timing.js";
+export {
+  type NetworkInformationLike,
+  NetworkInformationProvider,
+  type NetworkInformationProviderOptions,
+  WEB_NETWORK_DOWNLINK_MBPS,
+  WEB_NETWORK_RTT_MS,
+  WEB_NETWORK_SAVE_DATA,
+} from "./web/network-info.js";

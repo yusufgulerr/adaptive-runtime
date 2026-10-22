@@ -1,9 +1,9 @@
 # Contributing
 
-Thank you for considering a contribution. This project prioritizes predictable
-behavior, a minimal dependency surface, and auditable code. Discussions and pull
-requests should optimize for correctness and clarity before performance or
-feature count.
+Thank you for considering a contribution. This project is built on a modular,
+zero-dependency core designed to remain deterministic, extensible, and rigorously
+auditable as the ecosystem scales. Discussions and pull requests should optimize
+for correctness and clarity before performance or feature count.
 
 ## Before you start
 
@@ -20,15 +20,19 @@ feature count.
 
 ## Roles and access
 
-Adaptive Runtime is a single-maintainer project. Public contributors do not need
-write access: fork the repository, create a branch in your fork, and open a pull
-request. Only [@yusufgulerr](https://github.com/yusufgulerr) has write/admin
-access and can approve external pull requests. Do not ask for write access for a
-one-off change.
+Contribution and responsibility grow through the staged ladder in
+[GOVERNANCE.md](GOVERNANCE.md): **Community Contributor**, **Triage
+Collaborator**, **Committer / Reviewer**, and **Core Maintainer / Owner**. Public
+contributors do not need write access: fork the repository, create a branch in
+your fork, and open a pull request. Only
+[@yusufgulerr](https://github.com/yusufgulerr) currently holds write/admin access
+and can approve external pull requests; access expands only through the recorded
+ladder process. Questions about the ladder are welcome in
+[Discussions](https://github.com/yusufgulerr/adaptive-runtime/discussions).
 
 All changes to `main` require a pull request, the owner's code-owner approval,
 the Node 22/24/26 CI checks, and CodeQL. See [GOVERNANCE.md](GOVERNANCE.md) for
-the full role and access policy.
+the full role, promotion, and access-review policy.
 
 ## Development setup
 
