@@ -236,7 +236,7 @@ The current Scorecard result is **7.6/10**. Relevant findings:
 | `Fuzzing` | 10 | Detected `TypeScriptPropertyBasedTesting` integration in `tests/property/support.ts`; the scheduled campaign is in `.github/workflows/fuzz.yml`. |
 | `Code-Review` | 0 | The owner currently self-merges with admin bypass; adding a second reviewer is a silver/gold and governance follow-up. |
 | `Branch-Protection` | 8 | Required review count is 1; the owner bypass is documented in GOVERNANCE. |
-| `Pinned-Dependencies` | 8 | `npmCommand` is not pinned by hash; actions are SHA-pinned. |
+| `Pinned-Dependencies` | 9 | All 21 GitHub-owned actions and the third-party action are SHA-pinned; 5 of 6 `npmCommand` invocations are pinned. The remaining command is in `.github/workflows/release.yml`. |
 
 Do not treat the Scorecard findings as code vulnerabilities. The badge application
 addresses the `CII-Best-Practices` gap; the other findings need separate work.

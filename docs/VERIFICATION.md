@@ -5,9 +5,10 @@ This document records the local and remote checks performed for the 0.3.0 line o
 GitHub repository settings, and npm registry status. The 0.3.0 tree was merged to
 `main` at `5504f21`; the release-workflow fix and the OpenSSF readiness
 documentation merged at `953a484` and `6f67ff3`. The property/fuzz suite merged
-at `8441299`. Remote CI, CodeQL, and Scorecard pass for these commits. The
-`v0.3.0` tag points to `5504f21` and the GitHub release is published; npm
-publication remains pending.
+at `8441299` and the scheduled campaign merged at `3d846ea`; a manual
+10,000-run dispatch passed. Remote CI, CodeQL, and Scorecard pass for these
+commits. The `v0.3.0` tag points to `5504f21` and the GitHub release is
+published; npm publication remains pending.
 
 ## Environment
 
@@ -246,10 +247,14 @@ fuzzing work:
 
 | Workflow | Result |
 | --- | --- |
+| CI on `main` at `3d846ea` | **PASS** — run [39808546723](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39808546723) |
+| CodeQL on `main` at `3d846ea` | **PASS** — run [39808546967](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39808546967) |
+| OpenSSF Scorecard on `main` at `3d846ea` | **PASS** — run [39808547104](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39808547104), score 7.6/10, `Fuzzing` 10/10 |
+| Fuzz manual dispatch on `main` at `3d846ea` | **PASS** — run [39808582473](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39808582473), 10,000 runs per property |
 | CI on `main` at `8441299` | **PASS** — run [39806557742](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39806557742) |
 | CodeQL on `main` at `8441299` | **PASS** — run [39806557678](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39806557678) |
 | OpenSSF Scorecard on `main` at `8441299` | **PASS** — run [39806557762](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39806557762), score 7.6/10, `Fuzzing` 10/10 |
-| Fuzz on PR #18 | **PASS** — run [39807476351](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39807476351), 1,000 runs per property |
+| Fuzz on PR #18 | **PASS** — run [39808299079](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39808299079), 1,000 runs per property |
 | CI on `main` at `6f67ff3` | **PASS** — run [39707436345](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39707436345) |
 | CodeQL on `main` at `6f67ff3` | **PASS** — run [39707436457](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39707436457) |
 | OpenSSF Scorecard on `main` at `6f67ff3` | **PASS** — run [39707436347](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/39707436347), score 7/10 |
