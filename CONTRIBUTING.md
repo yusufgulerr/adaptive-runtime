@@ -57,6 +57,7 @@ npm run lint
 npm run format
 npm run typecheck
 npm test
+npm run test:fuzz
 npm run test:coverage
 npm run build
 npm run verify:exports
@@ -88,6 +89,10 @@ Formatting is enforced by Biome. Run `npm run format` before committing.
 - Bug fixes require a regression test that fails before the fix.
 - New behavior requires unit tests at the appropriate layer.
 - Policy tests should use the pure engine and a fake clock; avoid real sleeps.
+- Property/fuzz tests live in `tests/property` and use `fast-check` with a fixed
+  default seed. They are part of `npm test`; run `npm run test:fuzz` for the
+  property suite alone. Set `FUZZ_RUNS` and `FUZZ_SEED` to run a longer,
+  reproducible campaign. `fast-check` is a development-only dependency.
 - Provider tests should inject clocks/factories rather than depend on wall time.
 - Integration tests should exercise the public entry point and examples.
 - Keep the suite deterministic and fast. Tests must not require network access.

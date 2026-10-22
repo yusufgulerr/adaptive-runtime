@@ -20,17 +20,19 @@ release is published; npm publication remains pending.
 | TypeScript | 7.0.2 |
 | @types/node | 26.6.5 |
 | Biome | 2.5.15 |
+| fast-check | 4.10.2 (development only) |
 | Package | adaptive-runtime 0.3.0 |
 
 ## Commands and results
 
 | Command | Result |
 | --- | --- |
-| `npm run format` | **PASS** — 78 files checked, no fixes applied |
-| `npm run lint` | **PASS** — 78 files checked, no fixes applied |
+| `npm run format` | **PASS** — 83 files checked, no fixes applied |
+| `npm run lint` | **PASS** — 83 files checked, no fixes applied |
 | `npm run typecheck` | **PASS** — `tsc -p tsconfig.check.json` |
-| `npm test` | **PASS** — 256 tests, 45 suites, 0 failures, 0 skipped |
-| `npm run test:coverage` | **PASS** — 99.10% lines, 96.91% branches, 98.64% functions |
+| `npm test` | **PASS** — 265 tests, 49 suites, 0 failures, 0 skipped |
+| `npm run test:fuzz` | **PASS** — 9 property tests, 4 suites, 0 failures |
+| `npm run test:coverage` | **PASS** — 99.10% lines, 97.00% branches, 98.64% functions |
 | `npm run build` | **PASS** — ESM, declarations, and maps emitted to `dist/` |
 | `npm run verify:exports` | **PASS** — 10 export entries, 27 files, and 27 runtime symbols |
 | `npm run example:basic` | **PASS** — selected `high-quality`, quality check passed |
@@ -41,20 +43,22 @@ release is published; npm publication remains pending.
 | `npm run example:edge` | **PASS** — deterministic three-tier sequence and Prometheus text |
 | `npm run benchmark` | **PASS** — results below |
 | `npm run benchmark:concurrency` | **PASS** — concurrency and retained-heap observations below |
-| `npm pack --dry-run` | **PASS** — 168 files, 144.4 kB packed, 671.8 kB unpacked |
+| `npm pack --dry-run` | **PASS** — 168 files, 144.7 kB packed, 672.5 kB unpacked |
 | Clean consumer install from tarball | **PASS** — all ten documented subpaths imported; core run, web/edge reads, testing SDK, and observability collector succeeded |
 | Clean consumer TypeScript compile | **PASS** — all subpaths resolve under NodeNext with `@types/node` |
 | Portable source scan | **PASS** — zero `node:` / `process.` matches across 33 files |
 | `npm ls --omit=dev --depth=0` | **PASS** — `(empty)`; no runtime dependencies |
 | `npm audit` | **PASS** — 0 vulnerabilities (including dev dependencies) |
-| Markdown relative-link check | **PASS** — 188 Markdown files, 175 relative links, all targets exist |
+| Markdown relative-link check | **PASS** — 191 Markdown files, 207 relative links, all targets exist |
 
-The suite covers unit tests in `tests/unit/` and integration tests in
-`tests/integration/`, plus shared helpers. `node:test` reports 45 suites because
-of nested `describe` blocks. The checks in this line include the testing SDK,
-entry-point isolation, package subpath assertions, the built-package export
-verifier, the PR title validator, the portability source scan, and deterministic
-edge-example assertions.
+The suite covers unit tests in `tests/unit/`, integration tests in
+`tests/integration/`, and deterministic property/fuzz tests in `tests/property/`,
+plus shared helpers. `node:test` reports 49 suites because of nested `describe`
+blocks. The property suite uses `fast-check` with a fixed default seed; set
+`FUZZ_RUNS` and `FUZZ_SEED` to run a longer reproducible campaign. The checks in
+this line include the testing SDK, entry-point isolation, package subpath
+assertions, the built-package export verifier, the PR title validator, the
+portability source scan, and deterministic edge-example assertions.
 
 ## Coverage
 
@@ -63,7 +67,7 @@ Global result from `npm run test:coverage`:
 | Metric | Result | Threshold | Status |
 | --- | ---: | ---: | --- |
 | Lines | 99.10% | 80% | PASS |
-| Branches | 96.91% | 80% | PASS |
+| Branches | 97.00% | 80% | PASS |
 | Functions | 98.64% | 80% | PASS |
 
 Every `src/**` file is above 80% branch coverage. The lowest per-file branch
@@ -165,9 +169,9 @@ results are in
 
 ## Package inspection
 
-- `npm pack --dry-run` reports **168 files**, **144.4 kB packed**, and
-  **671.8 kB unpacked**, version **0.3.0**, shasum
-  `a9bc5b027d1ea0dd35975112ad7db01fb84fe1ab`.
+- `npm pack --dry-run` reports **168 files**, **144.7 kB packed**, and
+  **672.5 kB unpacked**, version **0.3.0**, shasum
+  `e14ab895b2ab0d06d0a0fea0b6644a2ab38fc751`.
 - The tarball contains `dist/`, `README.md`, `LICENSE`, `NOTICE`, and
   `package.json`. No `src/`, `tests/`, `examples/`, `benchmarks/`, `docs/`,
   coverage, or `node_modules/` files are included.
@@ -303,14 +307,16 @@ npm dispatch.
 - The OIDC npm publication path. It has not executed because the npm phase has not
   been dispatched.
 - Post-publication npm registry install and provenance attestation.
-- Fuzzing, long-run load testing, soak testing, and memory profiling. The
-  concurrency benchmark is a short local observation, not a soak test.
+- Coverage-guided fuzzing, long-run load testing, soak testing, and memory
+  profiling. The property/fuzz suite is a bounded deterministic campaign, not a
+  coverage-guided fuzzer or a soak test. The concurrency benchmark is a short
+  local observation, not a soak test.
 - Security audit or penetration testing.
 - Benchmark behavior under real provider I/O or multi-core scaling.
 
 ## Release assessment
 
-Local verification for 0.3.0 is complete: 256 tests, 99.10% line / 96.91% branch /
+Local verification for 0.3.0 is complete: 265 tests, 99.10% line / 97.00% branch /
 98.64% function coverage, build, six examples, both benchmarks, package
 inspection, all documented subpath imports, a strict TypeScript consumer, the
 built-package export verifier, and the zero-Node portability scan. The source is

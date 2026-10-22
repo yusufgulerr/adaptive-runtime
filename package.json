@@ -102,8 +102,9 @@
     "typecheck": "tsc -p tsconfig.check.json",
     "lint": "biome check src tests examples benchmarks scripts",
     "format": "biome check --write src tests examples benchmarks scripts",
-    "test": "node --import tsx --test \"tests/unit/*.test.ts\" \"tests/integration/*.test.ts\"",
-    "test:coverage": "node --import tsx --experimental-test-coverage --test-coverage-include=\"src/**\" --test-coverage-lines=80 --test-coverage-functions=80 --test-coverage-branches=80 --test \"tests/unit/*.test.ts\" \"tests/integration/*.test.ts\"",
+    "test": "node --import tsx --test \"tests/unit/*.test.ts\" \"tests/integration/*.test.ts\" \"tests/property/*.test.ts\"",
+    "test:fuzz": "node --import tsx --test \"tests/property/*.test.ts\"",
+    "test:coverage": "node --import tsx --experimental-test-coverage --test-coverage-include=\"src/**\" --test-coverage-lines=80 --test-coverage-functions=80 --test-coverage-branches=80 --test \"tests/unit/*.test.ts\" \"tests/integration/*.test.ts\" \"tests/property/*.test.ts\"",
     "example:basic": "tsx examples/basic/index.ts",
     "example:search": "tsx examples/resource-aware-search/index.ts",
     "example:planning": "tsx examples/resource-pressure-planning/index.ts",
@@ -120,6 +121,7 @@
   "devDependencies": {
     "@biomejs/biome": "^2.2.0",
     "@types/node": "^26.6.5",
+    "fast-check": "^4.10.2",
     "tsx": "^4.20.0",
     "typescript": "^7.0.2"
   }
