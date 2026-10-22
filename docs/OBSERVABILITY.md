@@ -42,6 +42,13 @@ quality checks, provider errors, listener errors, and runtime closes. Gauges
 cover `ok` signal readings and budget engagement. Histograms cover run duration
 in seconds.
 
+The collector derives a family's type from the recording method, not from the
+metric name: `increment` creates a counter, `setGauge` a gauge, and `observe` a
+histogram. Reusing a name with a different instrument kind throws `TypeError`
+before state changes. Series keys encode label keys and values unambiguously, so
+commas, equals signs, or quotes in label text cannot merge distinct series.
+`reset()` clears both the series and the family registrations.
+
 | Metric | Type | Labels |
 | --- | --- | --- |
 | `<prefix>_runs_total` | counter | `operation_id`, `strategy_id`, `result` |

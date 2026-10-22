@@ -17,9 +17,22 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) after 1.0.
   are documented in `docs/FUZZING.md`.
 - OpenSSF Best Practices passing-level self-assessment, evidence map, and
   application checklist in `docs/OPENSSF_BEST_PRACTICES.md`.
+- Asynchronous `SignalProvider.start()` support. The collector awaits a returned
+  promise before the first read, applies the provider timeout and caller abort
+  signal, and caches failures instead of leaking rejected promises.
 
 ### Fixed
 
+- Policy decisions and successful run metadata are frozen before events are
+  emitted and before decisions are stored, so listener mutation cannot change the
+  selected strategy or returned metadata.
+- `setAdaptationEnabled()` no longer loses its just-written override during
+  tracking-limit enforcement when the bound is full of protected operations.
+  Padded `pinStrategy()` strategy ids are rejected instead of silently trimmed.
+- Metric series keys are unambiguous for arbitrary label text, and metric family
+  type now comes from the recording instrument rather than the metric name
+  suffix. Reusing a name with a different instrument kind throws `TypeError`
+  instead of silently dropping series.
 - The tag-push GitHub release job sets `GH_REPO` for `gh release` commands when it
   runs without a checkout.
 

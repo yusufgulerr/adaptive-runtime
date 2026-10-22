@@ -109,19 +109,25 @@ run. With the system clock the resolution is milliseconds.
 A pin is an explicit manual override for future runs. It bypasses quality
 pressure, `minQualityTier`, `maxQualityTier`, and `minimumModeDurationMs`, but the
 pinned strategy must exist and be applicable. An invalid pin fails the run with
-`PinnedStrategyError`. Pins are per operation and are not persisted.
+`PinnedStrategyError`. Leading or trailing whitespace in `strategyId` is rejected
+with `ConfigurationError` instead of being trimmed. Pins are per operation and
+are not persisted.
 
 ### `setAdaptationEnabled(operationId, enabled)`
 
 Overrides `policy.adaptationEnabled` for one operation. When disabled, the
 runtime chooses the highest applicable tier allowed by `minQualityTier` and
 `maxQualityTier`, without applying budgets. A pin takes precedence. Passing a
-non-boolean throws `ConfigurationError`.
+non-boolean throws `ConfigurationError`. The override written by the call is
+protected from LRU eviction during that call, so the tracking bound may be
+exceeded temporarily when all other tracked operations are pinned or active.
 
 ### `getDecision(operationId)`
 
 Returns the most recent decision for the operation, or `null` if it has never
 been evaluated. Decisions are retained after failures and after `close()`.
+Decision objects are frozen before storage; the same immutable object is used by
+events and run metadata.
 
 ### `getStats(operationId)`
 
@@ -161,8 +167,9 @@ no longer own any state. Throws `RuntimeClosedError` after `close()`.
 ### `on(event, listener)`
 
 Subscribes to an event and returns an unsubscribe function. Listener exceptions
-are caught; the runtime emits `listener:error` and continues. A listener cannot
-change a decision.
+are caught; the runtime emits `listener:error` and continues. Decisions and
+successful run metadata are frozen before emission. A listener cannot change a
+decision, metadata, or which strategy executes.
 
 ### `close()`
 
@@ -389,11 +396,17 @@ interface SignalDescriptor {
 interface SignalProvider {
   readonly id: string;
   readonly signals: readonly SignalDescriptor[];
-  start?(): void;
+  start?(): void | Promise<void>;
   read(context: SignalReadContext): Promise<readonly ResourceSignal[]> | readonly ResourceSignal[];
   close?(): void | Promise<void>;
 }
 ```
+
+`start()` is called lazily once before the first read. A returned promise is
+awaited under `providerTimeoutMs` and the caller's abort signal; a rejection or
+timeout becomes cached error readings and a `provider:error` event. A late
+rejection after an abandoned wait is observed and never becomes an unhandled
+rejection. The abort itself is not cached as a provider failure.
 
 `SignalReadContext` contains `now` and an abort `signal`. Providers should stamp
 `observedAt` with `context.now` and honor the abort signal when doing I/O.
@@ -666,7 +679,10 @@ interface RunMetadata {
 ```
 
 `attempts` is always `1`; its literal type documents the no-retry guarantee.
-`signals` is the decision's signal snapshot.
+`signals` is the decision's signal snapshot. The decision, nested signal, budget,
+and reason views, and the success metadata are frozen before `run:success` is
+emitted and before the result is returned. Opaque `reason.details` values are not
+recursively frozen.
 
 ## Events
 
@@ -781,7 +797,14 @@ budget engagement. Durations are recorded in seconds.
 Non-`ok` signals increment `*_signal_status_total{status="..."}` only. They are
 **never** written to the `*_signal_reading` gauge as `0`, so unavailable data is
 not confused with a real zero measurement. Prometheus label values escape
-backslashes, quotes, and newlines. See
+backslashes, quotes, and newlines.
+
+Metric family type is determined by the recording method: `increment` registers
+a counter, `setGauge` a gauge, and `observe` a histogram, regardless of the name
+suffix. Reusing a name with a different instrument kind throws `TypeError` before
+series state changes. Series keys encode label text unambiguously, so commas,
+equals signs, or quotes in label keys and values cannot merge distinct series.
+`reset()` clears family registrations along with the series. See
 [OBSERVABILITY.md](OBSERVABILITY.md) for the metric name table and examples.
 
 ## Testing SDK (`adaptive-runtime/testing`)

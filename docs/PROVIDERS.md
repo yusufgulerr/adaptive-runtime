@@ -13,7 +13,7 @@ practical rules that are not obvious from the type signatures.
 interface SignalProvider {
   readonly id: string;
   readonly signals: readonly SignalDescriptor[];
-  start?(): void;
+  start?(): void | Promise<void>;
   read(context: SignalReadContext): Promise<readonly ResourceSignal[]> | readonly ResourceSignal[];
   close?(): void | Promise<void>;
 }
@@ -22,7 +22,8 @@ interface SignalProvider {
 - `id` is stable, unique within a runtime, and has no leading or trailing
   whitespace. Signal names follow the same rule.
 - `signals` declares every name and unit the provider may return.
-- `start()` is called lazily, once, before the first read.
+- `start()` is called lazily, once, before the first read. It may be synchronous
+  or asynchronous.
 - `read()` may be synchronous or asynchronous and must return an array of readings.
 - `close()` is called once by `runtime.close()`.
 
@@ -57,9 +58,12 @@ Rules that matter:
 ## Lifecycle and failure handling
 
 The runtime starts providers lazily, so a provider that is configured but unused
-does not open resources. A start failure is cached: subsequent reads for that
-provider become `error` readings, and the failure is reported through
-`provider:error`.
+does not open resources. An asynchronous `start()` is awaited before the first
+read, under the same `providerTimeoutMs` and caller abort signal as a read. A
+start failure or timeout is cached: subsequent reads for that provider become
+`error` readings, and the failure is reported through `provider:error` once. An
+abandoned wait does not cache the caller's abort, and a late start rejection is
+observed rather than leaking as an unhandled rejection.
 
 `read()` is isolated from the rest of the operation:
 
@@ -70,7 +74,8 @@ provider become `error` readings, and the failure is reported through
   `missingSignalBehavior: "error"`.
 
 `providerTimeoutMs` defaults to 1000 ms and can be disabled with `0`. A synchronous
-infinite loop in `read()` blocks the event loop before any timeout can fire.
+infinite loop in `start()` or `read()` blocks the event loop before any timeout
+can fire.
 
 `close()` is called for every provider through `Promise.allSettled`. A close
 failure is emitted as `provider:error` and does not reject `runtime.close()`.
