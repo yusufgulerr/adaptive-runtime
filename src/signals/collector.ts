@@ -27,9 +27,15 @@ export interface SignalCollectorOptions {
 interface ProviderEntry {
   readonly provider: SignalProvider;
   readonly descriptors: ReadonlyMap<string, SignalDescriptor>;
+  /** Resolves once start() settles; reused so start() runs at most once. */
+  startPromise: Promise<void> | null;
   started: boolean;
   startError: Error | null;
 }
+
+type ProviderWaitResult<T> =
+  | { readonly ok: true; readonly value: T }
+  | { readonly ok: false; readonly error: Error; readonly aborted: boolean };
 
 interface SharedRead {
   readonly controller: AbortController;
@@ -123,6 +129,7 @@ export class SignalCollector {
       entries.push({
         provider,
         descriptors,
+        startPromise: null,
         started: false,
         startError: null,
       });
@@ -291,18 +298,112 @@ export class SignalCollector {
     }
 
     if (!entry.started) {
-      try {
-        entry.provider.start?.();
-        entry.started = true;
-      } catch (error) {
-        const failure = toError(error);
-        entry.startError = failure;
-        entry.started = true;
-        this.#onProviderError(entry.provider.id, failure);
-        return this.#errorReadings(entry, now, failure.message);
+      const start = this.#beginStart(entry, now);
+      if (start.errorReadings !== null) {
+        return start.errorReadings;
+      }
+      if (start.promise !== null) {
+        const startFailure = await this.#awaitStart(entry, now, signal, start.promise);
+        if (startFailure !== null) {
+          return startFailure;
+        }
       }
     }
 
+    const result = await this.#waitForProvider(entry, signal, (providerSignal) =>
+      entry.provider.read({ now, signal: providerSignal }),
+    );
+    if (!result.ok) {
+      if (!result.aborted) {
+        this.#onProviderError(entry.provider.id, result.error);
+      }
+      return this.#errorReadings(entry, now, result.error.message);
+    }
+
+    try {
+      return this.#normalizeReadings(entry, result.value, now);
+    } catch (error) {
+      const failure = toError(error);
+      if (!signal.aborted) {
+        this.#onProviderError(entry.provider.id, failure);
+      }
+      return this.#errorReadings(entry, now, failure.message);
+    }
+  }
+
+  /**
+   * Invokes start() at most once. Synchronous starts keep their immediate
+   * behavior; a returned promise is stored so later reads reuse it.
+   */
+  #beginStart(
+    entry: ProviderEntry,
+    now: number,
+  ): {
+    readonly errorReadings: readonly ResourceSignal[] | null;
+    readonly promise: Promise<void> | null;
+  } {
+    if (entry.startPromise !== null) {
+      return { errorReadings: null, promise: entry.startPromise };
+    }
+
+    let result: void | Promise<void>;
+    try {
+      result = entry.provider.start?.();
+    } catch (error) {
+      const failure = toError(error);
+      entry.startError = failure;
+      entry.started = true;
+      this.#onProviderError(entry.provider.id, failure);
+      return { errorReadings: this.#errorReadings(entry, now, failure.message), promise: null };
+    }
+
+    if (result === undefined) {
+      entry.started = true;
+      return { errorReadings: null, promise: null };
+    }
+
+    const promise = Promise.resolve(result);
+    // A caller can abandon the wait through its abort signal; observe any late
+    // rejection so it never surfaces as an unhandled rejection.
+    promise.catch(() => undefined);
+    entry.startPromise = promise;
+    return { errorReadings: null, promise };
+  }
+
+  /**
+   * Waits for a pending start under the provider timeout. A caller abort keeps
+   * the start promise reusable and caches nothing; a timeout or rejection is
+   * cached as startError and reported once.
+   */
+  async #awaitStart(
+    entry: ProviderEntry,
+    now: number,
+    signal: AbortSignal,
+    startPromise: Promise<void>,
+  ): Promise<readonly ResourceSignal[] | null> {
+    const result = await this.#waitForProvider(entry, signal, () => startPromise);
+    if (result.ok) {
+      entry.started = true;
+      return null;
+    }
+
+    if (!result.aborted) {
+      entry.startError = result.error;
+      entry.started = true;
+      this.#onProviderError(entry.provider.id, result.error);
+    }
+    return this.#errorReadings(entry, now, result.error.message);
+  }
+
+  /**
+   * Runs a provider operation with the configured timeout and the caller's
+   * abort signal applied to the wait. The operation itself is cooperative.
+   */
+  async #waitForProvider<T>(
+    entry: ProviderEntry,
+    signal: AbortSignal,
+    operation: (signal: AbortSignal) => T | Promise<T>,
+  ): Promise<ProviderWaitResult<T>> {
     const controller = new AbortController();
     let rejectAborted: ((error: Error) => void) | undefined;
     const abortPromise = new Promise<never>((_resolve, reject) => {
@@ -335,23 +436,19 @@ export class SignalCollector {
         : null;
 
     try {
-      const readPromise = Promise.resolve().then(() =>
-        entry.provider.read({ now, signal: controller.signal }),
-      );
-      const racers: Promise<unknown>[] = [readPromise, abortPromise];
+      const operationPromise = Promise.resolve().then(() => operation(controller.signal));
+      const racers: Promise<unknown>[] = [operationPromise, abortPromise];
       if (timeoutPromise !== null) {
         racers.push(timeoutPromise);
       }
-      const raw = await Promise.race(racers);
-      return this.#normalizeReadings(entry, raw, now);
+      const value = await Promise.race(racers);
+      return { ok: true, value: value as T };
     } catch (error) {
-      const failure = toError(error);
-      if (!signal.aborted) {
-        this.#onProviderError(entry.provider.id, timeoutError ?? failure);
-      }
-      const message =
-        timeoutError === null ? failure.message : (timeoutError as ProviderTimeoutError).message;
-      return this.#errorReadings(entry, now, message);
+      return {
+        ok: false,
+        error: timeoutError ?? toError(error),
+        aborted: signal.aborted,
+      };
     } finally {
       timer?.cancel();
       signal.removeEventListener("abort", onAbort);

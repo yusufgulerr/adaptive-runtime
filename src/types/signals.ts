@@ -56,7 +56,8 @@ export interface SignalProvider {
   readonly id: string;
   /** Declares every signal this provider may return. */
   readonly signals: readonly SignalDescriptor[];
-  start?(): void;
+  /** Awaited before the first read; a rejection marks the provider as failed. */
+  start?(): void | Promise<void>;
   read(context: SignalReadContext): Promise<readonly ResourceSignal[]> | readonly ResourceSignal[];
   close?(): void | Promise<void>;
 }
