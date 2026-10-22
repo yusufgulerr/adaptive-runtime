@@ -8,6 +8,7 @@
 - [0006 — Bounded operation state and subpath exports](0006-bounded-operation-state-and-subpath-exports.md)
 - [0007 — Multi-runtime web and edge providers, and composite signals](0007-multi-runtime-web-edge-and-composite-providers.md)
 - [0008 — Custom policy selector, observability bridge, and testing SDK](0008-custom-policy-selector-observability-and-testing-sdk.md)
+- [0009 — Repository automation and supply-chain hardening](0009-repository-automation-and-supply-chain.md)
 
 ## Decision map
 
@@ -24,6 +25,7 @@ duplicating records:
 | Bounded state, modular policy core, and subpaths | [0006](0006-bounded-operation-state-and-subpath-exports.md) |
 | Web/edge providers, portable core, composite signals | [0007](0007-multi-runtime-web-edge-and-composite-providers.md) |
 | Custom selector, observability, testing SDK | [0008](0008-custom-policy-selector-observability-and-testing-sdk.md) |
+| Repository automation and supply-chain checks | [0009](0009-repository-automation-and-supply-chain.md) |
 
 New decisions use the same structure: status, date, context, decision,
 consequences, alternatives, and follow-up. A decision that changes public

@@ -88,6 +88,7 @@ describe("package entry points", () => {
   });
 
   it("dedicated subpaths expose observability, testing, policy, and every provider", () => {
+    expectExport(observabilityApi, "MetricsCollector");
     expectExport(observabilityApi, "createMetricsCollector");
     expectExport(observabilityApi, "attachOpenTelemetryMeter");
     expectExport(testingApi, "createFakeClock");
@@ -137,6 +138,25 @@ describe("package entry points", () => {
       assert.ok("types" in entry);
       assert.ok("import" in entry);
       assert.ok("default" in entry);
+    }
+  });
+
+  it("resolves every public subpath through Node.js package resolution", () => {
+    for (const subpath of [
+      ".",
+      "./core",
+      "./node",
+      "./web",
+      "./edge",
+      "./policy",
+      "./providers",
+      "./observability",
+      "./testing",
+    ]) {
+      const specifier =
+        subpath === "." ? "adaptive-runtime" : `adaptive-runtime/${subpath.slice(2)}`;
+      const resolved = import.meta.resolve(specifier);
+      assert.match(resolved, /\/dist\//, `${specifier} must resolve into dist`);
     }
   });
 });

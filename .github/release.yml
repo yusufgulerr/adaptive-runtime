@@ -1,0 +1,43 @@
+changelog:
+  exclude:
+    labels:
+      - skip-changelog
+  categories:
+    - title: Breaking Changes
+      labels:
+        - breaking
+        - breaking-change
+        - "type:breaking"
+    - title: Features
+      labels:
+        - feature
+        - enhancement
+        - "type:feature"
+    - title: Bug Fixes
+      labels:
+        - bug
+        - fix
+        - "type:bug"
+    - title: Performance
+      labels:
+        - performance
+        - "type:performance"
+    - title: Documentation
+      labels:
+        - documentation
+        - docs
+        - "type:docs"
+    - title: Dependencies
+      labels:
+        - dependencies
+    - title: Tooling and CI
+      labels:
+        - ci
+        - build
+        - tooling
+        - "type:ci"
+        - "type:build"
+        - "type:tooling"
+    - title: Other Changes
+      labels:
+        - "*"

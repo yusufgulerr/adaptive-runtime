@@ -770,7 +770,8 @@ function attachOpenTelemetryMeter(
 ): () => void;
 ```
 
-`attach()` subscribes to `decision`, `run:start`, `run:success`, `run:error`,
+`MetricsCollector` is the exported class behind `createMetricsCollector`; both
+forms are supported. `attach()` subscribes to `decision`, `run:start`, `run:success`, `run:error`,
 `provider:error`, `listener:error`, and `runtime:closed`, and returns a
 detach function. Snapshot counters include runs, decisions, strategy selections,
 signal statuses, provider errors, quality checks, budget statuses, listener
@@ -846,11 +847,16 @@ The package exports:
 - `adaptive-runtime/providers`: every built-in provider (Node.js, web, edge, and
   composite) plus signal-name constants; this mixed barrel is not
   platform-neutral;
-- `adaptive-runtime/observability`: `createMetricsCollector`,
-  `attachOpenTelemetryMeter`, and the metrics types;
+- `adaptive-runtime/observability`: `MetricsCollector`,
+  `createMetricsCollector`, `attachOpenTelemetryMeter`, and the metrics types;
 - `adaptive-runtime/testing`: `createFakeClock`, `ScriptedSignalProvider`, and
   `runProviderConformanceCheck`;
 - `adaptive-runtime/package.json`: package metadata.
+
+The root entry point intentionally excludes `/observability` and `/testing`.
+Import those subpaths explicitly so production bundles do not include test
+utilities. `npm run verify:exports` resolves every declared subpath from the
+built package and checks its named runtime exports.
 
 Internal modules (`src/runtime`, `src/signals`, `src/policy/*` implementation
 files, `src/providers/*` implementation files) are not importable as package

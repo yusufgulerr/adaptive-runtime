@@ -129,6 +129,10 @@ Delivered:
 - **Packaging and example.** All documented entry points, a deterministic
   core/edge/observability example, a portability source scan, entry-point
   integration tests, a clean-consumer check, and ADRs 0007/0008.
+- **Repository automation.** Categorized generated release notes, structured
+  Discussion forms, an OpenSSF Scorecard workflow, a Conventional Commit PR title
+  gate, citation metadata, editor recommendations, and a built-package export
+  verifier.
 
 Not yet delivered:
 

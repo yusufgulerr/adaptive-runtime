@@ -59,6 +59,7 @@ npm run typecheck
 npm test
 npm run test:coverage
 npm run build
+npm run verify:exports
 npm run benchmark
 npm run benchmark:concurrency
 npm run example:basic
@@ -162,7 +163,9 @@ test(runtime): cover close during an in-flight read
   CI checks, and CodeQL. Resolve all review conversations before merging.
 - Keep commits focused; one logical change per commit.
 - Follow Conventional Commits, for example
-  `fix(policy): preserve budget state on cached reads`.
+  `fix(policy): preserve budget state on cached reads`. CI validates the pull
+  request title with the same format; keep the title and the squash commit
+  message aligned.
 - Explain **why** in the body, not just what changed.
 - Use `Fixes #<issue>` in the pull request when it closes an issue; otherwise
   write `N/A` and explain the motivation.

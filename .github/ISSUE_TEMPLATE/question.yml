@@ -1,7 +1,7 @@
 name: Usage question
 description: Ask how to use the runtime, policy model, or a provider.
 title: "[question]: "
-labels: ["question", "needs-triage"]
+labels: ["question", "status:needs-triage"]
 body:
   - type: markdown
     attributes:

@@ -1,0 +1,26 @@
+cff-version: 1.2.0
+message: "If you use Adaptive Runtime in academic or technical work, cite this repository."
+title: "Adaptive Runtime"
+abstract: >-
+  A deterministic, zero-dependency TypeScript runtime for adaptive strategy
+  orchestration across Node.js, browsers, and WinterCG edge runtimes. It selects
+  exactly one strategy per run from explicit resource signals, budgets, and
+  hysteresis policies.
+type: software
+authors:
+  - name: "The Adaptive Runtime Contributors"
+version: 0.3.0
+license: Apache-2.0
+repository-code: "https://github.com/yusufgulerr/adaptive-runtime"
+url: "https://github.com/yusufgulerr/adaptive-runtime"
+keywords:
+  - adaptive-runtime
+  - policy-engine
+  - resource-management
+  - graceful-degradation
+  - load-shedding
+  - hysteresis
+  - edge-computing
+  - wintercg
+  - typescript
+  - zero-dependencies
