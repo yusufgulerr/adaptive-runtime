@@ -208,3 +208,43 @@ export function resolvePolicy(input: Policy | undefined): ResolvedPolicy {
     customSelector,
   };
 }
+
+/**
+ * Merges a partial operation policy override onto a base resolved policy and
+ * validates all constraints. Throws ConfigurationError if the override is invalid.
+ */
+export function resolveOperationPolicy(
+  base: ResolvedPolicy,
+  override: Partial<Policy>,
+): ResolvedPolicy {
+  if (override === null || typeof override !== "object" || Array.isArray(override)) {
+    throw new ConfigurationError("policy override must be an object.");
+  }
+  const merged: Policy = {
+    evaluationIntervalMs: override.evaluationIntervalMs ?? base.evaluationIntervalMs,
+    maxSignalAgeMs: override.maxSignalAgeMs ?? base.maxSignalAgeMs,
+    minimumModeDurationMs: override.minimumModeDurationMs ?? base.minimumModeDurationMs,
+    consecutiveSamples: override.consecutiveSamples ?? base.consecutiveSamples,
+    minQualityTier:
+      override.minQualityTier !== undefined ? override.minQualityTier : base.minQualityTier,
+    maxQualityTier:
+      override.maxQualityTier !== undefined ? override.maxQualityTier : base.maxQualityTier,
+    fallbackStrategyId:
+      override.fallbackStrategyId !== undefined
+        ? override.fallbackStrategyId
+        : base.fallbackStrategyId,
+    missingSignalBehavior: override.missingSignalBehavior ?? base.missingSignalBehavior,
+    adaptationEnabled: override.adaptationEnabled ?? base.adaptationEnabled,
+    qualityCheck: override.qualityCheck ?? base.qualityCheck,
+    budgets: override.budgets !== undefined ? override.budgets : base.budgets,
+    maxTrackedOperations:
+      override.maxTrackedOperations !== undefined
+        ? override.maxTrackedOperations
+        : base.maxTrackedOperations,
+    customSelector:
+      override.customSelector !== undefined
+        ? override.customSelector
+        : (base.customSelector ?? undefined),
+  };
+  return resolvePolicy(merged);
+}

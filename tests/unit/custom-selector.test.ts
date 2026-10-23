@@ -11,6 +11,7 @@ import { resolvePolicy } from "../../src/policy/resolve.js";
 import { createAdaptiveRuntime } from "../../src/runtime/runtime.js";
 import type { Policy } from "../../src/types/policy.js";
 import type { Strategy } from "../../src/types/strategy.js";
+import { FakeClock } from "../helpers/fake-clock.js";
 
 function invalidPolicy(input: unknown): ConfigurationError {
   try {
@@ -197,6 +198,7 @@ describe("CustomPolicySelector Hook", () => {
       let candidateRef: unknown = null;
       let costRef: unknown = null;
       let latencyRef: unknown = null;
+      let inspectedFirstCandidate: unknown = null;
 
       const policy = resolvePolicy({
         customSelector: (ctx) => {
@@ -204,6 +206,7 @@ describe("CustomPolicySelector Hook", () => {
           if (!first) {
             return null;
           }
+          inspectedFirstCandidate = first;
           candidateRef = first.candidate;
           costRef = first.estimatedCost;
           latencyRef = first.estimatedLatencyMs;
@@ -219,6 +222,10 @@ describe("CustomPolicySelector Hook", () => {
       assert.equal((candidateRef as { id: string }).id, "fast");
       assert.equal(costRef, 1);
       assert.equal(latencyRef, null);
+      assert.equal("id" in (inspectedFirstCandidate as object), false);
+      assert.equal("qualityTier" in (inspectedFirstCandidate as object), false);
+      assert.equal("costTier" in (inspectedFirstCandidate as object), false);
+      assert.equal("applicable" in (inspectedFirstCandidate as object), false);
     });
 
     it("uses input.operation when provided in PolicyEvaluationInput", () => {
@@ -515,6 +522,149 @@ describe("CustomPolicySelector Hook", () => {
           return true;
         },
       );
+
+      await runtime.close();
+    });
+
+    it("enriches CustomSelectorCandidate.estimatedLatencyMs with historical strategy average duration and enables latency-based decisions", async () => {
+      const recordedLatencies: (number | null)[] = [];
+      const latencyStrategies: readonly Strategy<number, number>[] = [
+        {
+          id: "fast",
+          qualityTier: 1,
+          run: () => 100,
+        },
+        {
+          id: "accurate",
+          qualityTier: 2,
+          run: () => 200,
+        },
+      ];
+
+      // Custom selector prefers "fast" initially. If "fast" average duration exceeds 20ms, it chooses "accurate".
+      const runtime = createAdaptiveRuntime({
+        policy: {
+          evaluationIntervalMs: 0,
+          customSelector: (ctx) => {
+            const fastCandidate = ctx.candidates.find((c) => c.candidate.id === "fast");
+            recordedLatencies.push(fastCandidate?.estimatedLatencyMs ?? null);
+            if (
+              fastCandidate?.estimatedLatencyMs !== null &&
+              fastCandidate?.estimatedLatencyMs !== undefined &&
+              fastCandidate.estimatedLatencyMs > 20
+            ) {
+              return {
+                strategyId: "accurate",
+                reason: "Fast strategy exceeded 20ms average latency threshold.",
+              };
+            }
+            return {
+              strategyId: "fast",
+              reason: "Fast strategy within acceptable latency or untracked.",
+            };
+          },
+        },
+      });
+
+      // Run 1: No previous history, estimatedLatencyMs must be null (not 0!)
+      const res1 = await runtime.run({
+        operationId: "latency-op",
+        input: 1,
+        strategies: latencyStrategies,
+      });
+      assert.equal(res1.metadata.strategyId, "fast");
+      assert.equal(recordedLatencies[0], null);
+
+      // Now fast strategy has 1 sample in stats. Let's inspect runtime stats
+      const statsAfterRun1 = runtime.getStats("latency-op");
+      assert.equal(statsAfterRun1.strategies.fast?.runs, 1);
+      assert.equal(statsAfterRun1.strategies.fast?.successes, 1);
+      assert.ok(statsAfterRun1.strategies.fast?.averageDurationMs !== null);
+
+      // Run 2: fast strategy has recorded latency
+      await runtime.run({
+        operationId: "latency-op",
+        input: 2,
+        strategies: latencyStrategies,
+      });
+      assert.equal(recordedLatencies.length, 2);
+      assert.ok(recordedLatencies[1] !== null);
+      assert.equal(typeof recordedLatencies[1], "number");
+
+      await runtime.close();
+    });
+
+    it("verifies estimatedLatencyMs reflects multi-run duration averages cleanly with FakeClock", async () => {
+      const clock = new FakeClock();
+      let lastObservedLatencyFast: number | null | undefined;
+      let lastObservedLatencyAccurate: number | null | undefined;
+
+      const dynamicStrategies: readonly Strategy<number, number>[] = [
+        {
+          id: "strat-a",
+          qualityTier: 1,
+          run: () => {
+            clock.advance(30);
+            return 1;
+          },
+        },
+        {
+          id: "strat-b",
+          qualityTier: 2,
+          run: () => {
+            clock.advance(10);
+            return 2;
+          },
+        },
+      ];
+
+      const runtime = createAdaptiveRuntime({
+        clock,
+        policy: {
+          evaluationIntervalMs: 0,
+          customSelector: (ctx) => {
+            const candA = ctx.candidates.find((c) => c.candidate.id === "strat-a");
+            const candB = ctx.candidates.find((c) => c.candidate.id === "strat-b");
+            lastObservedLatencyFast = candA?.estimatedLatencyMs;
+            lastObservedLatencyAccurate = candB?.estimatedLatencyMs;
+            // Select candidate with lowest estimated latency when available
+            if (
+              candA?.estimatedLatencyMs !== null &&
+              candB?.estimatedLatencyMs !== null &&
+              candA?.estimatedLatencyMs !== undefined &&
+              candB?.estimatedLatencyMs !== undefined
+            ) {
+              return candA.estimatedLatencyMs <= candB.estimatedLatencyMs ? "strat-a" : "strat-b";
+            }
+            return "strat-a";
+          },
+        },
+      });
+
+      // Run 1: both null initially
+      await runtime.run({ operationId: "dyn-op", input: 1, strategies: dynamicStrategies });
+      assert.equal(lastObservedLatencyFast, null);
+      assert.equal(lastObservedLatencyAccurate, null);
+
+      // Run 2: strat-a ran for 30ms -> strat-a avg is 30ms, strat-b is null
+      await runtime.run({ operationId: "dyn-op", input: 2, strategies: dynamicStrategies });
+      assert.equal(lastObservedLatencyFast, 30);
+      assert.equal(lastObservedLatencyAccurate, null);
+
+      // Now pin strat-b to generate history for strat-b
+      runtime.pinStrategy("dyn-op", "strat-b");
+      await runtime.run({ operationId: "dyn-op", input: 3, strategies: dynamicStrategies }); // strat-b runs for 10ms
+      runtime.unpinStrategy("dyn-op");
+
+      // Run 4: customSelector observes strat-a: 30ms, strat-b: 10ms -> should choose strat-b!
+      const res4 = await runtime.run({
+        operationId: "dyn-op",
+        input: 4,
+        strategies: dynamicStrategies,
+      });
+      assert.equal(lastObservedLatencyFast, 30);
+      assert.equal(lastObservedLatencyAccurate, 10);
+      assert.equal(res4.metadata.strategyId, "strat-b");
 
       await runtime.close();
     });

@@ -11,12 +11,12 @@ import {
   type PolicyState,
   type StrategyCandidate,
 } from "../policy/engine.js";
-import { resolvePolicy } from "../policy/resolve.js";
+import { resolveOperationPolicy, resolvePolicy } from "../policy/resolve.js";
 import { SignalCollector } from "../signals/collector.js";
 import type { Clock } from "../types/clock.js";
 import type { StrategyDecision } from "../types/decision.js";
 import type { AdaptiveRuntimeEvents, RuntimeEventName } from "../types/events.js";
-import type { ResolvedPolicy } from "../types/policy.js";
+import type { Policy, ResolvedPolicy } from "../types/policy.js";
 import type {
   Operation,
   QualityMetadata,
@@ -108,6 +108,7 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
   readonly #decisions = new Map<string, StrategyDecision>();
   readonly #pins = new Map<string, string>();
   readonly #adaptationOverrides = new Map<string, boolean>();
+  readonly #operationPolicies = new Map<string, ResolvedPolicy>();
   readonly #stats = new StatsRegistry();
   readonly #locks = new Map<string, Promise<unknown>>();
   readonly #tracked = new Map<string, true>();
@@ -202,13 +203,13 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
         signals: decision.signals,
         quality,
       });
-      this.#stats.success(operationId, metadata.durationMs);
+      this.#stats.success(operationId, strategy.id, metadata.durationMs);
       this.#emitter.emit("run:success", { metadata });
       return { value: execution.value, metadata };
     } catch (error) {
       const durationMs =
         decision === undefined ? undefined : Math.max(0, this.#clock.now() - runStartedAt);
-      this.#stats.failure(operationId, durationMs);
+      this.#stats.failure(operationId, decision?.strategyId, durationMs);
       this.#emitter.emit("run:error", {
         operationId,
         strategyId: decision?.strategyId,
@@ -249,6 +250,24 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
     this.#enforceTrackingLimit(id);
   }
 
+  setOperationPolicy(operationId: string, policy: Partial<Policy> | null): void {
+    this.#ensureOpen();
+    const id = validateOperationId(operationId);
+    if (policy === null) {
+      this.#operationPolicies.delete(id);
+      this.#pruneTracked(id);
+      this.#enforceTrackingLimit();
+      return;
+    }
+    if (typeof policy !== "object" || Array.isArray(policy)) {
+      throw new ConfigurationError("policy override must be an object.");
+    }
+    const resolved = resolveOperationPolicy(this.#policy, policy);
+    this.#operationPolicies.set(id, resolved);
+    this.#trackOperation(id);
+    this.#enforceTrackingLimit(id);
+  }
+
   getDecision(operationId: string): StrategyDecision | null {
     const id = validateOperationId(operationId);
     const decision = this.#decisions.get(id) ?? null;
@@ -278,6 +297,7 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
     removed = this.#decisions.delete(id) || removed;
     removed = this.#pins.delete(id) || removed;
     removed = this.#adaptationOverrides.delete(id) || removed;
+    removed = this.#operationPolicies.delete(id) || removed;
     removed = this.#stats.remove(id) || removed;
     this.#tracked.delete(id);
     return removed;
@@ -323,6 +343,10 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
     }
   }
 
+  #effectivePolicy(operationId: string): ResolvedPolicy {
+    return this.#operationPolicies.get(operationId) ?? this.#policy;
+  }
+
   async #select<TInput, TOutput>(
     operation: Operation<TInput, TOutput>,
     operationId: string,
@@ -347,15 +371,18 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
         throw new OperationAbortedError(operationId, signal.reason);
       }
 
+      const stats = this.#stats.get(operationId);
       const candidates: StrategyCandidate[] = operation.strategies.map((strategy) => ({
         id: strategy.id,
         qualityTier: strategy.qualityTier,
         costTier: strategy.costTier,
         applicable: this.#isApplicable(strategy, operation, operationId),
+        estimatedLatencyMs: stats.strategies[strategy.id]?.averageDurationMs ?? null,
       }));
 
       const now = this.#clock.now();
       const state = this.#states.get(operationId) ?? createInitialPolicyState();
+      const effectivePolicy = this.#effectivePolicy(operationId);
       const adaptationOverride = this.#adaptationOverrides.get(operationId);
       const evaluation = evaluatePolicy(
         state,
@@ -365,11 +392,11 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
           signals: snapshot.readings,
           strategies: candidates,
           pinnedStrategyId: this.#pins.get(operationId) ?? null,
-          adaptationEnabled: adaptationOverride ?? this.#policy.adaptationEnabled,
+          adaptationEnabled: adaptationOverride ?? effectivePolicy.adaptationEnabled,
           sampleSequence: snapshot.sequence,
           signalsCached: snapshot.cached,
         },
-        this.#policy,
+        effectivePolicy,
       );
       const decision = freezeDecision(evaluation.decision);
       this.#states.set(operationId, evaluation.state);
@@ -414,13 +441,14 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
     if (strategy.checkQuality === undefined) {
       return { status: "not-configured" };
     }
+    const effectivePolicy = this.#effectivePolicy(operationId);
 
     let result: unknown;
     try {
       result = await strategy.checkQuality(value, context);
     } catch (error) {
       const detail = `Quality check threw: ${errorMessage(error)}`;
-      if (this.#policy.qualityCheck === "error") {
+      if (effectivePolicy.qualityCheck === "error") {
         throw new QualityCheckError(
           operationId,
           strategy.id,
@@ -435,7 +463,7 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
 
     if (!isQualityCheckResult(result)) {
       const detail = "Quality check returned an invalid result.";
-      if (this.#policy.qualityCheck === "error") {
+      if (effectivePolicy.qualityCheck === "error") {
         throw new QualityCheckError(
           operationId,
           strategy.id,
@@ -449,7 +477,7 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
 
     if (!result.ok) {
       const detail = result.detail ?? "Quality check returned ok: false.";
-      if (this.#policy.qualityCheck === "error") {
+      if (effectivePolicy.qualityCheck === "error") {
         throw new QualityCheckError(
           operationId,
           strategy.id,
@@ -542,6 +570,7 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
       this.#decisions.has(operationId) ||
       this.#pins.has(operationId) ||
       this.#adaptationOverrides.has(operationId) ||
+      this.#operationPolicies.has(operationId) ||
       this.#stats.has(operationId)
     );
   }
@@ -612,6 +641,7 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
       this.#states.delete(operationId);
       this.#decisions.delete(operationId);
       this.#adaptationOverrides.delete(operationId);
+      this.#operationPolicies.delete(operationId);
       this.#stats.remove(operationId);
       this.#tracked.delete(operationId);
     }

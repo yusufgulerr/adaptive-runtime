@@ -30,6 +30,11 @@ export interface AdaptiveRuntime {
   unpinStrategy(operationId: string): void;
   /** Per-operation override of policy.adaptationEnabled. A pin takes precedence. */
   setAdaptationEnabled(operationId: string, enabled: boolean): void;
+  /**
+   * Overrides the selection policy for one specific operation.
+   * Pass null to remove the operation's policy override.
+   */
+  setOperationPolicy(operationId: string, policy: Partial<Policy> | null): void;
   getDecision(operationId: string): StrategyDecision | null;
   getStats(operationId: string): RuntimeStats;
   /**

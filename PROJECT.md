@@ -39,7 +39,7 @@ Core architecture principles:
 | M4 | Zero-Dependency Observability Bridge | `src/observability/*`, Prometheus text exporter, unit tests | none | DONE |
 | M5 | Conformance Testing SDK | `src/testing/*`, FakeClock, ScriptedSignalProvider, conformance runner, unit tests | M1, M2 | DONE |
 | M6 | Packaging, Entrypoints, Examples, ADRs & Clean Consumer | `src/core.ts`, `src/web.ts`, `src/edge.ts`, `src/node.ts`, `package.json`, docs, ADRs, edge example, isolation test, clean consumer | M1, M2, M3, M4, M5 | DONE |
-| M7 | E2E Testing & Final Verification | Full opaque-box E2E test suite (Tiers 1-4) & adversarial coverage hardening (Tier 5) | M6 | PLANNED (post-0.3.0) |
+| M7 | E2E Testing & Final Verification | Full opaque-box E2E test suite (Tiers 1-4) & adversarial coverage hardening (Tier 5) | M6 | DONE |
 
 ## Interface Contracts
 

@@ -11,6 +11,10 @@
 - [0009 — Repository automation and supply-chain hardening](0009-repository-automation-and-supply-chain.md)
 - [0010 — Two-phase GitHub and npm release](0010-two-phase-github-and-npm-release.md)
 - [0011 — Observation immutability, asynchronous provider start, and metric identity](0011-observation-immutability-async-start-and-metric-identity.md)
+- [0012 — Abort-aware selection queue and immediate cancellation](0012-abort-aware-selection-queue.md)
+- [0013 — Strategy-level runtime statistics and latency awareness](0013-strategy-level-runtime-statistics.md)
+- [0014 — Provider contract harmonization, lifecycle resilience, and reading bounds](0014-provider-contract-harmonization-and-lifecycle-resilience.md)
+- [0015 — Per-operation policy overrides in multi-tenant runtimes](0015-per-operation-policy-overrides.md)
 
 ## Decision map
 
@@ -30,6 +34,10 @@ duplicating records:
 | Repository automation and supply-chain checks | [0009](0009-repository-automation-and-supply-chain.md) |
 | Two-phase GitHub and npm release | [0010](0010-two-phase-github-and-npm-release.md) |
 | Published observation, async start, and metric identity | [0011](0011-observation-immutability-async-start-and-metric-identity.md) |
+| Abort-aware selection queue and zero HoL delay | [0012](0012-abort-aware-selection-queue.md) |
+| Strategy-level runtime statistics and latency awareness | [0013](0013-strategy-level-runtime-statistics.md) |
+| Provider contract harmonization and lifecycle resilience | [0014](0014-provider-contract-harmonization-and-lifecycle-resilience.md) |
+| Per-operation policy overrides and multi-tenant precedence | [0015](0015-per-operation-policy-overrides.md) |
 
 New decisions use the same structure: status, date, context, decision,
 consequences, alternatives, and follow-up. A decision that changes public

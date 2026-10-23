@@ -13,10 +13,6 @@ export interface CustomSelectorCandidate {
   readonly candidate: PolicyCandidate;
   readonly estimatedCost: number | null;
   readonly estimatedLatencyMs: number | null;
-  readonly id?: string;
-  readonly qualityTier?: number;
-  readonly costTier?: number;
-  readonly applicable?: boolean;
 }
 
 export interface CustomPolicySelectorContext {
@@ -117,3 +113,5 @@ export interface ResolvedPolicy {
   readonly maxTrackedOperations: number | null;
   readonly customSelector: CustomPolicySelector | null;
 }
+
+export type OperationPolicy = Partial<Policy>;

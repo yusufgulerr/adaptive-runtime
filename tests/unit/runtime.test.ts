@@ -14,6 +14,7 @@ import {
   StrategyApplicabilityError,
   StrategyExecutionError,
 } from "../../src/errors/index.js";
+import { resolveOperationPolicy, resolvePolicy } from "../../src/policy/resolve.js";
 import { createAdaptiveRuntime } from "../../src/runtime/runtime.js";
 import {
   validateOperation,
@@ -1321,6 +1322,706 @@ describe("AdaptiveRuntime", () => {
     assert.equal(getEventListeners(ctrlFailure.signal, "abort").length, 0);
 
     await runtime.close();
+  });
+
+  it("tracks strategy-level runtime statistics (StrategyStats) accurately across runs and failures", async () => {
+    const clock = new FakeClock();
+    const runtime = createAdaptiveRuntime({
+      clock,
+      providers: [fixedProvider(10)],
+      policy: policy(),
+    });
+
+    // Verify initial stats for unexecuted operation
+    const initialStats = runtime.getStats("strat-stats-op");
+    assert.deepEqual(initialStats.strategies, {});
+    assert.equal(initialStats.lastDurationMs, null);
+    assert.equal(initialStats.averageDurationMs, null);
+
+    const stratFast = strategy("strat-fast", 2, () => {
+      clock.advance(20);
+      return "fast-result";
+    });
+    const stratSlow = strategy("strat-slow", 1, () => {
+      clock.advance(50);
+      return "slow-result";
+    });
+    const stratFail = strategy("strat-fail", 2, () => {
+      clock.advance(15);
+      throw new Error("strat-fail explosion");
+    });
+
+    // Run 1: strat-fast succeeds with duration 20ms
+    await runtime.run({
+      operationId: "strat-stats-op",
+      input: 1,
+      strategies: [stratFast, stratSlow],
+    });
+
+    let stats = runtime.getStats("strat-stats-op");
+    assert.equal(stats.runs, 1);
+    assert.equal(stats.successes, 1);
+    assert.equal(stats.failures, 0);
+    assert.equal(stats.lastDurationMs, 20);
+    assert.equal(stats.averageDurationMs, 20);
+    assert.equal(stats.strategyRuns["strat-fast"], 1);
+
+    const fastStats1 = stats.strategies["strat-fast"];
+    assert.ok(fastStats1 !== undefined);
+    assert.equal(fastStats1?.runs, 1);
+    assert.equal(fastStats1?.successes, 1);
+    assert.equal(fastStats1?.failures, 0);
+    assert.equal(fastStats1?.lastDurationMs, 20);
+    assert.equal(fastStats1?.averageDurationMs, 20);
+
+    // Run 2: strat-fast succeeds with duration 40ms
+    const fast40 = strategy("strat-fast", 2, () => {
+      clock.advance(40);
+      return "fast-40";
+    });
+    await runtime.run({
+      operationId: "strat-stats-op",
+      input: 2,
+      strategies: [fast40, stratSlow],
+    });
+
+    stats = runtime.getStats("strat-stats-op");
+    assert.equal(stats.runs, 2);
+    assert.equal(stats.successes, 2);
+    assert.equal(stats.lastDurationMs, 40);
+    assert.equal(stats.averageDurationMs, 30); // (20 + 40) / 2 = 30
+
+    const fastStats2 = stats.strategies["strat-fast"];
+    assert.equal(fastStats2?.runs, 2);
+    assert.equal(fastStats2?.successes, 2);
+    assert.equal(fastStats2?.failures, 0);
+    assert.equal(fastStats2?.lastDurationMs, 40);
+    assert.equal(fastStats2?.averageDurationMs, 30);
+
+    // Run 3: strat-slow pinned, succeeds with duration 50ms
+    runtime.pinStrategy("strat-stats-op", "strat-slow");
+    await runtime.run({
+      operationId: "strat-stats-op",
+      input: 3,
+      strategies: [stratFast, stratSlow],
+    });
+
+    stats = runtime.getStats("strat-stats-op");
+    assert.equal(stats.runs, 3);
+    assert.equal(stats.strategyRuns["strat-slow"], 1);
+
+    const slowStats = stats.strategies["strat-slow"];
+    assert.ok(slowStats !== undefined);
+    assert.equal(slowStats?.runs, 1);
+    assert.equal(slowStats?.successes, 1);
+    assert.equal(slowStats?.failures, 0);
+    assert.equal(slowStats?.lastDurationMs, 50);
+    assert.equal(slowStats?.averageDurationMs, 50);
+
+    // Run 4: strat-fail pinned, throws after 15ms
+    runtime.pinStrategy("strat-stats-op", "strat-fail");
+    await assert.rejects(
+      runtime.run({
+        operationId: "strat-stats-op",
+        input: 4,
+        strategies: [stratFast, stratFail],
+      }),
+      StrategyExecutionError,
+    );
+
+    stats = runtime.getStats("strat-stats-op");
+    assert.equal(stats.runs, 4);
+    assert.equal(stats.successes, 3);
+    assert.equal(stats.failures, 1);
+
+    const failStats = stats.strategies["strat-fail"];
+    assert.ok(failStats !== undefined);
+    assert.equal(failStats?.runs, 1);
+    assert.equal(failStats?.successes, 0);
+    assert.equal(failStats?.failures, 1);
+    assert.equal(failStats?.lastDurationMs, 15);
+    assert.equal(failStats?.averageDurationMs, 15);
+
+    // Reset stats for this operation
+    runtime.resetStats("strat-stats-op");
+    const resetStats = runtime.getStats("strat-stats-op");
+    assert.equal(resetStats.runs, 0);
+    assert.equal(resetStats.successes, 0);
+    assert.equal(resetStats.failures, 0);
+    assert.equal(resetStats.lastDurationMs, null);
+    assert.equal(resetStats.averageDurationMs, null);
+    assert.deepEqual(resetStats.strategyRuns, {});
+    assert.deepEqual(resetStats.strategies, {});
+
+    await runtime.close();
+  });
+
+  it("handles 0ms and sub-millisecond durations cleanly without NaN or null coercion", async () => {
+    const clock = new FakeClock();
+    const runtime = createAdaptiveRuntime({
+      clock,
+      providers: [fixedProvider(10)],
+      policy: policy(),
+    });
+
+    const instantStrategy = strategy("instant", 1, () => "instant-val");
+
+    // Run 1: duration is 0ms
+    await runtime.run({
+      operationId: "zero-ms-op",
+      input: 1,
+      strategies: [instantStrategy],
+    });
+
+    let stats = runtime.getStats("zero-ms-op");
+    assert.equal(stats.lastDurationMs, 0);
+    assert.equal(stats.averageDurationMs, 0);
+    assert.equal(stats.strategies.instant?.lastDurationMs, 0);
+    assert.equal(stats.strategies.instant?.averageDurationMs, 0);
+    assert.equal(Number.isNaN(stats.averageDurationMs), false);
+    assert.equal(Number.isNaN(stats.strategies.instant?.averageDurationMs), false);
+
+    // Run 2: duration is 0ms again
+    await runtime.run({
+      operationId: "zero-ms-op",
+      input: 2,
+      strategies: [instantStrategy],
+    });
+
+    stats = runtime.getStats("zero-ms-op");
+    assert.equal(stats.lastDurationMs, 0);
+    assert.equal(stats.averageDurationMs, 0);
+    assert.equal(stats.strategies.instant?.averageDurationMs, 0);
+
+    // Run 3: duration is 10ms
+    const timedStrategy = strategy("instant", 1, () => {
+      clock.advance(10);
+      return "timed-val";
+    });
+    await runtime.run({
+      operationId: "zero-ms-op",
+      input: 3,
+      strategies: [timedStrategy],
+    });
+
+    stats = runtime.getStats("zero-ms-op");
+    assert.equal(stats.lastDurationMs, 10);
+    // (0 + 0 + 10) / 3 = 3.3333333333333335
+    assert.ok(Math.abs((stats.averageDurationMs ?? 0) - 10 / 3) < 1e-9);
+    assert.ok(Math.abs((stats.strategies.instant?.averageDurationMs ?? 0) - 10 / 3) < 1e-9);
+
+    await runtime.close();
+  });
+
+  it("records operation failure without strategy stats when selection fails before strategy execution", async () => {
+    const runtime = createAdaptiveRuntime({
+      providers: [fixedProvider(10)],
+      policy: policy({ minQualityTier: 5 }),
+    });
+
+    // Ineligible strategy (qualityTier 1 < minQualityTier 5)
+    await assert.rejects(
+      runtime.run({
+        operationId: "no-selection-op",
+        input: 1,
+        strategies: [strategy("low", 1, () => "low")],
+      }),
+      NoEligibleStrategyError,
+    );
+
+    const stats = runtime.getStats("no-selection-op");
+    assert.equal(stats.runs, 1);
+    assert.equal(stats.failures, 1);
+    assert.equal(stats.successes, 0);
+    assert.deepEqual(stats.strategyRuns, {});
+    assert.deepEqual(stats.strategies, {});
+
+    await runtime.close();
+  });
+
+  it("modifies candidate evaluation (minQualityTier, maxQualityTier, budgets, customSelector, qualityCheck) via setOperationPolicy", async () => {
+    const clock = new FakeClock();
+    const runtime = createAdaptiveRuntime({
+      clock,
+      providers: [fixedProvider(150)], // SIGNAL = 150
+      policy: policy({
+        minQualityTier: 1,
+        maxQualityTier: 5,
+        qualityCheck: "report",
+        budgets: [],
+      }),
+    });
+
+    const low = strategy("strat-low", 1, () => "val-low");
+    const mid = strategy("strat-mid", 2, () => "val-mid");
+    const high = strategy("strat-high", 3, () => "val-high", {
+      checkQuality: () => ({ ok: false, detail: "quality check failed" }),
+    });
+    const allStrategies = [low, mid, high];
+
+    // 1. Without override: selects highest applicable tier (strat-high, tier 3)
+    const defResult = await runtime.run({
+      operationId: "op-default",
+      input: 1,
+      strategies: allStrategies,
+    });
+    assert.equal(defResult.metadata.strategyId, "strat-high");
+    assert.equal(defResult.metadata.quality.status, "failed");
+
+    // 2. Override maxQualityTier: cap at tier 2
+    runtime.setOperationPolicy("op-capped", { maxQualityTier: 2 });
+    const cappedResult = await runtime.run({
+      operationId: "op-capped",
+      input: 2,
+      strategies: allStrategies,
+    });
+    assert.equal(cappedResult.metadata.strategyId, "strat-mid");
+    assert.equal(cappedResult.metadata.qualityTier, 2);
+
+    // 3. Override minQualityTier: floor at tier 3 (should fail when only low and mid provided)
+    runtime.setOperationPolicy("op-floored", { minQualityTier: 3 });
+    await assert.rejects(
+      runtime.run({
+        operationId: "op-floored",
+        input: 3,
+        strategies: [low, mid],
+      }),
+      NoEligibleStrategyError,
+    );
+
+    // 4. Override budgets: custom budget engaged reduces tier from 3 to 2
+    runtime.setOperationPolicy("op-custom-budget", {
+      budgets: [
+        {
+          id: "custom-pressure",
+          signal: SIGNAL,
+          limit: 100,
+          recoverBelow: 50,
+          tierReduction: 1,
+          consecutiveSamples: 1,
+        },
+      ],
+    });
+    const budgetResult = await runtime.run({
+      operationId: "op-custom-budget",
+      input: 4,
+      strategies: allStrategies,
+    });
+    assert.equal(budgetResult.metadata.strategyId, "strat-mid");
+    assert.equal(budgetResult.metadata.decision.budgets[0]?.engaged, true);
+
+    // 5. Override customSelector: selects custom candidate and records reason
+    runtime.setOperationPolicy("op-custom-selector", {
+      customSelector: (_ctx) => ({
+        strategyId: "strat-low",
+        reason: "picked-by-custom-hook",
+      }),
+    });
+    const selectorResult = await runtime.run({
+      operationId: "op-custom-selector",
+      input: 5,
+      strategies: allStrategies,
+    });
+    assert.equal(selectorResult.metadata.strategyId, "strat-low");
+    assert.ok(
+      selectorResult.metadata.decision.reasons.some(
+        (r) => r.code === "custom-selector" && r.detail === "picked-by-custom-hook",
+      ),
+    );
+
+    // 6. Override qualityCheck: "error" fails the run on checkQuality rejection
+    runtime.setOperationPolicy("op-quality-error", {
+      qualityCheck: "error",
+    });
+    await assert.rejects(
+      runtime.run({
+        operationId: "op-quality-error",
+        input: 6,
+        strategies: allStrategies,
+      }),
+      QualityCheckError,
+    );
+
+    await runtime.close();
+  });
+
+  it("evaluates strictly in precedence order: pinStrategy > setAdaptationEnabled > operationPolicy > globalPolicy", async () => {
+    const clock = new FakeClock();
+    // Global policy: maxQualityTier is 1, adaptationEnabled is true, budget engaged
+    const runtime = createAdaptiveRuntime({
+      clock,
+      providers: [fixedProvider(200)],
+      policy: policy({
+        maxQualityTier: 1,
+        adaptationEnabled: true,
+        budgets: [
+          {
+            id: "global-press",
+            signal: SIGNAL,
+            limit: 100,
+            recoverBelow: 50,
+            tierReduction: 1,
+            consecutiveSamples: 1,
+          },
+        ],
+      }),
+    });
+
+    const economy = strategy("economy", 1, () => "val-economy");
+    const high = strategy("high", 2, () => "val-high");
+    const strategies = [economy, high];
+
+    // Level 3 (operationPolicy) > Level 4 (globalPolicy):
+    // operationPolicy raises maxQualityTier to 2 and clears budgets
+    runtime.setOperationPolicy("prio-op", { maxQualityTier: 2, budgets: [] });
+    const opPolicyResult = await runtime.run({
+      operationId: "prio-op",
+      input: 1,
+      strategies,
+    });
+    assert.equal(opPolicyResult.metadata.strategyId, "high");
+
+    // Level 2 (setAdaptationEnabled) > Level 3 (operationPolicy):
+    // operationPolicy has budgets and adaptationEnabled: true
+    runtime.setOperationPolicy("prio-adapt", {
+      maxQualityTier: 2,
+      adaptationEnabled: true,
+      budgets: [
+        {
+          id: "op-press",
+          signal: SIGNAL,
+          limit: 100,
+          recoverBelow: 50,
+          tierReduction: 1,
+          consecutiveSamples: 1,
+        },
+      ],
+    });
+    // Explicitly disable adaptation via setAdaptationEnabled
+    runtime.setAdaptationEnabled("prio-adapt", false);
+    const adaptDisabledResult = await runtime.run({
+      operationId: "prio-adapt",
+      input: 2,
+      strategies,
+    });
+    // Adaptation is disabled, so budget reduction does NOT apply; selects high
+    assert.equal(adaptDisabledResult.metadata.strategyId, "high");
+
+    // Conversely, operationPolicy has adaptationEnabled: false, but setAdaptationEnabled sets true
+    runtime.setOperationPolicy("prio-adapt-true", {
+      maxQualityTier: 2,
+      adaptationEnabled: false,
+      budgets: [
+        {
+          id: "op-press-2",
+          signal: SIGNAL,
+          limit: 100,
+          recoverBelow: 50,
+          tierReduction: 1,
+          consecutiveSamples: 1,
+        },
+      ],
+    });
+    runtime.setAdaptationEnabled("prio-adapt-true", true);
+    const adaptEnabledResult = await runtime.run({
+      operationId: "prio-adapt-true",
+      input: 3,
+      strategies,
+    });
+    // Adaptation is enabled by override, so budget reduces tier 2 -> 1, selecting economy
+    assert.equal(adaptEnabledResult.metadata.strategyId, "economy");
+
+    // Level 1 (pinStrategy) > Level 2, 3, 4:
+    // Even with operationPolicy maxQualityTier: 1 and adaptation enabled, pinStrategy bypasses everything
+    runtime.setOperationPolicy("prio-pin", { maxQualityTier: 1, adaptationEnabled: true });
+    runtime.setAdaptationEnabled("prio-pin", true);
+    runtime.pinStrategy("prio-pin", "high");
+    const pinResult = await runtime.run({
+      operationId: "prio-pin",
+      input: 4,
+      strategies,
+    });
+    assert.equal(pinResult.metadata.strategyId, "high");
+    assert.equal(pinResult.metadata.decision.kind, "pinned");
+
+    await runtime.close();
+  });
+
+  it("restores global policy when setOperationPolicy is passed null", async () => {
+    const clock = new FakeClock();
+    const runtime = createAdaptiveRuntime({
+      clock,
+      providers: [fixedProvider(10)],
+      policy: policy({ maxQualityTier: 2 }),
+    });
+
+    const low = strategy("strat-low", 1, () => "low");
+    const high = strategy("strat-high", 2, () => "high");
+    const strategies = [low, high];
+
+    // Set override capping at tier 1
+    runtime.setOperationPolicy("op-null-test", { maxQualityTier: 1 });
+    const overridden = await runtime.run({
+      operationId: "op-null-test",
+      input: 1,
+      strategies,
+    });
+    assert.equal(overridden.metadata.strategyId, "strat-low");
+
+    // Remove override with null
+    runtime.setOperationPolicy("op-null-test", null);
+    const restored = await runtime.run({
+      operationId: "op-null-test",
+      input: 2,
+      strategies,
+    });
+    assert.equal(restored.metadata.strategyId, "strat-high");
+
+    await runtime.close();
+  });
+
+  it("validates operationId and policy input in setOperationPolicy", async () => {
+    const runtime = createAdaptiveRuntime({
+      policy: policy({ minQualityTier: 1, maxQualityTier: 4 }),
+    });
+
+    // Invalid operationIds
+    assert.throws(() => runtime.setOperationPolicy("", null), ConfigurationError);
+    assert.throws(() => runtime.setOperationPolicy("   ", null), ConfigurationError);
+    assert.throws(
+      () => runtime.setOperationPolicy(null as unknown as string, null),
+      ConfigurationError,
+    );
+    assert.throws(
+      () => runtime.setOperationPolicy(123 as unknown as string, null),
+      ConfigurationError,
+    );
+
+    // Invalid policy inputs (non-object, array)
+    assert.throws(
+      () => runtime.setOperationPolicy("op", undefined as unknown as Partial<Policy>),
+      ConfigurationError,
+    );
+    assert.throws(
+      () => runtime.setOperationPolicy("op", "bad-policy" as unknown as Partial<Policy>),
+      ConfigurationError,
+    );
+    assert.throws(
+      () => runtime.setOperationPolicy("op", 42 as unknown as Partial<Policy>),
+      ConfigurationError,
+    );
+    assert.throws(
+      () => runtime.setOperationPolicy("op", [] as unknown as Partial<Policy>),
+      ConfigurationError,
+    );
+
+    // Contradictory / invalid policy fields
+    assert.throws(
+      () => runtime.setOperationPolicy("op", { minQualityTier: 5, maxQualityTier: 2 }),
+      ConfigurationError,
+    );
+    assert.throws(
+      () => runtime.setOperationPolicy("op", { minQualityTier: Number.NaN }),
+      ConfigurationError,
+    );
+    assert.throws(
+      () => runtime.setOperationPolicy("op", { minQualityTier: Number.POSITIVE_INFINITY }),
+      ConfigurationError,
+    );
+    assert.throws(
+      () => runtime.setOperationPolicy("op", { customSelector: "not-a-func" as unknown as never }),
+      ConfigurationError,
+    );
+    assert.throws(
+      () => runtime.setOperationPolicy("op", { budgets: "not-an-array" as unknown as never }),
+      ConfigurationError,
+    );
+    assert.throws(
+      () => runtime.setOperationPolicy("op", { missingSignalBehavior: "bad" as unknown as never }),
+      ConfigurationError,
+    );
+    assert.throws(
+      () => runtime.setOperationPolicy("op", { missingSignalBehavior: "fallback" }),
+      ConfigurationError,
+    );
+    assert.throws(
+      () => runtime.setOperationPolicy("op", { maxSignalAgeMs: 0 }),
+      ConfigurationError,
+    );
+    assert.throws(
+      () => runtime.setOperationPolicy("op", { consecutiveSamples: 0 }),
+      ConfigurationError,
+    );
+
+    // Closed runtime throws RuntimeClosedError
+    await runtime.close();
+    assert.throws(() => runtime.setOperationPolicy("op", null), RuntimeClosedError);
+    assert.throws(
+      () => runtime.setOperationPolicy("op", { maxQualityTier: 1 }),
+      RuntimeClosedError,
+    );
+  });
+
+  it("evicts unpinned operation policy under maxTrackedOperations LRU bound and supports removeOperation", async () => {
+    const clock = new FakeClock();
+    const runtime = createAdaptiveRuntime({
+      clock,
+      providers: [fixedProvider(10)],
+      policy: policy({ maxTrackedOperations: 2, maxQualityTier: 2 }),
+    });
+
+    const low = strategy("low", 1, () => "low");
+    const high = strategy("high", 2, () => "high");
+    const strategies = [low, high];
+
+    // Set operation policies on 3 operations with maxTrackedOperations = 2
+    runtime.setOperationPolicy("lru-op-1", { maxQualityTier: 1 });
+    runtime.setOperationPolicy("lru-op-2", { maxQualityTier: 1 });
+    runtime.setOperationPolicy("lru-op-3", { maxQualityTier: 1 });
+
+    // lru-op-1 is the oldest unpinned and non-executing, so it was evicted
+    const res1 = await runtime.run({
+      operationId: "lru-op-1",
+      input: 1,
+      strategies,
+    });
+    // Since lru-op-1's override was evicted, it falls back to global policy (maxQualityTier 2 -> high)
+    assert.equal(res1.metadata.strategyId, "high");
+
+    // lru-op-3 was recently set, so its override is active (maxQualityTier 1 -> low)
+    const res3 = await runtime.run({
+      operationId: "lru-op-3",
+      input: 2,
+      strategies,
+    });
+    assert.equal(res3.metadata.strategyId, "low");
+
+    // Pinned operation with operation policy is NOT evicted
+    runtime.pinStrategy("pinned-op", "high");
+    runtime.setOperationPolicy("pinned-op", { maxQualityTier: 2 });
+    runtime.setOperationPolicy("unpinned-op", { maxQualityTier: 1 });
+    runtime.setOperationPolicy("unpinned-op-2", { maxQualityTier: 1 });
+    // pinned-op survives despite capacity pressure
+    const pinnedRes = await runtime.run({
+      operationId: "pinned-op",
+      input: 3,
+      strategies,
+    });
+    assert.equal(pinnedRes.metadata.strategyId, "high");
+
+    // removeOperation removes operation policy and returns true
+    runtime.setOperationPolicy("op-to-remove", { maxQualityTier: 1 });
+    assert.equal(runtime.removeOperation("op-to-remove"), true);
+    assert.equal(runtime.removeOperation("op-to-remove"), false);
+
+    // After removal, global policy is used
+    const removedRes = await runtime.run({
+      operationId: "op-to-remove",
+      input: 4,
+      strategies,
+    });
+    assert.equal(removedRes.metadata.strategyId, "high");
+
+    await runtime.close();
+  });
+
+  it("covers all branch paths in resolveOperationPolicy", () => {
+    const base = resolvePolicy({
+      evaluationIntervalMs: 500,
+      maxSignalAgeMs: 2000,
+      minimumModeDurationMs: 100,
+      consecutiveSamples: 3,
+      minQualityTier: 1,
+      maxQualityTier: 5,
+      fallbackStrategyId: "base-fallback",
+      missingSignalBehavior: "fallback",
+      adaptationEnabled: false,
+      qualityCheck: "error",
+      maxTrackedOperations: 50,
+      customSelector: () => "base-choice",
+      budgets: [
+        {
+          id: "base-b1",
+          signal: "base.sig",
+          limit: 10,
+          recoverBelow: 5,
+          tierReduction: 2,
+          consecutiveSamples: 2,
+        },
+      ],
+    });
+
+    // 1. Empty override: inherits all base properties
+    const inherited = resolveOperationPolicy(base, {});
+    assert.equal(inherited.evaluationIntervalMs, 500);
+    assert.equal(inherited.maxSignalAgeMs, 2000);
+    assert.equal(inherited.minimumModeDurationMs, 100);
+    assert.equal(inherited.consecutiveSamples, 3);
+    assert.equal(inherited.minQualityTier, 1);
+    assert.equal(inherited.maxQualityTier, 5);
+    assert.equal(inherited.fallbackStrategyId, "base-fallback");
+    assert.equal(inherited.missingSignalBehavior, "fallback");
+    assert.equal(inherited.adaptationEnabled, false);
+    assert.equal(inherited.qualityCheck, "error");
+    assert.equal(inherited.maxTrackedOperations, 50);
+    assert.ok(inherited.customSelector !== null);
+    assert.equal(inherited.budgets.length, 1);
+    assert.equal(inherited.budgets[0]?.id, "base-b1");
+
+    // 2. Full override: overrides every property
+    const fullOverride = resolveOperationPolicy(base, {
+      evaluationIntervalMs: 200,
+      maxSignalAgeMs: 1000,
+      minimumModeDurationMs: 50,
+      consecutiveSamples: 4,
+      minQualityTier: 2,
+      maxQualityTier: 4,
+      fallbackStrategyId: "override-fallback",
+      missingSignalBehavior: "hold",
+      adaptationEnabled: true,
+      qualityCheck: "report",
+      maxTrackedOperations: 20,
+      customSelector: () => "override-choice",
+      budgets: [
+        {
+          id: "override-b1",
+          signal: "override.sig",
+          limit: 20,
+        },
+      ],
+    });
+    assert.equal(fullOverride.evaluationIntervalMs, 200);
+    assert.equal(fullOverride.maxSignalAgeMs, 1000);
+    assert.equal(fullOverride.minimumModeDurationMs, 50);
+    assert.equal(fullOverride.consecutiveSamples, 4);
+    assert.equal(fullOverride.minQualityTier, 2);
+    assert.equal(fullOverride.maxQualityTier, 4);
+    assert.equal(fullOverride.fallbackStrategyId, "override-fallback");
+    assert.equal(fullOverride.missingSignalBehavior, "hold");
+    assert.equal(fullOverride.adaptationEnabled, true);
+    assert.equal(fullOverride.qualityCheck, "report");
+    assert.equal(fullOverride.maxTrackedOperations, 20);
+    assert.equal(fullOverride.budgets.length, 1);
+    assert.equal(fullOverride.budgets[0]?.id, "override-b1");
+
+    // 3. Base without customSelector (null), override also without customSelector
+    const baseNoSelector = resolvePolicy({});
+    const inheritedNoSelector = resolveOperationPolicy(baseNoSelector, {});
+    assert.equal(inheritedNoSelector.customSelector, null);
+
+    // 4. Invalid input validation
+    assert.throws(
+      () => resolveOperationPolicy(base, null as unknown as Partial<Policy>),
+      ConfigurationError,
+    );
+    assert.throws(
+      () => resolveOperationPolicy(base, "not-obj" as unknown as Partial<Policy>),
+      ConfigurationError,
+    );
+    assert.throws(
+      () => resolveOperationPolicy(base, [] as unknown as Partial<Policy>),
+      ConfigurationError,
+    );
   });
 });
 
