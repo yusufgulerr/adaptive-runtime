@@ -6,6 +6,52 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) after 1.0.
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-10-23
+
+### Added
+
+- **Abort-Aware Selection Queue (ADR 0012):** Immediate cancellation of queued
+  operations in `AdaptiveRuntimeImpl.#serialize` upon `operation.signal` abort,
+  eliminating Head-of-Line blocking without listener leaks.
+- **Strategy-Level Statistics (`StrategyStats`, ADR 0013):** `RuntimeStats.strategies`
+  exposing per-strategy counts (`runs`, `successes`, `failures`) and durations
+  (`lastDurationMs`, `averageDurationMs`).
+- **Latency-Aware Custom Selector (`estimatedLatencyMs`):** Populated
+  `CustomSelectorCandidate.estimatedLatencyMs` with empirical historical
+  `averageDurationMs` from `StatsRegistry`.
+- **Per-Operation Policy Overrides (`setOperationPolicy`, ADR 0015):** Multi-tenant
+  operational policy overrides adhering to a strict 4-tier precedence model
+  (`pinStrategy > setAdaptationEnabled > operationPolicy > globalPolicy`) under
+  `maxTrackedOperations` LRU bounds.
+- **Provider Lifecycle Resilience & Context (ADR 0014):** Added `SignalStartContext`
+  passed to `SignalProvider.start?(context)`, forwarded through
+  `CompositeSignalProvider`, with automatic transient start recovery across
+  evaluation intervals.
+- **Full OpenTelemetry UpDownCounter Bridge:** `attachOpenTelemetryMeter` emits
+  `*_signal_reading` and `*_budget_engaged` via `createUpDownCounter` when present,
+  with per-instrument error isolation.
+- **MetricsCollector Series Bounding:** Added `maxSeries` option (default 1000)
+  with FIFO eviction and `removeOperation(operationId)` cleanup.
+- **Milestone M7 Opaque-Box E2E Suite (Tiers 1-5):** Complete opaque-box E2E test
+  suite in `tests/e2e/` covering public multi-entrypoint lifecycle, 100-operation
+  concurrency & abort storms, dual telemetry export, multi-runtime environment
+  simulation, and adversarial soak testing.
+- Architectural Decision Records: ADR 0012, 0013, 0014, and 0015.
+
+### Fixed
+
+- Standardized Phase 1 provider constructors (`ProcessMemoryProvider`,
+  `CpuUtilizationProvider`, `EventLoopDelayProvider`, `NetworkLatencyProvider`) to
+  validate `id` with `validateId`, throw `ConfigurationError` on invalid options, and
+  implement `close(): void` with post-close `status: "unsupported"`.
+- Bounded provider reading error strings (`reading.error`) to at most 1,000 characters
+  in `SignalCollector.#normalizeReadings` to mitigate memory and telemetry DoS.
+- Synchronized documentation across `API_DESIGN.md`, `COOKBOOK.md`, `MIGRATION.md`,
+  and `OBSERVABILITY.md` to accurately document all 10 public exports and
+  `maxTrackedOperations` LRU eviction semantics.
+- Expanded clean consumer smoke test in `scripts/verify-published-package.mjs` to
+  verify all 9 runtime subpaths.
+
 ### Added
 
 - Deterministic property/fuzz suite using `fast-check` as a development-only

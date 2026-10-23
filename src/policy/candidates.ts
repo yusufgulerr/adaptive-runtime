@@ -5,6 +5,7 @@ export interface StrategyCandidate {
   readonly qualityTier: number;
   readonly costTier?: number;
   readonly applicable: boolean;
+  readonly estimatedLatencyMs?: number | null;
 }
 
 export interface TargetTierClamp {

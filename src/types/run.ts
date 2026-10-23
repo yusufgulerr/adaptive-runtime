@@ -38,6 +38,14 @@ export interface RunResult<TOutput> {
   readonly metadata: RunMetadata;
 }
 
+export interface StrategyStats {
+  readonly runs: number;
+  readonly successes: number;
+  readonly failures: number;
+  readonly lastDurationMs: number | null;
+  readonly averageDurationMs: number | null;
+}
+
 export interface RuntimeStats {
   readonly operationId: string;
   readonly runs: number;
@@ -46,4 +54,5 @@ export interface RuntimeStats {
   readonly lastDurationMs: number | null;
   readonly averageDurationMs: number | null;
   readonly strategyRuns: Readonly<Record<string, number>>;
+  readonly strategies: Readonly<Record<string, StrategyStats>>;
 }

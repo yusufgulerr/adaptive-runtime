@@ -428,11 +428,7 @@ export function evaluatePolicy(
         applicable: c.applicable,
       },
       estimatedCost: c.costTier ?? null,
-      estimatedLatencyMs: null,
-      id: c.id,
-      qualityTier: c.qualityTier,
-      costTier: c.costTier,
-      applicable: c.applicable,
+      estimatedLatencyMs: c.estimatedLatencyMs ?? null,
     }));
 
     const signalsRecord: Record<string, ResourceSignal> = {};

@@ -1,6 +1,6 @@
 # Migrating from a manual fast/slow flag
 
-> **Status:** Adaptive Runtime 0.3.0 is the current development line. The GitHub
+> **Status:** Adaptive Runtime 0.4.0 is the current development line. The GitHub
 > release is tag-driven; npm publication is a separate owner-approved OIDC
 > workflow dispatch and is pending.
 > This guide describes adopting the runtime from a local checkout. It does not

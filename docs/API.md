@@ -78,6 +78,7 @@ interface AdaptiveRuntime {
   pinStrategy(operationId: string, strategyId: string): void;
   unpinStrategy(operationId: string): void;
   setAdaptationEnabled(operationId: string, enabled: boolean): void;
+  setOperationPolicy(operationId: string, policy: Partial<Policy> | null): void;
   getDecision(operationId: string): StrategyDecision | null;
   getStats(operationId: string): RuntimeStats;
   removeOperation(operationId: string): boolean;
@@ -122,6 +123,25 @@ non-boolean throws `ConfigurationError`. The override written by the call is
 protected from LRU eviction during that call, so the tracking bound may be
 exceeded temporarily when all other tracked operations are pinned or active.
 
+### `setOperationPolicy(operationId, policy)`
+
+Configures a per-operation policy override for multi-tenant and mixed-SLA
+workloads. Merges declared operation rules (`budgets`, `minQualityTier`,
+`maxQualityTier`, `missingSignalBehavior`, `evaluationIntervalMs`, `customSelector`,
+etc.) over the global runtime policy. Pass `null` to clear the override.
+
+The selection engine evaluates rules under a strict 4-tier precedence hierarchy:
+
+1. **Manual Pin (`pinStrategy`):** Forces a strategy verbatim.
+2. **Adaptation Toggle (`setAdaptationEnabled`):** When disabled, retains the initial
+   strategy without evaluating budgets.
+3. **Operation Policy (`setOperationPolicy`):** Merges declared rules over the global
+   policy.
+4. **Global Policy:** Base fallback for all operations.
+
+Operation policy overrides are tracked under `maxTrackedOperations` LRU bounds and
+are immediately purged when `removeOperation(operationId)` is called.
+
 ### `getDecision(operationId)`
 
 Returns the most recent decision for the operation, or `null` if it has never
@@ -132,6 +152,14 @@ events and run metadata.
 ### `getStats(operationId)`
 
 ```ts
+interface StrategyStats {
+  readonly runs: number;
+  readonly successes: number;
+  readonly failures: number;
+  readonly lastDurationMs: number | null;
+  readonly averageDurationMs: number | null;
+}
+
 interface RuntimeStats {
   readonly operationId: string;
   readonly runs: number;
@@ -140,11 +168,14 @@ interface RuntimeStats {
   readonly lastDurationMs: number | null;
   readonly averageDurationMs: number | null;
   readonly strategyRuns: Readonly<Record<string, number>>;
+  readonly strategies: Readonly<Record<string, StrategyStats>>;
 }
 ```
 
 `runs` counts started runs, including runs that fail during selection.
-`strategyRuns` increments when a strategy is selected, before execution. Latency
+`strategyRuns` increments when a strategy is selected, before execution.
+`strategies` exposes fine-grained per-strategy counts (`runs`, `successes`,
+`failures`) and durations (`lastDurationMs`, `averageDurationMs`). Latency
 samples include successful runs and failures that occurred after selection.
 Reading stats refreshes the operation's LRU position.
 
@@ -342,8 +373,9 @@ A valid choice records a `custom-selector` reason and then goes through the same
 stability gates, so a selector cannot bypass hysteresis or mode-duration
 protection. `candidates` contains only eligible automatic candidates.
 `estimatedCost` mirrors `costTier` when present; `estimatedLatencyMs` is
-currently `null` because the runtime does not estimate latency. The context is a
-snapshot; do not mutate it. Selector exceptions fail the run.
+populated with the strategy's historical `averageDurationMs` from `StatsRegistry`
+when execution samples exist, or `null` otherwise. The context is a snapshot;
+do not mutate it. Selector exceptions fail the run.
 
 ### `BudgetRule`
 
@@ -393,23 +425,33 @@ interface SignalDescriptor {
   readonly description?: string;
 }
 
+interface SignalStartContext {
+  readonly now: number;
+  readonly signal: AbortSignal;
+}
+
 interface SignalProvider {
   readonly id: string;
   readonly signals: readonly SignalDescriptor[];
-  start?(): void | Promise<void>;
+  start?(context: SignalStartContext): void | Promise<void>;
   read(context: SignalReadContext): Promise<readonly ResourceSignal[]> | readonly ResourceSignal[];
   close?(): void | Promise<void>;
 }
 ```
 
-`start()` is called lazily once before the first read. A returned promise is
-awaited under `providerTimeoutMs` and the caller's abort signal; a rejection or
-timeout becomes cached error readings and a `provider:error` event. A late
-rejection after an abandoned wait is observed and never becomes an unhandled
-rejection. The abort itself is not cached as a provider failure.
+`start()` is called lazily once before the first read with a `SignalStartContext`
+containing `now` and an abort `signal`. A returned promise is awaited under
+`providerTimeoutMs` and the caller's abort signal; a rejection or timeout becomes
+cached error readings and a `provider:error` event. A late rejection after an
+abandoned wait is observed and never becomes an unhandled rejection. The abort
+itself is not cached as a provider failure. Start failures are transiently
+cached only for the current `evaluationIntervalMs`; subsequent evaluation
+intervals allow the provider to retry initialization.
 
 `SignalReadContext` contains `now` and an abort `signal`. Providers should stamp
 `observedAt` with `context.now` and honor the abort signal when doing I/O.
+Error messages supplied in provider reading payloads (`reading.error`) are
+truncated to at most 1,000 characters to prevent unbounded memory growth.
 
 Concurrent runs share one in-flight read per runtime. That read has its own abort
 controller and a waiter count. Aborting a waiting caller rejects only that caller;
@@ -768,12 +810,14 @@ interface ObservabilityOptions {
   readonly prefix?: string;                    // default "adaptive_runtime"
   readonly defaultAttributes?: MetricAttributesLike;
   readonly buckets?: readonly number[];        // seconds; +Inf is appended
+  readonly maxSeries?: number;                 // max metric series before FIFO eviction (default 1000)
 }
 
 interface RuntimeMetricsCollector {
   attach(runtime: AdaptiveRuntime): () => void;
   getSnapshot(): MetricsSnapshot;
   toPrometheusText(): string;
+  removeOperation(operationId: string): void;
   reset(): void;
 }
 

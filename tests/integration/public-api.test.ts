@@ -203,7 +203,7 @@ describe("public API integration", () => {
   });
 
   it("uses the root selector type, observability collector, and testing SDK together", async () => {
-    const selector: CustomPolicySelector = ({ candidates }) => candidates[0]?.id;
+    const selector: CustomPolicySelector = ({ candidates }) => candidates[0]?.candidate.id;
     const runtime = createAdaptiveRuntime({
       policy: { evaluationIntervalMs: 0, customSelector: selector },
     });

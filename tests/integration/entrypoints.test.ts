@@ -111,7 +111,7 @@ describe("package entry points", () => {
       version?: string;
       exports?: Record<string, unknown>;
     };
-    assert.equal(packageJson.version, "0.3.0");
+    assert.equal(packageJson.version, "0.4.0");
     const exports = packageJson.exports ?? {};
     const required = [
       ".",
