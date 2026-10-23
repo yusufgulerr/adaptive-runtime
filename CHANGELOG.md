@@ -6,6 +6,54 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) after 1.0.
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-10-23
+
+### Added
+
+- **Shadow evaluation (`evaluate`, ADR 0016):** Computes one policy decision
+  without executing a strategy. `dryRun: true` persists no state and emits no
+  event; a normal evaluation persists state and the decision but does not update
+  run statistics.
+- **State hydration (`exportState` / `importState`, ADR 0016):** Versioned,
+  JSON-compatible snapshots of policy state, decisions, pins, adaptation
+  overrides, and statistics. Imports are validated atomically, bounded by
+  `maxTrackedOperations`, and rejected while an operation has in-flight work.
+- **Recent-latency and failure statistics:** `ewmaDurationMs` (alpha `0.2`),
+  `durationSamples`, and `errorRate` on `RuntimeStats` and `StrategyStats`.
+  Custom selectors receive `estimatedLatencyMs` (EWMA first), `ewmaLatencyMs`,
+  and `errorRate`.
+- **`EventLoopUtilizationProvider`:** Node.js event-loop utilization with a
+  cumulative first reading and delta-based later readings.
+- **`ComputePressureProvider`:** W3C Compute Pressure integration with explicit
+  `nominal`/`fair`/`serious`/`critical` mapping and manual state recording.
+- **`simulatePolicyTimeline`:** Deterministic policy timeline simulator in
+  `adaptive-runtime/testing`, reporting per-step decisions/state, budget
+  engagements and recoveries, strategy switches, and switch reversals.
+- **ADR 0016:** Shadow evaluation, state hydration, telemetry parity, and
+  provider expansion.
+
+### Changed
+
+- Per-operation `evaluationIntervalMs` now controls the signal collector's cache
+  window instead of always using the global policy value.
+- `attachOpenTelemetryMeter` prefers `createGauge` when available and otherwise
+  applies bounded deltas to UpDownCounters. Signal labels now include
+  `operation_id`, `signal`, and `status`; budget labels use `budget_id` and
+  `operation_id`.
+- `MetricsCollector.removeOperation()` trims surrounding whitespace, matching
+  runtime operation-id normalization.
+- `EventLoopDelayProvider` adds `minSamples` and retains its last valid reading
+  for `resolutionMs * minSamples` to avoid post-reset `unknown` flapping.
+
+### Fixed
+
+- Composite providers now surface child-provider failures through the optional
+  `drainProviderErrors()` bridge, including nested composites.
+- State snapshots preserve arithmetic averages exactly by persisting
+  `durationSamples`.
+- Version synchronization is enforced by `scripts/verify-version-sync.mjs` in
+  `npm run check`.
+
 ## [0.4.0] — 2026-10-23
 
 ### Added

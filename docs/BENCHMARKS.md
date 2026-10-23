@@ -100,14 +100,14 @@ baseline history; comparisons are always manual.
 
 | Item | Value |
 | --- | --- |
-| Date | 2026-10-22 |
+| Date | 2026-10-23 |
 | Node.js | v24.15.0 |
 | npm | 11.12.1 |
 | OS | Windows 11 (`win32 10.0.26300`) |
 | CPU | Intel Core Ultra 5 225H |
 | Logical cores | 14 |
 | RAM | 31.4 GiB |
-| Package | 0.3.0, local source via `tsx` |
+| Package | 0.5.0, local source via `tsx` |
 
 `tsx` is used to run TypeScript directly. The compiled `dist/` output is not
 separately benchmarked. Type stripping/loader overhead, if any, applies equally
@@ -120,21 +120,24 @@ Median per sequential run:
 
 | Mode | µs/run | Relative to direct | Samples (µs/run) |
 | --- | ---: | ---: | --- |
-| Direct call | 0.324 | 1.00x | 0.36, 0.32, 0.30, 0.31, 0.29, 0.62, 0.97 |
-| Runtime, static policy | 4.568 | 14.11x | 5.99, 4.38, 4.55, 4.57, 5.35, 4.45, 17.11 |
-| Runtime, adaptive (fresh read) | 9.955 | 30.75x | 11.40, 9.64, 9.80, 9.96, 10.09, 9.66, 39.37 |
-| Runtime, adaptive (cached read) | 5.099 | 15.75x | 4.90, 4.70, 5.10, 5.39, 4.95, 11.17, 16.47 |
+| Direct call | 0.405 | 1.00x | 0.41, 0.30, 0.30, 0.32, 0.75, 0.83, 0.99 |
+| Runtime, static policy | 8.180 | 20.17x | 8.18, 7.48, 6.98, 7.13, 19.93, 18.66, 19.06 |
+| Runtime, adaptive (fresh read) | 14.980 | 36.95x | 14.98, 14.45, 14.62, 14.31, 33.00, 32.60, 35.17 |
+| Runtime, adaptive (cached read) | 8.911 | 21.98x | 8.59, 8.85, 7.79, 8.91, 19.66, 19.45, 21.57 |
 
 Approximate added overhead relative to direct call:
 
-- static policy: ~4.2 µs per run;
-- adaptive with a fresh in-memory read: ~9.6 µs per run;
-- adaptive with a cached snapshot: ~4.8 µs per run.
+- static policy: ~7.8 µs per run;
+- adaptive with a fresh in-memory read: ~14.6 µs per run;
+- adaptive with a cached snapshot: ~8.5 µs per run.
 
-A second run on the same machine immediately afterward measured 3.825 µs/run for
-static policy, 7.823 µs/run for adaptive with a fresh read, and 3.953 µs/run for
-adaptive with a cached read. Absolute medians move between runs; use the JSON
-trend comparison for directional evidence, not a fixed threshold.
+A second run on the same machine immediately afterward measured 8.470 µs/run for
+static policy, 24.809 µs/run for adaptive with a fresh read, and 8.006 µs/run for
+adaptive with a cached read (direct call 0.419 µs/run). The samples are bimodal:
+the host intermittently entered a lower-power state, and the direct-call baseline
+also moved, so these absolute values are not directly comparable to the earlier
+0.3.0 run. Use the JSON trend comparison for directional evidence, not a fixed
+threshold.
 
 The adaptive fresh mode includes the ref-counted shared-read bookkeeping: a
 per-read abort controller, waiter accounting, and abort-aware waiting. A runtime
@@ -162,20 +165,20 @@ Distinct operation ids (selection is not serialized across workers):
 
 | Worker loops | Median runs/s | Samples (runs/s) |
 | ---: | ---: | --- |
-| 1 | 218,078 | 218,078; 211,721; 219,944 |
-| 4 | 264,897 | 230,931; 264,897; 286,606 |
-| 16 | 262,283 | 204,375; 283,051; 262,283 |
-| 64 | 266,104 | 222,228; 276,365; 266,104 |
+| 1 | 118,279 | 87,574; 119,785; 118,279 |
+| 4 | 123,568 | 94,670; 123,568; 150,306 |
+| 16 | 130,935 | 93,308; 130,935; 135,639 |
+| 64 | 113,035 | 112,284; 113,035; 141,950 |
 
 Same operation id (selection queues on the per-operation lock; this is a
 distinct scenario, not a pass/fail comparison):
 
 | Worker loops | Median runs/s | Samples (runs/s) |
 | ---: | ---: | --- |
-| 1 | 280,494 | 267,670; 280,494; 281,804 |
-| 4 | 288,298 | 288,298; 256,878; 298,924 |
-| 16 | 285,559 | 251,251; 290,602; 285,559 |
-| 64 | 250,044 | 250,044; 261,515; 219,783 |
+| 1 | 136,269 | 130,734; 165,481; 136,269 |
+| 4 | 134,557 | 157,292; 134,557; 92,013 |
+| 16 | 143,178 | 140,315; 143,178; 151,422 |
+| 64 | 123,925 | 123,925; 108,383; 124,684 |
 
 This is a single-threaded event-loop workload. Levels above 1 measure scheduling
 and interleaving, not multi-core scaling. Runs/s includes the fixed strategy work,
@@ -187,21 +190,22 @@ selection lock and the event loop is still single-threaded.
 
 With 64 concurrent distinct operations and a provider that resolves on a later
 macrotask, the run observed 64 in-flight `run()` calls, **1 provider read**, and
-2.76 ms elapsed. Sharing is opportunistic; the script prints the count and does
+6.75 ms elapsed. Sharing is opportunistic; the script prints the count and does
 not assert an exact value.
 
 ### Retained heap
 
 The script uses a fixed set of 64 operation ids, concurrency 64, 10,000 runs per
-sample, and 3 samples. The median `heapUsed` delta was **+16.3 KiB**
-(**+1.66 B/run**); samples were +25.2 KiB, +16.3 KiB, and +1.6 KiB. GC timing,
+sample, and 3 samples. The median `heapUsed` delta was **+19.0 KiB**
+(**+1.94 B/run**); samples were +48.9 KiB, +8.3 KiB, and +19.0 KiB. GC timing,
 JIT, and process state make this noisy, and negative values are possible. It is
 not a leak test and does not exercise unbounded operation-id cardinality.
 
 ## Interpretation
 
 - The runtime is designed for operations that take **microseconds to seconds**,
-  not for inner-loop primitives. At ~7.6 µs overhead, a 1 ms operation pays ~0.76%.
+  not for inner-loop primitives. At ~7.8 µs static overhead, a 1 ms operation pays
+  ~0.78%.
 - Fresh signal reads roughly double overhead relative to a cached snapshot. Use a
   non-zero `evaluationIntervalMs` when provider reads are expensive.
 - Sequential overhead is not throughput. Concurrent runs add promise scheduling

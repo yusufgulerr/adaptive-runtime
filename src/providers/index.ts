@@ -29,6 +29,12 @@ export {
   type HistogramLike,
 } from "./event-loop-delay.js";
 export {
+  EVENT_LOOP_UTILIZATION,
+  EventLoopUtilizationProvider,
+  type EventLoopUtilizationProviderOptions,
+  type EventLoopUtilizationSnapshot,
+} from "./event-loop-utilization.js";
+export {
   NETWORK_LATENCY,
   NetworkLatencyProvider,
   type NetworkLatencyProviderOptions,
@@ -41,6 +47,15 @@ export {
   ProcessMemoryProvider,
   type ProcessMemoryProviderOptions,
 } from "./process-memory.js";
+export {
+  ComputePressureProvider,
+  type ComputePressureProviderOptions,
+  type ComputePressureRecordLike,
+  type ComputePressureState,
+  type PressureObserverFactory,
+  type PressureObserverLike,
+  WEB_COMPUTE_PRESSURE,
+} from "./web/compute-pressure.js";
 export {
   type DeviceMemoryEnvironmentLike,
   DeviceMemoryProvider,

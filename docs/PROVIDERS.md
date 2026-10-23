@@ -13,8 +13,9 @@ practical rules that are not obvious from the type signatures.
 interface SignalProvider {
   readonly id: string;
   readonly signals: readonly SignalDescriptor[];
-  start?(): void | Promise<void>;
+  start?(context: SignalStartContext): void | Promise<void>;
   read(context: SignalReadContext): Promise<readonly ResourceSignal[]> | readonly ResourceSignal[];
+  drainProviderErrors?(): readonly Error[];
   close?(): void | Promise<void>;
 }
 ```
@@ -79,6 +80,12 @@ can fire.
 
 `close()` is called for every provider through `Promise.allSettled`. A close
 failure is emitted as `provider:error` and does not reject `runtime.close()`.
+
+A provider that catches internal failures and converts them into readings may
+implement `drainProviderErrors()`. The collector calls it after each fresh read and
+forwards every returned error as `provider:error`. `CompositeSignalProvider` uses
+this to make child and nested-child failures visible without failing the combined
+read. Cache hits do not drain, so a failure is reported once.
 
 ## Shared reads and cancellation
 
@@ -204,8 +211,21 @@ function renderFrame(durationMs: number): void {
 `DeviceMemoryProvider` reads `navigator.deviceMemory` and
 `performance.memory`. `NetworkInformationProvider` reads
 `navigator.connection`. `FrameTimingProvider` is fed by your render loop.
-Absent APIs produce `unsupported`; invalid values produce `unknown` or `error`.
-Never replace them with zero. All three accept injection options for tests.
+`ComputePressureProvider` observes a W3C `PressureObserver` when present and maps
+`nominal`/`fair`/`serious`/`critical` to `0.25`/`0.5`/`0.75`/`1.0`; environments
+without an observer can call `recordPressureState()` manually. Absent APIs produce
+`unsupported` or `unknown`; invalid values produce `error`. Never replace them with
+zero. All web providers accept injection options for tests.
+
+### Node.js: event-loop pressure
+
+`EventLoopDelayProvider` measures scheduling delay with
+`monitorEventLoopDelay`. It exposes a percentile (default p95) in milliseconds and
+retains its last valid reading for `resolutionMs * minSamples` after a reset, so a
+read that arrives before new samples does not flap to `unknown`.
+`EventLoopUtilizationProvider` reports cumulative utilization on the first read and
+delta utilization afterwards. Both return explicit `unknown`/`error` statuses when
+there is no activity or the source is invalid.
 
 ### Edge: wall-clock and concurrency budgets
 

@@ -66,5 +66,12 @@ export interface SignalProvider {
   /** Awaited before the first read; a rejection marks the provider as failed. */
   start?(context: SignalStartContext): void | Promise<void>;
   read(context: SignalReadContext): Promise<readonly ResourceSignal[]> | readonly ResourceSignal[];
+  /**
+   * Optional queue for failures that a provider isolated internally. Composite
+   * providers use this to surface child-provider failures without failing the
+   * combined read. The runtime drains the queue after each fresh read and
+   * reports every entry as a provider error. Draining clears the queue.
+   */
+  drainProviderErrors?(): readonly Error[];
   close?(): void | Promise<void>;
 }

@@ -25,17 +25,19 @@ strategies with declared quality and cost tiers. The runtime reads the signals
 you supply, applies a deterministic policy, and runs exactly one strategy with
 inspectable metadata explaining the choice.
 
-> **Status: v0.3.0 source line.** The public repository is live and its baseline
-> passes CI/CodeQL on Node.js 22, 24, and 26, plus OpenSSF Scorecard on `main`.
-> The 0.3.0 tree provides a verified multi-runtime core for Node.js, browsers, and
-> WinterCG edge runtimes with **zero runtime dependencies** and a fully typed ESM
-> surface. It includes web and edge signal providers, composite signals, custom
-> policy selectors, an in-memory OpenTelemetry-compatible metrics bridge with
-> Prometheus exposition, and a testing SDK. The 0.3.0 tree is verified locally and
-> on remote CI/CodeQL. The public API follows semantic versioning; the 0.x series
-> may still make documented breaking changes. GitHub releases are tag-driven; npm
-> publication is a separate owner-approved OIDC/provenance dispatch and is pending.
-> See [Architectural boundaries](#architectural-boundaries-and-operational-notes).
+> **Status: v0.5.0 source line (local).** The public repository is live and its
+> released v0.3.0 baseline passes CI/CodeQL on Node.js 22, 24, and 26, plus OpenSSF
+> Scorecard on `main`. The 0.5.0 source tree keeps the verified multi-runtime core
+> for Node.js, browsers, and WinterCG edge runtimes with **zero runtime
+> dependencies** and a fully typed ESM surface, and adds shadow evaluation,
+> versioned state hydration, event-loop utilization and compute-pressure
+> providers, per-operation signal-cache intervals, EWMA/error-rate statistics,
+> and a policy timeline simulator. The 0.5.0 tree is verified locally; remote CI
+> and npm publication for 0.5.0 have not been run. The public API follows semantic
+> versioning; the 0.x series may still make documented breaking changes. GitHub
+> releases are tag-driven; npm publication is a separate owner-approved
+> OIDC/provenance dispatch and is pending. See
+> [Architectural boundaries](#architectural-boundaries-and-operational-notes).
 
 ## Why
 
@@ -49,7 +51,7 @@ choice is often a flag, an environment variable, or an ad-hoc `if` on
 - **inspectable** — every run returns the signal snapshot, budget states, reasons, and mode history;
 - **safe at the edges** — missing, stale, unsupported, timed-out, and failed readings are distinct;
 - **portable by construction** — one platform-neutral core with Node.js, browser, and WinterCG entry points;
-- **low-overhead & zero-dependency** — sub-10µs dispatch overhead, ESM-native, built strictly on standard platform primitives with zero external supply-chain risk.
+- **low-overhead & zero-dependency** — single-digit-microsecond static dispatch overhead, ESM-native, built strictly on standard platform primitives with zero external supply-chain risk.
 
 It is **not** a sandbox, a scheduler, an autoscaler, or a verifier of algorithmic
 correctness. Strategies are trusted code supplied by the application.
@@ -426,13 +428,15 @@ cost was approximately:
 
 | Mode | µs/run | Relative to direct |
 | --- | ---: | ---: |
-| Direct call | 0.310 | 1.00x |
-| Runtime, static policy | 4.026 | 12.99x |
-| Runtime, adaptive, fresh read | 9.340 | 30.15x |
-| Runtime, adaptive, cached read | 4.632 | 14.95x |
+| Direct call | 0.405 | 1.00x |
+| Runtime, static policy | 8.180 | 20.17x |
+| Runtime, adaptive, fresh read | 14.980 | 36.95x |
+| Runtime, adaptive, cached read | 8.911 | 21.98x |
 
 These numbers measure runtime overhead on one machine, not total application
-throughput. A separate concurrency/memory observation is in
+throughput. The host was intermittently in a lower-power state during the 0.5.0
+run; re-run the benchmark on the target environment before making decisions. A
+separate concurrency/memory observation is in
 [`benchmarks/concurrency.ts`](benchmarks/concurrency.ts); 64 concurrent callers
 shared one in-flight provider read. See [docs/BENCHMARKS.md](docs/BENCHMARKS.md)
 for methodology and caveats.
@@ -444,7 +448,7 @@ npm install
 npm run format      # Biome formatter
 npm run lint        # Biome
 npm run typecheck   # tsc, includes tests/examples/benchmarks
-npm test            # node:test, 313 tests
+npm test            # node:test, 402 tests
 npm run test:fuzz   # deterministic property/fuzz campaign
 npm run test:coverage
 npm run build       # emit ESM + declarations to dist/
@@ -464,7 +468,7 @@ also verifies that `package.json` and `package-lock.json` contain no runtime
 dependencies, audits production dependencies at high severity, and checks every
 relative Markdown link on pull requests and `main`.
 
-Coverage from the verification run: **99.08% lines, 96.93% branches, 98.68%
+Coverage from the verification run: **98.81% lines, 95.12% branches, 98.79%
 functions** across `src/`, with every source file above 80% branch coverage.
 The property/fuzz suite uses `fast-check` as a dev-only dependency and covers
 budget hysteresis, candidate ordering, pure policy evaluation, and the
@@ -511,12 +515,14 @@ responsible for:
 - A run queued behind another selection for the same operation id waits for that
   selection even if the queued caller aborts; cancellation is observed when the
   lock is released.
-- Decision state is per process and in memory; it is not persisted or
-  coordinated. Bound it with `maxTrackedOperations` or release it with
-  `removeOperation`.
+- Decision state is per process and in memory by default. `exportState()` creates a
+  versioned JSON snapshot and `importState()` restores it; snapshots omit functions
+  and custom selectors and do not coordinate multiple processes. Bound live state
+  with `maxTrackedOperations` or release it with `removeOperation`.
 - The public source repository is at
-  <https://github.com/yusufgulerr/adaptive-runtime>; the 0.3.0 tree passes CI,
-  CodeQL, and Scorecard there. See
+  <https://github.com/yusufgulerr/adaptive-runtime>; the v0.3.0 tree passes CI,
+  CodeQL, and Scorecard there. The local v0.5.0 source line has not been remotely
+  verified or published. See
   [docs/VERIFICATION.md](docs/VERIFICATION.md) for the verification record.
 
 See [docs/ROADMAP.md](docs/ROADMAP.md) and [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).

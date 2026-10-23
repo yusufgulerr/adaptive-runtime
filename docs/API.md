@@ -75,6 +75,12 @@ with TypeScript 5.9).
 ```ts
 interface AdaptiveRuntime {
   run<TInput, TOutput>(operation: Operation<TInput, TOutput>): Promise<RunResult<TOutput>>;
+  evaluate<TInput, TOutput>(
+    operation: Operation<TInput, TOutput>,
+    options?: EvaluateOptions,
+  ): Promise<StrategyDecision>;
+  exportState(operationId?: string): RuntimeStateSnapshot;
+  importState(snapshot: RuntimeStateSnapshot): number;
   pinStrategy(operationId: string, strategyId: string): void;
   unpinStrategy(operationId: string): void;
   setAdaptationEnabled(operationId: string, enabled: boolean): void;
@@ -105,6 +111,57 @@ Possible rejections include `ConfigurationError`, `NoEligibleStrategyError`,
 `startedAt`/`finishedAt` use the configured clock; `durationMs` covers the whole
 run. With the system clock the resolution is milliseconds.
 
+### `evaluate(operation, options?)`
+
+Computes one policy decision without executing a strategy. It uses the same
+signal snapshot, applicability checks, policy overrides, pin, and serialization
+queue as `run()`. The returned decision is frozen.
+
+```ts
+interface EvaluateOptions {
+  /** Defaults to false. */
+  readonly dryRun?: boolean;
+}
+```
+
+- `dryRun: true` persists no policy state, stores no decision, updates no stats,
+  and emits no `decision` event.
+- `dryRun: false` persists policy state and the decision, and emits `decision`.
+  It does not execute a strategy or update run statistics.
+- A dry run can still trigger a fresh provider read or reuse a cached snapshot.
+
+### `exportState(operationId?)` / `importState(snapshot)`
+
+`exportState()` returns a frozen, versioned, JSON-compatible snapshot:
+
+```ts
+interface RuntimeStateSnapshot {
+  readonly version: 1;
+  readonly exportedAt: number;
+  readonly operations: readonly {
+    readonly operationId: string;
+    readonly state: {
+      readonly policyState: PolicyState;
+      readonly decision: StrategyDecision | null;
+      readonly pinnedStrategyId: string | null;
+      readonly adaptationEnabled: boolean | null;
+      readonly stats: RuntimeStats;
+    };
+  }[];
+}
+```
+
+Passing an operation id exports only that operation; an unknown id produces an
+empty `operations` array. Snapshots exclude function-bearing configuration such
+as per-operation policy overrides and custom selectors.
+
+`importState(snapshot)` validates and deep-clones the entire snapshot before
+mutating runtime state, so an invalid snapshot changes nothing. It rejects an
+import for an operation with an in-flight selection or run, restores the listed
+operations, leaves operations absent from the snapshot untouched, and returns the
+number of restored operations. Imported operations participate in
+`maxTrackedOperations` eviction; pins remain protected.
+
 ### `pinStrategy(operationId, strategyId)` / `unpinStrategy(operationId)`
 
 A pin is an explicit manual override for future runs. It bypasses quality
@@ -112,7 +169,8 @@ pressure, `minQualityTier`, `maxQualityTier`, and `minimumModeDurationMs`, but t
 pinned strategy must exist and be applicable. An invalid pin fails the run with
 `PinnedStrategyError`. Leading or trailing whitespace in `strategyId` is rejected
 with `ConfigurationError` instead of being trimmed. Pins are per operation and
-are not persisted.
+are included in `exportState()`; they are not written to any external store
+unless the caller persists the snapshot.
 
 ### `setAdaptationEnabled(operationId, enabled)`
 
@@ -158,6 +216,9 @@ interface StrategyStats {
   readonly failures: number;
   readonly lastDurationMs: number | null;
   readonly averageDurationMs: number | null;
+  readonly ewmaDurationMs: number | null;
+  readonly durationSamples: number;
+  readonly errorRate: number;
 }
 
 interface RuntimeStats {
@@ -167,6 +228,9 @@ interface RuntimeStats {
   readonly failures: number;
   readonly lastDurationMs: number | null;
   readonly averageDurationMs: number | null;
+  readonly ewmaDurationMs: number | null;
+  readonly durationSamples: number;
+  readonly errorRate: number;
   readonly strategyRuns: Readonly<Record<string, number>>;
   readonly strategies: Readonly<Record<string, StrategyStats>>;
 }
@@ -175,9 +239,12 @@ interface RuntimeStats {
 `runs` counts started runs, including runs that fail during selection.
 `strategyRuns` increments when a strategy is selected, before execution.
 `strategies` exposes fine-grained per-strategy counts (`runs`, `successes`,
-`failures`) and durations (`lastDurationMs`, `averageDurationMs`). Latency
-samples include successful runs and failures that occurred after selection.
-Reading stats refreshes the operation's LRU position.
+`failures`) and durations (`lastDurationMs`, `averageDurationMs`,
+`ewmaDurationMs`). Latency samples include successful runs and failures that
+occurred after selection. `ewmaDurationMs` uses alpha `0.2`; `errorRate` is
+`failures / runs` and is `0` before the first run. `durationSamples` is the number
+of duration observations and is persisted in state snapshots. Reading stats
+refreshes the operation's LRU position.
 
 ### `removeOperation(operationId)
 
@@ -435,9 +502,15 @@ interface SignalProvider {
   readonly signals: readonly SignalDescriptor[];
   start?(context: SignalStartContext): void | Promise<void>;
   read(context: SignalReadContext): Promise<readonly ResourceSignal[]> | readonly ResourceSignal[];
+  drainProviderErrors?(): readonly Error[];
   close?(): void | Promise<void>;
 }
 ```
+
+`drainProviderErrors()` is an optional bridge for providers that isolate child
+failures internally, such as `CompositeSignalProvider`. The collector calls it
+after each fresh read and forwards every returned error as `provider:error`; a
+cache hit does not drain, so one failure is reported once.
 
 `start()` is called lazily once before the first read with a `SignalStartContext`
 containing `now` and an abort `signal`. A returned promise is awaited under
@@ -515,14 +588,35 @@ new EventLoopDelayProvider({
   signalName?: string,
   percentile?: number,       // 0..100, default 95
   resolutionMs?: number,     // > 0, default 20
+  minSamples?: number,       // positive integer, default 1
   histogramFactory?: (resolutionMs: number) => HistogramLike,
 });
 ```
 
 Default signal: `eventLoop.delay.p95` (`milliseconds`). Uses
-`perf_hooks.monitorEventLoopDelay`. Before samples exist, returns `unknown`. This
-is event-loop scheduling delay, not CPU utilization, and does not observe worker
+`perf_hooks.monitorEventLoopDelay`. Before samples exist, returns `unknown`. After
+a valid reading, the histogram resets; if a later read has fewer than
+`minSamples` new samples, the provider retains the last valid value for
+`resolutionMs * minSamples` instead of flapping back to `unknown`. Retained
+readings are marked with `details.retained: true` and `confidence: 0.5`. This is
+event-loop scheduling delay, not CPU utilization, and does not observe worker
 threads or other processes.
+
+#### `EventLoopUtilizationProvider`
+
+```ts
+new EventLoopUtilizationProvider({
+  id?: string,
+  signalName?: string,
+  eventLoopUtilization?: () => { idle: number; active: number; utilization: number },
+});
+```
+
+Signal: `eventLoop.utilization` (`ratio`). Uses
+`perf_hooks.performance.eventLoopUtilization`. The first read reports cumulative
+utilization since the process started; later reads subtract the previous snapshot
+and report the delta. A zero-activity or invalid snapshot is `unknown`/`error`,
+never a fabricated `0`.
 
 #### `NetworkLatencyProvider`
 
@@ -599,6 +693,25 @@ Signals: `web.frame.durationP95Ms` (`milliseconds`) and
 your `requestAnimationFrame` loop; negative or non-finite durations throw
 `ConfigurationError`. With fewer than `minSamples`, both readings are `unknown`.
 `clearSamples()` and `close()` reset the window.
+
+##### `ComputePressureProvider`
+
+```ts
+new ComputePressureProvider({
+  id?: string,
+  signalName?: string,
+  source?: string,             // default "cpu"
+  sampleIntervalMs?: number,
+  pressureObserverFactory?: PressureObserverFactory,
+});
+```
+
+Signal: `web.computePressure` (`ratio`). When a structural W3C
+`PressureObserver` is available (or injected), the provider observes `source`
+and maps `nominal`/`fair`/`serious`/`critical` to
+`0.25`/`0.5`/`0.75`/`1.0`. Without an observer, call
+`recordPressureState(state)` from your own pressure integration. Before any
+state is known, the reading is `unknown`, never `0`.
 
 #### `ExecutionBudgetProvider` (`adaptive-runtime/edge`)
 
@@ -843,6 +956,14 @@ Non-`ok` signals increment `*_signal_status_total{status="..."}` only. They are
 not confused with a real zero measurement. Prometheus label values escape
 backslashes, quotes, and newlines.
 
+`attachOpenTelemetryMeter` prefers a structural `createGauge` instrument for
+current signal readings and budget engagement. If the meter has no gauge, it
+falls back to UpDownCounters and applies `next - previous` deltas per label set,
+so the instrument converges to the current value instead of accumulating. Signal
+attributes are `{ operation_id, signal, status }`; budget attributes are
+`{ budget_id, operation_id }`. The fallback cannot retract a stale value when a
+signal later becomes unavailable.
+
 Metric family type is determined by the recording method: `increment` registers
 a counter, `setGauge` a gauge, and `observe` a histogram, regardless of the name
 suffix. Reusing a name with a different instrument kind throws `TypeError` before
@@ -875,6 +996,24 @@ const report = await runProviderConformanceCheck(provider, {
   signal?: AbortSignal,      // default fresh, un-aborted signal
 });
 // { ok, providerId, checksPassed, failures }
+
+const timeline = simulatePolicyTimeline({
+  operationId?: string,      // default "simulated-operation"
+  policy?: Policy,
+  strategies: [{ id: "fast", qualityTier: 1 }, { id: "thorough", qualityTier: 2 }],
+  initialState?: PolicyState,
+  steps: [{
+    now?: number,            // default index * 1000
+    signals: ResourceSignal[],
+    strategies?: SimulatedStrategy[],
+    pinnedStrategyId?: string | null,
+    adaptationEnabled?: boolean,
+    sampleSequence?: number | null, // default null
+    signalsCached?: boolean,        // default false
+  }],
+});
+// { steps, decisions, finalState, strategySwitches, strategyReversals,
+//   engagedBudgetIds, recoveredBudgetIds }
 ```
 
 `createFakeClock` starts at `0` by default and rejects negative or non-finite
@@ -894,19 +1033,30 @@ units, `observedAt === context.now`, status codes, finite `ok` values, confidenc
 bounds, and error strings. It reports failures instead of throwing. It does not
 enforce a timeout; wrap a provider that may hang in your own deadline.
 
+`simulatePolicyTimeline` is a pure, provider-free policy simulator. It resolves
+the policy once, threads policy state through each step, and reports the decision
+and state for every step. It also reports per-step and cumulative budget
+engagements/recoveries, the number of strategy switches, and the number of
+reversals (a switch that exactly undoes the immediately preceding switch). The
+default `sampleSequence: null` treats every step as a fresh sample. No strategy
+is executed and no timer is scheduled.
+
 ## Exports
 
 The package exports:
 
 - root (`adaptive-runtime`): the Node.js entry point — core plus
   `ProcessMemoryProvider`, `CpuUtilizationProvider`, `EventLoopDelayProvider`,
-  `NetworkLatencyProvider`, `CompositeSignalProvider`, all public types, and all
-  error classes;
+  `EventLoopUtilizationProvider`, `NetworkLatencyProvider`,
+  `CompositeSignalProvider`, all public types, and all error classes;
 - `adaptive-runtime/core`: platform-neutral runtime, policy helper, errors,
-  types, `NetworkLatencyProvider`, and `CompositeSignalProvider`;
-- `adaptive-runtime/node`: core plus the three process-level providers;
+  types (including state snapshot types), `NetworkLatencyProvider`, and
+  `CompositeSignalProvider`;
+- `adaptive-runtime/node`: core plus the process-level providers, including
+  `EventLoopDelayProvider` and `EventLoopUtilizationProvider`;
 - `adaptive-runtime/web`: core plus `DeviceMemoryProvider`,
-  `NetworkInformationProvider`, and `FrameTimingProvider`;
+  `NetworkInformationProvider`, `FrameTimingProvider`, and
+  `ComputePressureProvider`;
 - `adaptive-runtime/edge`: core plus `ExecutionBudgetProvider`;
 - `adaptive-runtime/policy`: policy types and defaults, `definePolicy`,
   `resolvePolicy`, `createInitialPolicyState`, `evaluatePolicy`, and the
@@ -916,8 +1066,8 @@ The package exports:
   platform-neutral;
 - `adaptive-runtime/observability`: `MetricsCollector`,
   `createMetricsCollector`, `attachOpenTelemetryMeter`, and the metrics types;
-- `adaptive-runtime/testing`: `createFakeClock`, `ScriptedSignalProvider`, and
-  `runProviderConformanceCheck`;
+- `adaptive-runtime/testing`: `createFakeClock`, `ScriptedSignalProvider`,
+  `runProviderConformanceCheck`, and `simulatePolicyTimeline`;
 - `adaptive-runtime/package.json`: package metadata.
 
 The root entry point intentionally excludes `/observability` and `/testing`.

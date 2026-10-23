@@ -24,12 +24,14 @@ import type {
   RunResult,
   RuntimeStats,
 } from "../types/run.js";
-import type { AdaptiveRuntime, CreateRuntimeOptions } from "../types/runtime.js";
+import type { AdaptiveRuntime, CreateRuntimeOptions, EvaluateOptions } from "../types/runtime.js";
+import type { OperationRuntimeState, RuntimeStateSnapshot } from "../types/state.js";
 import type { QualityCheckResult, Strategy, StrategyRunContext } from "../types/strategy.js";
 import { errorMessage, toError } from "../utils/errors.js";
 import { systemClock } from "./clock.js";
 import { RuntimeEmitter } from "./emitter.js";
 import { executeStrategy } from "./executor.js";
+import { validateRuntimeStateSnapshot } from "./state.js";
 import { StatsRegistry } from "./stats.js";
 import {
   validateOperation,
@@ -152,8 +154,7 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
     let decision: StrategyDecision | undefined;
 
     try {
-      const selection = await this.#select(operation, operationId);
-      decision = selection.decision;
+      decision = await this.#select(operation, operationId, true);
       const strategy = operation.strategies.find((item) => item.id === decision?.strategyId);
       if (strategy === undefined) {
         throw new ConfigurationError(
@@ -221,6 +222,98 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
     } finally {
       this.#endActiveRun(operationId);
     }
+  }
+
+  async evaluate<TInput, TOutput>(
+    operationValue: Operation<TInput, TOutput>,
+    options: EvaluateOptions = {},
+  ): Promise<StrategyDecision> {
+    this.#ensureOpen();
+    if (options === null || typeof options !== "object" || Array.isArray(options)) {
+      throw new ConfigurationError("evaluate options must be an object.");
+    }
+    const dryRun = options.dryRun ?? false;
+    if (typeof dryRun !== "boolean") {
+      throw new ConfigurationError("evaluate options.dryRun must be a boolean.");
+    }
+    const operation = validateOperation<TInput, TOutput>(operationValue);
+    const operationId = validateOperationId(operation.operationId);
+    if (operation.signal?.aborted) {
+      throw new OperationAbortedError(operationId, operation.signal.reason);
+    }
+    return this.#select(operation, operationId, dryRun !== true);
+  }
+
+  exportState(operationId?: string): RuntimeStateSnapshot {
+    this.#ensureOpen();
+    let operationIds: readonly string[];
+    if (operationId === undefined) {
+      operationIds = [...this.#tracked.keys()];
+    } else {
+      const id = validateOperationId(operationId);
+      operationIds = this.#hasOperationRecord(id) ? [id] : [];
+    }
+
+    const operations: Array<{ operationId: string; state: OperationRuntimeState }> = [];
+    for (const id of operationIds) {
+      if (!this.#hasOperationRecord(id)) {
+        continue;
+      }
+      operations.push({
+        operationId: id,
+        state: {
+          policyState: this.#states.get(id) ?? createInitialPolicyState(),
+          decision: this.#decisions.get(id) ?? null,
+          pinnedStrategyId: this.#pins.get(id) ?? null,
+          adaptationEnabled: this.#adaptationOverrides.get(id) ?? null,
+          stats: this.#stats.get(id),
+        },
+      });
+    }
+
+    return validateRuntimeStateSnapshot({
+      version: 1,
+      exportedAt: this.#clock.now(),
+      operations,
+    });
+  }
+
+  importState(snapshot: RuntimeStateSnapshot): number {
+    this.#ensureOpen();
+    const validated = validateRuntimeStateSnapshot(snapshot);
+
+    // Validate the entire target set before mutating so a rejected import never
+    // leaves a partially hydrated runtime.
+    for (const { operationId } of validated.operations) {
+      if (this.#locks.has(operationId) || this.#activeRuns.has(operationId)) {
+        throw new ConfigurationError(
+          `Cannot import state for operation "${operationId}" while a selection or run is in flight.`,
+        );
+      }
+    }
+
+    for (const { operationId, state } of validated.operations) {
+      this.#states.set(operationId, state.policyState);
+      if (state.decision === null) {
+        this.#decisions.delete(operationId);
+      } else {
+        this.#decisions.set(operationId, state.decision);
+      }
+      if (state.pinnedStrategyId === null) {
+        this.#pins.delete(operationId);
+      } else {
+        this.#pins.set(operationId, state.pinnedStrategyId);
+      }
+      if (state.adaptationEnabled === null) {
+        this.#adaptationOverrides.delete(operationId);
+      } else {
+        this.#adaptationOverrides.set(operationId, state.adaptationEnabled);
+      }
+      this.#stats.restore(operationId, state.stats);
+      this.#trackOperation(operationId);
+    }
+    this.#enforceTrackingLimit();
+    return validated.operations.length;
   }
 
   pinStrategy(operationId: string, strategyId: string): void {
@@ -350,7 +443,8 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
   async #select<TInput, TOutput>(
     operation: Operation<TInput, TOutput>,
     operationId: string,
-  ): Promise<{ decision: StrategyDecision }> {
+    persist: boolean,
+  ): Promise<StrategyDecision> {
     const signal = operation.signal ?? NEVER_ABORTED;
     return this.#serialize(operationId, signal, async () => {
       this.#ensureOpen();
@@ -358,8 +452,11 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
         throw new OperationAbortedError(operationId, signal.reason);
       }
 
+      // Resolve the effective policy before collection: evaluationIntervalMs is
+      // a per-operation setting and must control this operation's cache window.
+      const effectivePolicy = this.#effectivePolicy(operationId);
       const snapshot = await this.#collector
-        .collect(this.#clock.now(), signal)
+        .collect(this.#clock.now(), signal, effectivePolicy.evaluationIntervalMs)
         .catch((error: unknown) => {
           if (signal.aborted) {
             throw new OperationAbortedError(operationId, signal.reason);
@@ -372,17 +469,22 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
       }
 
       const stats = this.#stats.get(operationId);
-      const candidates: StrategyCandidate[] = operation.strategies.map((strategy) => ({
-        id: strategy.id,
-        qualityTier: strategy.qualityTier,
-        costTier: strategy.costTier,
-        applicable: this.#isApplicable(strategy, operation, operationId),
-        estimatedLatencyMs: stats.strategies[strategy.id]?.averageDurationMs ?? null,
-      }));
+      const candidates: StrategyCandidate[] = operation.strategies.map((strategy) => {
+        const strategyStats = stats.strategies[strategy.id];
+        return {
+          id: strategy.id,
+          qualityTier: strategy.qualityTier,
+          costTier: strategy.costTier,
+          applicable: this.#isApplicable(strategy, operation, operationId),
+          estimatedLatencyMs:
+            strategyStats?.ewmaDurationMs ?? strategyStats?.averageDurationMs ?? null,
+          ewmaLatencyMs: strategyStats?.ewmaDurationMs ?? null,
+          errorRate: strategyStats?.errorRate ?? 0,
+        };
+      });
 
       const now = this.#clock.now();
       const state = this.#states.get(operationId) ?? createInitialPolicyState();
-      const effectivePolicy = this.#effectivePolicy(operationId);
       const adaptationOverride = this.#adaptationOverrides.get(operationId);
       const evaluation = evaluatePolicy(
         state,
@@ -399,11 +501,13 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
         effectivePolicy,
       );
       const decision = freezeDecision(evaluation.decision);
-      this.#states.set(operationId, evaluation.state);
-      this.#decisions.set(operationId, decision);
-      this.#trackOperation(operationId);
-      this.#emitter.emit("decision", { decision });
-      return { decision };
+      if (persist) {
+        this.#states.set(operationId, evaluation.state);
+        this.#decisions.set(operationId, decision);
+        this.#trackOperation(operationId);
+        this.#emitter.emit("decision", { decision });
+      }
+      return decision;
     });
   }
 

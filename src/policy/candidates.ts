@@ -5,7 +5,12 @@ export interface StrategyCandidate {
   readonly qualityTier: number;
   readonly costTier?: number;
   readonly applicable: boolean;
+  /** Arithmetic mean of historical durations, or null when untracked. */
   readonly estimatedLatencyMs?: number | null;
+  /** Exponentially weighted recent latency, or null when untracked. */
+  readonly ewmaLatencyMs?: number | null;
+  /** Observed failure ratio in the range 0..1; 0 when no runs exist. */
+  readonly errorRate?: number | null;
 }
 
 export interface TargetTierClamp {

@@ -100,18 +100,24 @@ const detachMeter = attachOpenTelemetryMeter(runtime, meter, {
 });
 ```
 
-The adapter creates counters, a duration histogram, and (when `meter.createUpDownCounter`
-is available) UpDownCounters for signal readings (`<prefix>_signal_reading`) and budget
-engagement (`<prefix>_budget_engaged`).
+The adapter creates counters, a duration histogram, and current-value instruments for
+signal readings (`<prefix>_signal_reading`) and budget engagement
+(`<prefix>_budget_engaged`). It prefers `meter.createGauge` when available and falls back
+to `meter.createUpDownCounter` with per-series deltas.
 
 On `decision` events:
 - For signal readings with `reading.status === "ok"`, records `reading.value` to
-  `<prefix>_signal_reading` with attributes `{ signal: reading.name, unit: reading.unit }`.
+  `<prefix>_signal_reading` with attributes `{ operation_id, signal, status: "ok" }`.
   Non-ok readings are strictly recorded to `<prefix>_signal_status_total` and are never
-  coerced to `0` or emitted to the UpDownCounter.
+  coerced to `0` or emitted to the current-value instrument.
 - For budget evaluations with `budget.status === "ok"`, records `budget.engaged ? 1 : 0` to
-  `<prefix>_budget_engaged` with attributes `{ budget: budget.name }`. Non-ok budgets
+  `<prefix>_budget_engaged` with attributes `{ budget_id, operation_id }`. Non-ok budgets
   record to `<prefix>_budget_status_total`.
+
+The UpDownCounter fallback stores the previous value per label set and adds
+`next - previous`, so the instrument represents the current reading instead of the sum of
+every decision. It cannot retract the last value when a signal later becomes unavailable;
+use a gauge-capable meter when that distinction matters.
 
 ### Per-Instrument Error Isolation
 
@@ -132,15 +138,17 @@ runs. Call the returned detach function before discarding the runtime.
 | `decision` | `StrategyDecision` for every selection | Per selection |
 | `provider:error` | Provider id and contained failure | Per provider failure |
 | `listener:error` | Failing event name and listener error | Per listener failure |
-| `getDecision(id)` | Most recent decision | Until process exit |
-| `getStats(id)` | Cumulative counters and latency | Until process exit |
+| `getDecision(id)` | Most recent decision | Until process exit or `removeOperation` |
+| `getStats(id)` | Cumulative counters and latency | Until process exit, `resetStats`, or `removeOperation` |
+| `exportState(id?)` | Versioned policy/decision/stats snapshot | Caller-managed |
 
 Events are synchronous, best-effort, and in-process. A listener exception is
 caught and emitted as `listener:error`; it does not fail the operation. Keep
 listeners cheap because they run on the hot path.
 
 `getStats()` is not a durable store. It resets when the runtime is recreated and
-is not shared across processes.
+is not shared across processes. Use `exportState()` / `importState()` when policy
+hysteresis, decisions, pins, and latency history must survive a restart.
 
 ## Recommended metrics
 

@@ -4,8 +4,12 @@ import { ConfigurationError } from "../../src/errors/index.js";
 import {
   CpuUtilizationProvider,
   type CpuUtilizationProviderOptions,
+  EVENT_LOOP_UTILIZATION,
   EventLoopDelayProvider,
   type EventLoopDelayProviderOptions,
+  EventLoopUtilizationProvider,
+  type EventLoopUtilizationProviderOptions,
+  type EventLoopUtilizationSnapshot,
   type HistogramLike,
   NetworkLatencyProvider,
   type NetworkLatencyProviderOptions,
@@ -275,6 +279,58 @@ describe("EventLoopDelayProvider", () => {
       () => new EventLoopDelayProvider({ resolutionMs: Number.NaN }),
       ConfigurationError,
     );
+    assert.throws(() => new EventLoopDelayProvider({ minSamples: 0 }), ConfigurationError);
+    assert.throws(() => new EventLoopDelayProvider({ minSamples: -1 }), ConfigurationError);
+    assert.throws(() => new EventLoopDelayProvider({ minSamples: 1.5 }), ConfigurationError);
+    assert.throws(() => new EventLoopDelayProvider({ minSamples: Number.NaN }), ConfigurationError);
+  });
+
+  it("retains the last valid reading only within the bounded sampling window", () => {
+    const { histogram, state } = makeHistogram();
+    const provider = new EventLoopDelayProvider({
+      minSamples: 3,
+      resolutionMs: 20,
+      histogramFactory: () => histogram,
+    });
+
+    assert.equal(provider.read({ now: NOW, signal })[0]?.status, "unknown");
+    state.samples = 3;
+    const fresh = provider.read({ now: NOW, signal })[0];
+    assert.equal(fresh?.status, "ok");
+    assert.equal(requireOk(fresh).value, 2.5);
+    assert.equal(fresh?.confidence, 1);
+    assert.deepEqual(fresh?.details, {
+      percentile: 95,
+      resolutionMs: 20,
+      samples: 3,
+      retained: false,
+    });
+
+    const retained = provider.read({ now: NOW + 60, signal })[0];
+    assert.equal(retained?.status, "ok");
+    assert.equal(requireOk(retained).value, 2.5);
+    assert.equal(retained?.confidence, 0.5);
+    assert.deepEqual(retained?.details, {
+      percentile: 95,
+      resolutionMs: 20,
+      samples: 3,
+      retained: true,
+    });
+
+    assert.equal(provider.read({ now: NOW + 61, signal })[0]?.status, "unknown");
+    assert.equal(provider.read({ now: NOW - 1, signal })[0]?.status, "unknown");
+  });
+
+  it("reports an error reading when the histogram percentile is invalid", () => {
+    const histogram: HistogramLike = {
+      count: 1,
+      percentile: () => Number.NaN,
+      reset: () => undefined,
+    };
+    const provider = new EventLoopDelayProvider({ histogramFactory: () => histogram });
+    const reading = provider.read({ now: NOW, signal })[0];
+    assert.equal(reading?.status, "error");
+    assert.match(reading?.status === "error" ? (reading.error ?? "") : "", /percentile/);
   });
 
   it("validates id, options object, histogramFactory, and signalName", () => {
@@ -347,6 +403,111 @@ describe("EventLoopDelayProvider", () => {
     assert.equal(provider.read({ now: NOW, signal })[0]?.status, "unknown");
     provider.close();
     assert.equal(provider.read({ now: NOW, signal })[0]?.status, "unsupported");
+  });
+});
+
+describe("EventLoopUtilizationProvider", () => {
+  it("reports cumulative utilization first and deltas afterward", () => {
+    const snapshots: EventLoopUtilizationSnapshot[] = [
+      { idle: 0, active: 0, utilization: 0 },
+      { idle: 400, active: 100, utilization: 0.2 },
+      { idle: 450, active: 150, utilization: 0.25 },
+      { idle: 450, active: 150, utilization: 0.25 },
+    ];
+    const provider = new EventLoopUtilizationProvider({
+      eventLoopUtilization: () => snapshots.shift() ?? { idle: 0, active: 0, utilization: 0 },
+    });
+    assert.equal(provider.id, "event-loop-utilization");
+    assert.equal(provider.signals[0]?.name, EVENT_LOOP_UTILIZATION);
+    assert.equal(provider.signals[0]?.unit, "ratio");
+
+    const baseline = provider.read({ now: NOW, signal })[0];
+    assert.equal(baseline?.status, "unknown");
+
+    const cumulative = provider.read({ now: NOW + 1000, signal })[0];
+    assert.equal(cumulative?.status, "ok");
+    assert.equal(requireOk(cumulative).value, 0.2);
+    assert.deepEqual(cumulative?.details, { mode: "cumulative", idleMs: 400, activeMs: 100 });
+
+    const delta = provider.read({ now: NOW + 2000, signal })[0];
+    assert.equal(delta?.status, "ok");
+    assert.equal(requireOk(delta).value, 0.5);
+    assert.deepEqual(delta?.details, { mode: "delta", idleMs: 50, activeMs: 50 });
+
+    const noElapsed = provider.read({ now: NOW + 3000, signal })[0];
+    assert.equal(noElapsed?.status, "unknown");
+  });
+
+  it("reports error readings for backwards counters and invalid snapshots", () => {
+    const snapshots: EventLoopUtilizationSnapshot[] = [
+      { idle: 100, active: 100, utilization: 0.5 },
+      { idle: 50, active: 50, utilization: 0.5 },
+    ];
+    const provider = new EventLoopUtilizationProvider({
+      eventLoopUtilization: () => snapshots.shift() ?? { idle: 0, active: 0, utilization: 0 },
+    });
+    assert.equal(provider.read({ now: NOW, signal })[0]?.status, "ok");
+    const backwards = provider.read({ now: NOW + 1, signal })[0];
+    assert.equal(backwards?.status, "error");
+    assert.match(backwards?.status === "error" ? (backwards.error ?? "") : "", /backwards/);
+
+    const invalid = new EventLoopUtilizationProvider({
+      eventLoopUtilization: () => ({ idle: 1, active: 1, utilization: 1.5 }),
+    });
+    const invalidReading = invalid.read({ now: NOW, signal })[0];
+    assert.equal(invalidReading?.status, "error");
+    assert.match(
+      invalidReading?.status === "error" ? (invalidReading.error ?? "") : "",
+      /between 0 and 1/,
+    );
+
+    const throwing = new EventLoopUtilizationProvider({
+      eventLoopUtilization: () => {
+        throw new Error("perf unavailable");
+      },
+    });
+    const throwingReading = throwing.read({ now: NOW, signal })[0];
+    assert.equal(throwingReading?.status, "error");
+    assert.match(
+      throwingReading?.status === "error" ? (throwingReading.error ?? "") : "",
+      /perf unavailable/,
+    );
+  });
+
+  it("handles close and validates id, signal name, and injection", () => {
+    const provider = new EventLoopUtilizationProvider({
+      eventLoopUtilization: () => ({ idle: 1, active: 1, utilization: 0.5 }),
+    });
+    provider.read({ now: NOW, signal });
+    provider.close();
+    provider.close();
+    const reading = provider.read({ now: NOW + 1, signal })[0];
+    assert.equal(reading?.status, "unsupported");
+
+    const invalidIds = ["", "   ", " leading", "trailing ", 123, null];
+    for (const id of invalidIds) {
+      assert.throws(
+        () => new EventLoopUtilizationProvider({ id: id as unknown as string }),
+        ConfigurationError,
+      );
+    }
+    assert.throws(
+      () =>
+        new EventLoopUtilizationProvider(null as unknown as EventLoopUtilizationProviderOptions),
+      ConfigurationError,
+    );
+    assert.throws(() => new EventLoopUtilizationProvider({ signalName: "" }), ConfigurationError);
+    assert.throws(
+      () => new EventLoopUtilizationProvider({ signalName: " padded.signal " }),
+      ConfigurationError,
+    );
+    assert.throws(
+      () =>
+        new EventLoopUtilizationProvider({
+          eventLoopUtilization: 123 as unknown as () => EventLoopUtilizationSnapshot,
+        }),
+      ConfigurationError,
+    );
   });
 });
 

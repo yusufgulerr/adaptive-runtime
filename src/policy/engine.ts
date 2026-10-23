@@ -429,6 +429,8 @@ export function evaluatePolicy(
       },
       estimatedCost: c.costTier ?? null,
       estimatedLatencyMs: c.estimatedLatencyMs ?? null,
+      ewmaLatencyMs: c.ewmaLatencyMs ?? null,
+      errorRate: c.errorRate ?? null,
     }));
 
     const signalsRecord: Record<string, ResourceSignal> = {};

@@ -15,6 +15,12 @@ export {
   type HistogramLike,
 } from "./providers/event-loop-delay.js";
 export {
+  EVENT_LOOP_UTILIZATION,
+  EventLoopUtilizationProvider,
+  type EventLoopUtilizationProviderOptions,
+  type EventLoopUtilizationSnapshot,
+} from "./providers/event-loop-utilization.js";
+export {
   type MemoryUsageSnapshot,
   PROCESS_MEMORY_HEAP_USED,
   PROCESS_MEMORY_RSS,

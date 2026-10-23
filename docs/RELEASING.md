@@ -11,6 +11,9 @@ This project uses a two-phase release through
 
 Publishing is irreversible enough that it is treated as an owner-only operation.
 The current publication status is tracked in [VERIFICATION.md](VERIFICATION.md).
+The examples below use `0.5.0` as the next version; only `v0.3.0` has been
+released, and no 0.5.0 tag or npm publication exists. Replace the version in each
+command with the version actually being released.
 
 ## Preconditions
 
@@ -92,8 +95,8 @@ Use an annotated tag on the exact release commit:
 ```bash
 git switch main
 git pull --ff-only
-git tag -a v0.3.0 -m "adaptive-runtime 0.3.0"
-git push origin v0.3.0
+git tag -a v0.5.0 -m "adaptive-runtime 0.5.0"
+git push origin v0.5.0
 ```
 
 The tag ruleset restricts creation, update, and deletion to the repository admin.
@@ -110,7 +113,7 @@ The tag push runs the `Verify release tag` job and, if verification passes, the
 3. Confirm the release points at the intended tag:
 
    ```bash
-   gh release view v0.3.0
+   gh release view v0.5.0
    ```
 
 If verification fails, do not move the tag. Fix the source in a new commit and
@@ -136,7 +139,7 @@ npm view adaptive-runtime version
 Dispatch the workflow against the existing tag:
 
 ```bash
-gh workflow run release.yml --ref v0.3.0 -f publish_npm=true
+gh workflow run release.yml --ref v0.5.0 -f publish_npm=true
 ```
 
 The workflow re-runs `npm run check`, coverage, and package inspection, then waits
@@ -162,8 +165,8 @@ closing the runtime.
 Run the same verification locally:
 
 ```bash
-node scripts/verify-published-package.mjs --version 0.3.0
-node scripts/verify-published-package.mjs --version 0.3.0 --json
+node scripts/verify-published-package.mjs --version 0.5.0
+node scripts/verify-published-package.mjs --version 0.5.0 --json
 node scripts/verify-published-package.mjs --help
 ```
 
@@ -173,7 +176,7 @@ stderr and exit non-zero.
 For an offline dry run or script test, supply fixtures and skip the install:
 
 ```bash
-node scripts/verify-published-package.mjs --version 0.3.0 \
+node scripts/verify-published-package.mjs --version 0.5.0 \
   --metadata-file ./metadata.json \
   --attestations-file ./attestations.json \
   --skip-consumer
@@ -195,8 +198,8 @@ record, rather than assuming the workflow result is sufficient.
 
 ```bash
 npm view adaptive-runtime version
-npm view adaptive-runtime@0.3.0 dist.integrity
-npm view adaptive-runtime@0.3.0 repository.url
+npm view adaptive-runtime@0.5.0 dist.integrity
+npm view adaptive-runtime@0.5.0 repository.url
 ```
 
 Install and import from a clean temporary directory:
@@ -205,7 +208,7 @@ Install and import from a clean temporary directory:
 mkdir adaptive-runtime-smoke
 cd adaptive-runtime-smoke
 npm init -y
-npm install adaptive-runtime@0.3.0
+npm install adaptive-runtime@0.5.0
 node --input-type=module -e "import { createAdaptiveRuntime } from 'adaptive-runtime'; const r = createAdaptiveRuntime(); console.log(typeof r.run); await r.close();"
 ```
 
@@ -256,7 +259,7 @@ in Section 5.
 - [ ] npm trusted publishing (OIDC) is configured; `NPM_TOKEN` is set only if the
       fallback is required and only in the `release` environment.
 - [ ] The owner approved the irreversible npm publish.
-- [ ] `gh workflow run release.yml --ref v0.3.0 -f publish_npm=true` was dispatched.
+- [ ] `gh workflow run release.yml --ref v0.5.0 -f publish_npm=true` was dispatched.
 - [ ] The `release` environment deployment was approved.
 - [ ] Registry, provenance, GitHub release, and clean-consumer checks pass,
       including the automated `verify-publish` job.
