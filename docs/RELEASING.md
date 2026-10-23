@@ -11,9 +11,9 @@ This project uses a two-phase release through
 
 Publishing is irreversible enough that it is treated as an owner-only operation.
 The current publication status is tracked in [VERIFICATION.md](VERIFICATION.md).
-The examples below use `0.5.0` as the next version; only `v0.3.0` has been
-released, and no 0.5.0 tag or npm publication exists. Replace the version in each
-command with the version actually being released.
+The examples below use `0.5.0` as the latest released version. `v0.5.0` is
+published as a GitHub release; npm publication remains pending. Replace the
+version in each command with the version actually being released.
 
 ## Preconditions
 

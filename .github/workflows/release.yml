@@ -3,7 +3,7 @@ name: Release
 # Tag pushes verify the release and create a GitHub release. npm publication is a
 # separate, manually dispatched step so the GitHub release can exist before the
 # registry account is ready. Publish later with:
-#   gh workflow run release.yml --ref v0.3.0 -f publish_npm=true
+#   gh workflow run release.yml --ref v0.5.0 -f publish_npm=true
 on:
   push:
     tags:
