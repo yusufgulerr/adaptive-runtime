@@ -1,21 +1,65 @@
 # Verification record
 
-This document records the local and remote checks performed for the 0.3.0 line on
-**2026-10-22**. It distinguishes local verification, remote workflow evidence,
+This document records the historical 0.3.0 release verification on
+**2026-10-22** and the current 0.5.0 local source-line verification on
+**2026-10-23**. It distinguishes local verification, remote workflow evidence,
 GitHub repository settings, and npm registry status. The 0.3.0 tree was merged to
 `main` at `5504f21`; the release-workflow fix and the OpenSSF readiness
 documentation merged at `953a484` and `6f67ff3`. The property/fuzz suite merged
 at `8441299` and the scheduled campaign merged at `3d846ea`; a manual
 10,000-run dispatch passed. Remote CI, CodeQL, and Scorecard pass for these
 commits. The `v0.3.0` tag points to `5504f21` and the GitHub release is
-published; npm publication remains pending.
+published; npm publication remains pending. The 0.5.0 tree has not been
+committed, pushed, tagged, remotely verified, or published.
+
+## 0.5.0 local source-line verification
+
+The 0.5.0 quality gates were run locally on **2026-10-23** with the repository's
+documented commands. No remote workflow or registry check was performed for this
+tree.
+
+| Command | Result |
+| --- | --- |
+| `npm run format` | **PASS** — 104 files checked, no fixes applied |
+| `npm run lint` | **PASS** — 104 files checked, no fixes applied |
+| `npm run typecheck` | **PASS** — `tsc -p tsconfig.check.json` |
+| `npm run verify:version-sync` | **PASS** — `adaptive-runtime 0.5.0` in `package.json`, `package-lock.json`, and `CHANGELOG.md` |
+| `npm run check` | **PASS** — lint, typecheck, version sync, 402 tests / 66 suites, build, exports, zero dependencies, and Markdown links |
+| `npm test` | **PASS** — 402 tests, 66 suites, 0 failures, 0 skipped |
+| `npm run test:fuzz` | **PASS** — 9 property tests, 4 suites, 0 failures |
+| `npm run test:coverage` | **PASS** — 98.81% lines, 95.12% branches, 98.79% functions |
+| `npm run build` | **PASS** — ESM, declarations, and maps emitted to `dist/` |
+| `npm run verify:exports` | **PASS** — 10 export entries, 27 files, and 33 runtime symbols |
+| `npm run verify:zero-deps` | **PASS** — 64 lockfile entries, no production packages |
+| `npm audit --omit=dev --audit-level=high` | **PASS** — 0 vulnerabilities |
+| Six `npm run example:*` commands | **PASS** — basic, search, planning, quick-start, observability, edge |
+| `npm run benchmark` | **PASS** — 20,000 runs per round, 7 rounds; see [BENCHMARKS.md](BENCHMARKS.md) |
+| `npm run benchmark:concurrency` | **PASS** — 4,096 runs per level per round, 3 rounds; see [BENCHMARKS.md](BENCHMARKS.md) |
+| `npm pack --dry-run` | **PASS** — 184 files, 194.3 kB packed, 950.1 kB unpacked, version 0.5.0, shasum `152198d91dd2c96e171ae718bf0cef9d543956a7` |
+| Portable source scan | **PASS** — zero `node:` / `process.` matches across 36 portable files |
+| `npm run check:links` | **PASS** — 43 Markdown files, 241 relative links, 0 broken |
+
+Coverage from the 0.5.0 run:
+
+| Metric | Result | Threshold | Status |
+| --- | ---: | ---: | --- |
+| Lines | 98.81% | 80% | PASS |
+| Branches | 95.12% | 80% | PASS |
+| Functions | 98.79% | 80% | PASS |
+
+Every `src/**` file remains above 80% branch coverage. The lowest per-file branch
+results are `providers/event-loop-utilization.ts` at 81.48%,
+`runtime/state.ts` at 87.44%, and `providers/cpu-utilization.ts` at 87.88%.
+The package inspection above is a dry-run inventory, not a clean-consumer install
+of a published tarball. The npm registry, provenance attestation, remote CI, and
+remote CodeQL/Scorecard remain **not verified** for 0.5.0.
 
 ## Wave 2 quality-gate verification
 
 The Wave 2 quality-gate tree based on `1cc7f10` was verified locally on
-2026-10-22. This section records the headline quality-gate evidence; the detailed
-tables below are updated for the current tree where the command was re-run, while
-the historical 0.3.0 release notes remain in place.
+2026-10-22. This section records the historical 0.3.0 headline quality-gate
+evidence; the detailed tables below retain the 0.3.0 measurements and release
+facts.
 
 | Command | Result |
 | --- | --- |
@@ -366,7 +410,7 @@ npm dispatch.
 
 ## Release assessment
 
-Local verification for the current quality-gate tree is complete: 313 tests,
+Local verification for the historical 0.3.0 quality-gate tree is complete: 313 tests,
 99.08% line / 96.93% branch / 98.68% function coverage, build, six examples, both
 benchmarks, a 168-file package inspection, the built-package export verifier, the
 zero-Node portability scan, zero runtime dependencies, and 38 Markdown files with

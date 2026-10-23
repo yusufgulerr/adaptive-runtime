@@ -58,6 +58,15 @@ function requireNonEmpty(value: unknown, label: string): string {
   return value;
 }
 
+function requireEvaluationInterval(value: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    throw new ConfigurationError(
+      "evaluationIntervalMs must be a finite number greater than or equal to 0.",
+    );
+  }
+  return value;
+}
+
 function validateDescriptor(
   descriptor: SignalDescriptor,
   providerId: string,
@@ -142,14 +151,22 @@ export class SignalCollector {
     return this.#closed;
   }
 
-  async collect(now: number, signal: AbortSignal): Promise<SignalSnapshot> {
+  async collect(
+    now: number,
+    signal: AbortSignal,
+    evaluationIntervalMs?: number,
+  ): Promise<SignalSnapshot> {
+    const effectiveIntervalMs =
+      evaluationIntervalMs === undefined
+        ? this.#evaluationIntervalMs
+        : requireEvaluationInterval(evaluationIntervalMs);
     if (this.#closed) {
       throw new RuntimeClosedError();
     }
     const cached = this.#snapshot;
     if (cached !== null) {
       const age = now - cached.collectedAt;
-      if (age >= 0 && age < this.#evaluationIntervalMs) {
+      if (age >= 0 && age < effectiveIntervalMs) {
         return { ...cached, cached: true };
       }
     }
@@ -320,10 +337,15 @@ export class SignalCollector {
     const result = await this.#waitForProvider(entry, signal, (providerSignal) =>
       entry.provider.read({ now, signal: providerSignal }),
     );
+    let reportedReadError: Error | null = null;
+    if (!result.ok && !result.aborted) {
+      reportedReadError = result.error;
+      this.#onProviderError(entry.provider.id, result.error);
+    }
+    if (!signal.aborted) {
+      this.#drainProviderErrors(entry, reportedReadError);
+    }
     if (!result.ok) {
-      if (!result.aborted) {
-        this.#onProviderError(entry.provider.id, result.error);
-      }
       return this.#errorReadings(entry, now, result.error.message);
     }
 
@@ -335,6 +357,41 @@ export class SignalCollector {
         this.#onProviderError(entry.provider.id, failure);
       }
       return this.#errorReadings(entry, now, failure.message);
+    }
+  }
+
+  /**
+   * Drains failures a provider isolated internally. Draining never rejects the
+   * collection: a broken drain function or return value is reported instead.
+   * The error already reported for this read's own failure is not repeated.
+   */
+  #drainProviderErrors(entry: ProviderEntry, alreadyReported: Error | null): void {
+    const provider = entry.provider;
+    let drained: unknown;
+    try {
+      const drain = provider.drainProviderErrors;
+      if (typeof drain !== "function") {
+        return;
+      }
+      drained = drain.call(provider);
+    } catch (error) {
+      this.#onProviderError(provider.id, toError(error));
+      return;
+    }
+
+    if (!Array.isArray(drained)) {
+      this.#onProviderError(
+        provider.id,
+        new TypeError(`Provider "${provider.id}" drainProviderErrors() must return an array.`),
+      );
+      return;
+    }
+
+    for (const value of drained as readonly unknown[]) {
+      const error = toError(value);
+      if (error !== alreadyReported) {
+        this.#onProviderError(provider.id, error);
+      }
     }
   }
 

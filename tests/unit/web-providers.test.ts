@@ -2,6 +2,13 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { ConfigurationError } from "../../src/errors/index.js";
 import {
+  ComputePressureProvider,
+  type ComputePressureProviderOptions,
+  type ComputePressureRecordLike,
+  type ComputePressureState,
+  WEB_COMPUTE_PRESSURE,
+} from "../../src/providers/web/compute-pressure.js";
+import {
   DeviceMemoryProvider,
   type MemoryInfoLike,
   WEB_DEVICE_MEMORY_GIB,
@@ -849,5 +856,167 @@ describe("FrameTimingProvider", () => {
 
     // Record after close throws ConfigurationError
     assert.throws(() => provider.recordFrameDuration(16), ConfigurationError);
+  });
+});
+
+describe("ComputePressureProvider", () => {
+  class FakePressureObserver {
+    static readonly instances: FakePressureObserver[] = [];
+    readonly callback: (records: readonly ComputePressureRecordLike[]) => void;
+    readonly observed: Array<{ source: string; options?: { sampleInterval?: number } }> = [];
+    disconnected = false;
+
+    constructor(callback: (records: readonly ComputePressureRecordLike[]) => void) {
+      this.callback = callback;
+      FakePressureObserver.instances.push(this);
+    }
+
+    observe(source: string, options?: { sampleInterval?: number }): void {
+      this.observed.push({
+        source,
+        ...(options === undefined ? {} : { options }),
+      });
+    }
+
+    unobserve(): void {}
+
+    disconnect(): void {
+      this.disconnected = true;
+    }
+
+    emit(records: readonly ComputePressureRecordLike[]): void {
+      this.callback(records);
+    }
+  }
+
+  function record(state: ComputePressureState): ComputePressureRecordLike {
+    return { source: "cpu", state, time: NOW };
+  }
+
+  it("reports unknown until a valid pressure state is observed", async () => {
+    FakePressureObserver.instances.length = 0;
+    const provider = new ComputePressureProvider({
+      pressureObserverFactory: FakePressureObserver,
+      sampleIntervalMs: 500,
+      source: "gpu",
+    });
+    assert.equal(provider.id, "compute-pressure");
+    assert.equal(provider.signals[0]?.name, WEB_COMPUTE_PRESSURE);
+    assert.equal(provider.signals[0]?.unit, "ratio");
+
+    assert.equal(provider.read({ now: NOW, signal })[0]?.status, "unknown");
+    await provider.start();
+    await provider.start();
+    assert.equal(FakePressureObserver.instances.length, 1);
+    const observer = FakePressureObserver.instances[0];
+    assert.ok(observer);
+    assert.deepEqual(observer.observed, [{ source: "gpu", options: { sampleInterval: 500 } }]);
+
+    observer.emit([
+      record("nominal"),
+      { source: "cpu", state: "bogus" as ComputePressureState, time: NOW },
+    ]);
+    const reading = provider.read({ now: NOW + 1, signal })[0];
+    assert.equal(reading?.status, "ok");
+    if (reading?.status !== "ok") {
+      throw new Error("expected ok reading");
+    }
+    assert.equal(reading.value, 0.25);
+    assert.deepEqual(reading.details, {
+      source: "gpu",
+      state: "nominal",
+      scale: "w3c-compute-pressure",
+    });
+
+    observer.emit([record("serious")]);
+    assert.equal(provider.read({ now: NOW + 2, signal })[0]?.status, "ok");
+    provider.recordPressureState("critical");
+    const critical = provider.read({ now: NOW + 3, signal })[0];
+    assert.equal(critical?.status, "ok");
+    if (critical?.status !== "ok") {
+      throw new Error("expected ok reading");
+    }
+    assert.equal(critical.value, 1);
+
+    assert.throws(
+      () => provider.recordPressureState("bogus" as ComputePressureState),
+      ConfigurationError,
+    );
+    provider.close();
+    assert.equal(observer.disconnected, true);
+    assert.equal(provider.read({ now: NOW + 4, signal })[0]?.status, "unsupported");
+    provider.recordPressureState("nominal");
+    assert.equal(provider.read({ now: NOW + 5, signal })[0]?.status, "unsupported");
+  });
+
+  it("handles start failures, missing factories, and non-array callback records", async () => {
+    class ThrowingObserver extends FakePressureObserver {
+      override observe(): void {
+        throw new Error("observe failed");
+      }
+    }
+
+    const failing = new ComputePressureProvider({ pressureObserverFactory: ThrowingObserver });
+    await assert.rejects(() => failing.start(), /observe failed/);
+    assert.equal(ThrowingObserver.instances.at(-1)?.disconnected, true);
+    assert.equal(failing.read({ now: NOW, signal })[0]?.status, "unknown");
+
+    const noFactory = new ComputePressureProvider();
+    await noFactory.start();
+    assert.equal(noFactory.read({ now: NOW, signal })[0]?.status, "unknown");
+
+    FakePressureObserver.instances.length = 0;
+    const provider = new ComputePressureProvider({
+      pressureObserverFactory: FakePressureObserver,
+    });
+    await provider.start();
+    const observer = FakePressureObserver.instances[0];
+    assert.ok(observer);
+    observer.emit(null as unknown as readonly ComputePressureRecordLike[]);
+    assert.equal(provider.read({ now: NOW, signal })[0]?.status, "unknown");
+
+    const saved = (globalThis as { PressureObserver?: unknown }).PressureObserver;
+    try {
+      (globalThis as { PressureObserver?: unknown }).PressureObserver = FakePressureObserver;
+      const globalProvider = new ComputePressureProvider();
+      await globalProvider.start();
+      assert.equal(FakePressureObserver.instances.length, 2);
+      globalProvider.close();
+    } finally {
+      (globalThis as { PressureObserver?: unknown }).PressureObserver = saved;
+    }
+  });
+
+  it("validates constructor options and pressure states", () => {
+    const invalidIds = ["", "   ", " padded", "padded ", 123, null];
+    for (const id of invalidIds) {
+      assert.throws(
+        () => new ComputePressureProvider({ id: id as unknown as string }),
+        ConfigurationError,
+      );
+    }
+    assert.throws(
+      () => new ComputePressureProvider(null as unknown as ComputePressureProviderOptions),
+      ConfigurationError,
+    );
+    assert.throws(() => new ComputePressureProvider({ signalName: "" }), ConfigurationError);
+    assert.throws(
+      () => new ComputePressureProvider({ signalName: " padded.signal " }),
+      ConfigurationError,
+    );
+    assert.throws(() => new ComputePressureProvider({ source: "" }), ConfigurationError);
+    assert.throws(() => new ComputePressureProvider({ source: " padded " }), ConfigurationError);
+    assert.throws(() => new ComputePressureProvider({ sampleIntervalMs: 0 }), ConfigurationError);
+    assert.throws(
+      () => new ComputePressureProvider({ sampleIntervalMs: Number.NaN }),
+      ConfigurationError,
+    );
+    assert.throws(
+      () =>
+        new ComputePressureProvider({
+          pressureObserverFactory: 123 as unknown as typeof FakePressureObserver,
+        }),
+      ConfigurationError,
+    );
   });
 });

@@ -23,6 +23,7 @@ function createMockProvider(options: {
   ) => Promise<readonly ResourceSignal[]> | readonly ResourceSignal[];
   start?: (context?: unknown) => void | Promise<void>;
   close?: () => void | Promise<void>;
+  drainProviderErrors?: () => readonly Error[];
 }): SignalProvider {
   return {
     id: options.id,
@@ -30,6 +31,7 @@ function createMockProvider(options: {
     read: options.read ?? (() => []),
     start: options.start,
     close: options.close,
+    drainProviderErrors: options.drainProviderErrors,
   };
 }
 
@@ -867,6 +869,129 @@ describe("CompositeSignalProvider", () => {
       assert.equal(compReading.status, "error");
       assert.ok((compReading as { error?: string })?.error?.includes('dominant: "error"'));
       assert.equal((compReading as { value?: unknown }).value, undefined);
+    });
+
+    it("queues child failures for drainProviderErrors without changing read results", async () => {
+      const rootCause = new Error("Provider hardware probe failed");
+      const failingChild = createMockProvider({
+        id: "drain-child",
+        signals: [{ name: "sig.drain", unit: "ratio" }],
+        read: () => {
+          throw rootCause;
+        },
+      });
+      const composite = new CompositeSignalProvider({
+        providers: [failingChild],
+        rules: [
+          {
+            name: "rule.drain",
+            unit: "ratio",
+            inputs: ["sig.drain"],
+            compute: (values) => values["sig.drain"] ?? 0,
+          },
+        ],
+      });
+
+      const readings = await composite.read(mockContext);
+      assert.equal(readings.find((reading) => reading.name === "sig.drain")?.status, "error");
+
+      const drained = composite.drainProviderErrors();
+      assert.equal(drained.length, 1);
+      assert.match(drained[0]?.message ?? "", /Provider "drain-child" read failed/);
+      assert.equal((drained[0] as { cause?: unknown }).cause, rootCause);
+      assert.deepEqual(composite.drainProviderErrors(), []);
+    });
+
+    it("turns broken child drains into queued failures and bubbles nested composite errors", async () => {
+      const throwingDrainChild = createMockProvider({
+        id: "throw-drain",
+        signals: [{ name: "sig.throw-drain", unit: "count" }],
+        drainProviderErrors: () => {
+          throw new Error("drain exploded");
+        },
+      });
+      const throwingComposite = new CompositeSignalProvider({
+        providers: [throwingDrainChild],
+        rules: [
+          {
+            name: "rule.throw-drain",
+            unit: "count",
+            inputs: ["sig.throw-drain"],
+            compute: (values) => values["sig.throw-drain"] ?? 0,
+          },
+        ],
+      });
+      await throwingComposite.read(mockContext);
+      const throwingErrors = throwingComposite.drainProviderErrors();
+      assert.equal(throwingErrors.length, 1);
+      assert.match(throwingErrors[0]?.message ?? "", /drainProviderErrors failed/);
+      assert.equal((throwingErrors[0] as { cause?: unknown }).cause instanceof Error, true);
+
+      const nonArrayDrainChild = createMockProvider({
+        id: "non-array-drain",
+        signals: [{ name: "sig.non-array-drain", unit: "count" }],
+        drainProviderErrors: () => "not-an-array" as unknown as readonly Error[],
+      });
+      const nonArrayComposite = new CompositeSignalProvider({
+        providers: [nonArrayDrainChild],
+        rules: [
+          {
+            name: "rule.non-array-drain",
+            unit: "count",
+            inputs: ["sig.non-array-drain"],
+            compute: (values) => values["sig.non-array-drain"] ?? 0,
+          },
+        ],
+      });
+      await nonArrayComposite.read(mockContext);
+      const nonArrayErrors = nonArrayComposite.drainProviderErrors();
+      assert.equal(nonArrayErrors.length, 1);
+      assert.equal(nonArrayErrors[0] instanceof TypeError, true);
+
+      const rootCause = new Error("deep sensor failure");
+      const grandchild = createMockProvider({
+        id: "grandchild",
+        signals: [{ name: "sig.deep", unit: "ratio" }],
+        read: () => {
+          throw rootCause;
+        },
+      });
+      const inner = new CompositeSignalProvider({
+        providers: [grandchild],
+        rules: [
+          {
+            name: "inner.rule",
+            unit: "ratio",
+            inputs: ["sig.deep"],
+            compute: (values) => values["sig.deep"] ?? 0,
+          },
+        ],
+        passthroughInputs: true,
+      });
+      const outer = new CompositeSignalProvider({
+        providers: [inner],
+        rules: [
+          {
+            name: "outer.rule",
+            unit: "ratio",
+            inputs: ["inner.rule"],
+            compute: (values) => values["inner.rule"] ?? 0,
+          },
+        ],
+        passthroughInputs: true,
+      });
+
+      const nestedReadings = await outer.read(mockContext);
+      assert.equal(
+        nestedReadings.find((reading) => reading.name === "outer.rule")?.status,
+        "error",
+      );
+      const nestedErrors = outer.drainProviderErrors();
+      assert.equal(nestedErrors.length, 1);
+      assert.match(nestedErrors[0]?.message ?? "", /Provider "grandchild" read failed/);
+      assert.equal((nestedErrors[0] as { cause?: unknown }).cause, rootCause);
+      assert.deepEqual(inner.drainProviderErrors(), []);
+      assert.deepEqual(outer.drainProviderErrors(), []);
     });
 
     it("synthesizes error readings when child provider returns a non-array", async () => {

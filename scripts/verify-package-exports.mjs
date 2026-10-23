@@ -7,10 +7,25 @@ import { fileURLToPath } from "node:url";
 const root = fileURLToPath(new URL("..", import.meta.url));
 
 const EXPECTED_EXPORTS = {
-  ".": ["createAdaptiveRuntime", "CompositeSignalProvider", "ProcessMemoryProvider"],
+  ".": [
+    "createAdaptiveRuntime",
+    "CompositeSignalProvider",
+    "ProcessMemoryProvider",
+    "EventLoopUtilizationProvider",
+  ],
   "./core": ["createAdaptiveRuntime", "CompositeSignalProvider", "NetworkLatencyProvider"],
-  "./node": ["createAdaptiveRuntime", "ProcessMemoryProvider", "EventLoopDelayProvider"],
-  "./web": ["DeviceMemoryProvider", "NetworkInformationProvider", "FrameTimingProvider"],
+  "./node": [
+    "createAdaptiveRuntime",
+    "ProcessMemoryProvider",
+    "EventLoopDelayProvider",
+    "EventLoopUtilizationProvider",
+  ],
+  "./web": [
+    "DeviceMemoryProvider",
+    "NetworkInformationProvider",
+    "FrameTimingProvider",
+    "ComputePressureProvider",
+  ],
   "./edge": ["ExecutionBudgetProvider", "EDGE_EXECUTION_REMAINING_MS"],
   "./policy": ["definePolicy", "resolvePolicy", "evaluatePolicy"],
   "./providers": [
@@ -18,9 +33,16 @@ const EXPECTED_EXPORTS = {
     "ExecutionBudgetProvider",
     "DeviceMemoryProvider",
     "ProcessMemoryProvider",
+    "EventLoopUtilizationProvider",
+    "ComputePressureProvider",
   ],
   "./observability": ["MetricsCollector", "createMetricsCollector", "attachOpenTelemetryMeter"],
-  "./testing": ["createFakeClock", "ScriptedSignalProvider", "runProviderConformanceCheck"],
+  "./testing": [
+    "createFakeClock",
+    "ScriptedSignalProvider",
+    "runProviderConformanceCheck",
+    "simulatePolicyTimeline",
+  ],
 };
 
 async function assertFile(relativePath, label) {

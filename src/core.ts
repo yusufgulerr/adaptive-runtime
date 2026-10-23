@@ -65,8 +65,9 @@ export type {
   RunMetadata,
   RunResult,
   RuntimeStats,
+  StrategyStats,
 } from "./types/run.js";
-export type { AdaptiveRuntime, CreateRuntimeOptions } from "./types/runtime.js";
+export type { AdaptiveRuntime, CreateRuntimeOptions, EvaluateOptions } from "./types/runtime.js";
 export type {
   AvailableSignalReading,
   ResourceSignal,
@@ -78,6 +79,11 @@ export type {
   SignalUnit,
   UnavailableSignalReading,
 } from "./types/signals.js";
+export type {
+  OperationRuntimeState,
+  OperationStateSnapshot,
+  RuntimeStateSnapshot,
+} from "./types/state.js";
 export type {
   QualityCheckResult,
   Strategy,

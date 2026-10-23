@@ -1,5 +1,14 @@
 import { ConfigurationError } from "../errors/index.js";
+import {
+  createInitialPolicyState,
+  evaluatePolicy,
+  type PolicyState,
+  type StrategyCandidate,
+} from "../policy/engine.js";
+import { resolvePolicy } from "../policy/resolve.js";
 import type { Clock, ClockTimer } from "../types/clock.js";
+import type { StrategyDecision } from "../types/decision.js";
+import type { Policy } from "../types/policy.js";
 import type {
   ResourceSignal,
   SignalDescriptor,
@@ -614,5 +623,312 @@ export async function runProviderConformanceCheck(
     providerId,
     checksPassed: recorder.checksPassed,
     failures: Object.freeze([...recorder.failures]),
+  };
+}
+
+/** A declared strategy for a simulated policy timeline. */
+export interface SimulatedStrategy {
+  readonly id: string;
+  readonly qualityTier: number;
+  readonly costTier?: number;
+  /** Defaults to true. */
+  readonly applicable?: boolean;
+}
+
+/** One clock-and-signal snapshot supplied to the simulator. */
+export interface PolicyTimelineStep {
+  /** Clock value for this step. Defaults to index * 1000. */
+  readonly now?: number;
+  readonly signals: readonly ResourceSignal[];
+  /** Optional per-step strategy pool override. */
+  readonly strategies?: readonly SimulatedStrategy[];
+  readonly pinnedStrategyId?: string | null;
+  readonly adaptationEnabled?: boolean;
+  /** Defaults to null (every step is treated as a fresh sample). */
+  readonly sampleSequence?: number | null;
+  /** Defaults to false. */
+  readonly signalsCached?: boolean;
+}
+
+export interface SimulatePolicyTimelineOptions {
+  readonly operationId?: string;
+  readonly policy?: Policy;
+  readonly strategies: readonly SimulatedStrategy[];
+  readonly initialState?: PolicyState;
+  readonly steps: readonly PolicyTimelineStep[];
+}
+
+export interface PolicyTimelineStepResult {
+  readonly index: number;
+  readonly now: number;
+  readonly decision: StrategyDecision;
+  readonly state: PolicyState;
+  readonly engagedBudgetIds: readonly string[];
+  readonly recoveredBudgetIds: readonly string[];
+}
+
+export interface PolicyTimelineResult {
+  readonly steps: readonly PolicyTimelineStepResult[];
+  readonly decisions: readonly StrategyDecision[];
+  readonly finalState: PolicyState;
+  readonly strategySwitches: number;
+  readonly strategyReversals: number;
+  readonly engagedBudgetIds: readonly string[];
+  readonly recoveredBudgetIds: readonly string[];
+}
+
+interface NormalizedPolicyTimelineStep {
+  readonly now: number;
+  readonly signals: readonly ResourceSignal[];
+  readonly strategies: readonly StrategyCandidate[];
+  readonly pinnedStrategyId: string | null;
+  readonly adaptationEnabled: boolean;
+  readonly sampleSequence: number | null;
+  readonly signalsCached: boolean;
+}
+
+function isCanonicalIdentifier(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0 && value === value.trim();
+}
+
+function normalizeSimulatedStrategies(
+  strategies: unknown,
+  label: string,
+): readonly StrategyCandidate[] {
+  if (!Array.isArray(strategies) || strategies.length === 0) {
+    throw new ConfigurationError(`${label} must be a non-empty array.`);
+  }
+  const seenIds = new Set<string>();
+  return strategies.map((strategy, index) => {
+    if (!isRecord(strategy)) {
+      throw new ConfigurationError(`${label}[${index}] must be an object.`);
+    }
+    const id = strategy.id;
+    const qualityTier = strategy.qualityTier;
+    const costTier = strategy.costTier;
+    const applicable = strategy.applicable;
+    if (!isCanonicalIdentifier(id)) {
+      throw new ConfigurationError(`${label}[${index}].id must be a non-empty trimmed string.`);
+    }
+    if (seenIds.has(id)) {
+      throw new ConfigurationError(`${label} contains duplicate strategy id "${id}".`);
+    }
+    seenIds.add(id);
+    if (typeof qualityTier !== "number" || !Number.isFinite(qualityTier)) {
+      throw new ConfigurationError(`${label}[${index}].qualityTier must be a finite number.`);
+    }
+    if (costTier !== undefined && (typeof costTier !== "number" || !Number.isFinite(costTier))) {
+      throw new ConfigurationError(
+        `${label}[${index}].costTier must be a finite number when present.`,
+      );
+    }
+    if (applicable !== undefined && typeof applicable !== "boolean") {
+      throw new ConfigurationError(`${label}[${index}].applicable must be a boolean when present.`);
+    }
+    return {
+      id,
+      qualityTier,
+      ...(costTier === undefined ? {} : { costTier }),
+      applicable: applicable ?? true,
+    };
+  });
+}
+
+function normalizePolicyTimelineStep(
+  step: unknown,
+  index: number,
+  fallbackStrategies: readonly StrategyCandidate[],
+  defaultAdaptationEnabled: boolean,
+): NormalizedPolicyTimelineStep {
+  if (!isRecord(step)) {
+    throw new ConfigurationError(`steps[${index}] must be an object.`);
+  }
+  if (!Array.isArray(step.signals)) {
+    throw new ConfigurationError(`steps[${index}].signals must be an array.`);
+  }
+
+  let now = index * 1000;
+  if (step.now !== undefined) {
+    if (typeof step.now !== "number" || !Number.isFinite(step.now) || step.now < 0) {
+      throw new ConfigurationError(
+        `steps[${index}].now must be a finite number greater than or equal to 0.`,
+      );
+    }
+    now = step.now;
+  }
+
+  let pinnedStrategyId: string | null = null;
+  if (step.pinnedStrategyId !== undefined && step.pinnedStrategyId !== null) {
+    if (!isCanonicalIdentifier(step.pinnedStrategyId)) {
+      throw new ConfigurationError(
+        `steps[${index}].pinnedStrategyId must be a non-empty trimmed string or null.`,
+      );
+    }
+    pinnedStrategyId = step.pinnedStrategyId;
+  }
+
+  let adaptationEnabled = defaultAdaptationEnabled;
+  if (step.adaptationEnabled !== undefined) {
+    if (typeof step.adaptationEnabled !== "boolean") {
+      throw new ConfigurationError(`steps[${index}].adaptationEnabled must be a boolean.`);
+    }
+    adaptationEnabled = step.adaptationEnabled;
+  }
+
+  let sampleSequence: number | null = null;
+  if (step.sampleSequence !== undefined && step.sampleSequence !== null) {
+    if (
+      typeof step.sampleSequence !== "number" ||
+      !Number.isInteger(step.sampleSequence) ||
+      step.sampleSequence < 0
+    ) {
+      throw new ConfigurationError(
+        `steps[${index}].sampleSequence must be a non-negative integer or null.`,
+      );
+    }
+    sampleSequence = step.sampleSequence;
+  }
+
+  let signalsCached = false;
+  if (step.signalsCached !== undefined) {
+    if (typeof step.signalsCached !== "boolean") {
+      throw new ConfigurationError(`steps[${index}].signalsCached must be a boolean.`);
+    }
+    signalsCached = step.signalsCached;
+  }
+
+  return {
+    now,
+    signals: step.signals as readonly ResourceSignal[],
+    strategies:
+      step.strategies === undefined
+        ? fallbackStrategies
+        : normalizeSimulatedStrategies(step.strategies, `steps[${index}].strategies`),
+    pinnedStrategyId,
+    adaptationEnabled,
+    sampleSequence,
+    signalsCached,
+  };
+}
+
+/**
+ * Replays policy decisions over a fixed timeline without providers, strategy
+ * execution, or timers. The result is a pure simulation: each step advances the
+ * policy state exactly once, budget transitions are derived from consecutive
+ * state snapshots, and the same options always produce the same decisions.
+ */
+export function simulatePolicyTimeline(
+  options: SimulatePolicyTimelineOptions,
+): PolicyTimelineResult {
+  if (options === null || typeof options !== "object") {
+    throw new ConfigurationError("simulatePolicyTimeline requires an options object.");
+  }
+
+  const operationId = options.operationId ?? "simulated-operation";
+  if (!isCanonicalIdentifier(operationId)) {
+    throw new ConfigurationError("operationId must be a non-empty trimmed string.");
+  }
+
+  const defaultStrategies = normalizeSimulatedStrategies(options.strategies, "strategies");
+
+  if (!Array.isArray(options.steps) || options.steps.length === 0) {
+    throw new ConfigurationError("steps must be a non-empty array.");
+  }
+
+  const resolvedPolicy = resolvePolicy(options.policy);
+
+  const steps = options.steps.map((step, index) =>
+    normalizePolicyTimelineStep(step, index, defaultStrategies, resolvedPolicy.adaptationEnabled),
+  );
+
+  let state = options.initialState ?? createInitialPolicyState();
+  let previousBudgets: PolicyState["budgets"] = state.budgets;
+
+  const stepResults: PolicyTimelineStepResult[] = [];
+  const decisions: StrategyDecision[] = [];
+  const engagedBudgetIds: string[] = [];
+  const recoveredBudgetIds: string[] = [];
+  const engagedSeen = new Set<string>();
+  const recoveredSeen = new Set<string>();
+
+  let strategySwitches = 0;
+  let strategyReversals = 0;
+  let lastSwitchFrom: string | null = null;
+  let lastSwitchTo: string | null = null;
+
+  for (const [index, step] of steps.entries()) {
+    const evaluation = evaluatePolicy(
+      state,
+      {
+        operationId,
+        now: step.now,
+        signals: step.signals,
+        strategies: step.strategies,
+        pinnedStrategyId: step.pinnedStrategyId,
+        adaptationEnabled: step.adaptationEnabled,
+        sampleSequence: step.sampleSequence,
+        signalsCached: step.signalsCached,
+      },
+      resolvedPolicy,
+    );
+
+    const decision = evaluation.decision;
+    state = evaluation.state;
+
+    const stepEngaged: string[] = [];
+    const stepRecovered: string[] = [];
+    for (const budgetId of new Set([
+      ...Object.keys(previousBudgets),
+      ...Object.keys(state.budgets),
+    ])) {
+      const wasEngaged = previousBudgets[budgetId]?.engaged === true;
+      const isEngaged = state.budgets[budgetId]?.engaged === true;
+      if (!wasEngaged && isEngaged) {
+        stepEngaged.push(budgetId);
+        if (!engagedSeen.has(budgetId)) {
+          engagedSeen.add(budgetId);
+          engagedBudgetIds.push(budgetId);
+        }
+      } else if (wasEngaged && !isEngaged) {
+        stepRecovered.push(budgetId);
+        if (!recoveredSeen.has(budgetId)) {
+          recoveredSeen.add(budgetId);
+          recoveredBudgetIds.push(budgetId);
+        }
+      }
+    }
+
+    stepResults.push({
+      index,
+      now: step.now,
+      decision,
+      state,
+      engagedBudgetIds: stepEngaged,
+      recoveredBudgetIds: stepRecovered,
+    });
+    decisions.push(decision);
+
+    if (decision.changed) {
+      strategySwitches += 1;
+      const from = decision.previousStrategyId;
+      const to = decision.strategyId;
+      if (lastSwitchFrom !== null && from === lastSwitchTo && to === lastSwitchFrom) {
+        strategyReversals += 1;
+      }
+      lastSwitchFrom = from;
+      lastSwitchTo = to;
+    }
+
+    previousBudgets = state.budgets;
+  }
+
+  return {
+    steps: stepResults,
+    decisions,
+    finalState: state,
+    strategySwitches,
+    strategyReversals,
+    engagedBudgetIds,
+    recoveredBudgetIds,
   };
 }

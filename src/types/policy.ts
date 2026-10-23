@@ -12,7 +12,15 @@ export interface PolicyCandidate {
 export interface CustomSelectorCandidate {
   readonly candidate: PolicyCandidate;
   readonly estimatedCost: number | null;
+  /**
+   * Recent latency estimate. When execution history exists this is the
+   * exponentially weighted moving average; otherwise it is null.
+   */
   readonly estimatedLatencyMs: number | null;
+  /** Configurable recent latency estimate, or null when no samples exist. */
+  readonly ewmaLatencyMs?: number | null;
+  /** Observed failure ratio in the range 0..1; 0 when no runs exist. */
+  readonly errorRate?: number | null;
 }
 
 export interface CustomPolicySelectorContext {

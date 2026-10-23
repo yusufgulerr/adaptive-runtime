@@ -421,14 +421,18 @@ describe("Observability Bridge Unit Tests", () => {
       assert.equal(signalReadingUpDown?.adds.length, 1);
       assert.deepEqual(signalReadingUpDown?.adds[0], {
         value: 0.8,
-        attributes: { signal: "cpu.utilization", unit: "ratio" },
+        attributes: {
+          operation_id: "op-signals",
+          signal: "cpu.utilization",
+          status: "ok",
+        },
       });
 
       const budgetEngagedUpDown = mockMeter.upDownCounters.get("adaptive_runtime_budget_engaged");
       assert.equal(budgetEngagedUpDown?.adds.length, 1);
       assert.deepEqual(budgetEngagedUpDown?.adds[0], {
         value: 0,
-        attributes: { budget: "b-ok" },
+        attributes: { budget_id: "b-ok", operation_id: "op-signals" },
       });
     });
 
@@ -601,11 +605,21 @@ describe("Observability Bridge Unit Tests", () => {
       assert.equal(signalUpDown.adds.length, 2);
       assert.deepEqual(signalUpDown.adds[0], {
         value: 1024,
-        attributes: { env: "prod", signal: "mem.used", unit: "bytes" },
+        attributes: {
+          env: "prod",
+          operation_id: "op-updown",
+          signal: "mem.used",
+          status: "ok",
+        },
       });
       assert.deepEqual(signalUpDown.adds[1], {
         value: 0.75,
-        attributes: { env: "prod", signal: "cpu.load", unit: "ratio" },
+        attributes: {
+          env: "prod",
+          operation_id: "op-updown",
+          signal: "cpu.load",
+          status: "ok",
+        },
       });
 
       const budgetUpDown = mockMeter.upDownCounters.get("adaptive_runtime_budget_engaged");
@@ -614,14 +628,22 @@ describe("Observability Bridge Unit Tests", () => {
       assert.equal(budgetUpDown.adds.length, 2);
       assert.deepEqual(budgetUpDown.adds[0], {
         value: 1,
-        attributes: { env: "prod", budget: "b-engaged" },
+        attributes: {
+          env: "prod",
+          budget_id: "b-engaged",
+          operation_id: "op-updown",
+        },
       });
       assert.deepEqual(budgetUpDown.adds[1], {
         value: 0,
-        attributes: { env: "prod", budget: "b-healthy" },
+        attributes: {
+          env: "prod",
+          budget_id: "b-healthy",
+          operation_id: "op-updown",
+        },
       });
 
-      // Verify custom name on budget object if present
+      // Budget labels use the canonical budget id, not an arbitrary name field.
       mockRuntime.emit("decision", {
         decision: makeDecision({
           budgets: [
@@ -641,8 +663,163 @@ describe("Observability Bridge Unit Tests", () => {
       assert.equal(budgetUpDown.adds.length, 3);
       assert.deepEqual(budgetUpDown.adds[2], {
         value: 1,
-        attributes: { env: "prod", budget: "custom-budget-name" },
+        attributes: {
+          env: "prod",
+          budget_id: "b-id",
+          operation_id: "op-test",
+        },
       });
+    });
+
+    it("applies UpDownCounter deltas per series instead of accumulating readings", () => {
+      const mockRuntime = new MockEmitterRuntime();
+      const mockMeter = new MockOpenTelemetryMeter();
+
+      attachOpenTelemetryMeter(mockRuntime as unknown as AdaptiveRuntime, mockMeter);
+
+      const emitReading = (value: number, engaged: boolean): void => {
+        mockRuntime.emit("decision", {
+          decision: makeDecision({
+            operationId: "op-delta",
+            signals: [{ name: "queue.depth", status: "ok", value, unit: "count" }],
+            budgets: [
+              {
+                id: "queue-depth",
+                signal: "queue.depth",
+                status: "ok",
+                engaged,
+                limit: 10,
+                recoverBelow: 5,
+                tierReduction: 1,
+              },
+            ],
+          }),
+        });
+      };
+
+      emitReading(10, false);
+      emitReading(12, true);
+      emitReading(12, true);
+
+      const signalUpDown = mockMeter.upDownCounters.get("adaptive_runtime_signal_reading");
+      assert.deepEqual(
+        signalUpDown?.adds.map((entry) => entry.value),
+        [10, 2],
+      );
+      const budgetUpDown = mockMeter.upDownCounters.get("adaptive_runtime_budget_engaged");
+      assert.deepEqual(
+        budgetUpDown?.adds.map((entry) => entry.value),
+        [0, 1],
+      );
+    });
+
+    it("prefers gauges when the meter exposes createGauge", () => {
+      const mockRuntime = new MockEmitterRuntime();
+
+      class MockGauge {
+        readonly records: RecordedObservation[] = [];
+        record(value: number, attributes?: MetricAttributesLike): void {
+          this.records.push({ value, attributes });
+        }
+      }
+
+      class GaugeMeter extends MockOpenTelemetryMeter {
+        readonly gauges = new Map<string, MockGauge>();
+
+        createGauge(name: string) {
+          const gauge = new MockGauge();
+          this.gauges.set(name, gauge);
+          return gauge;
+        }
+      }
+
+      const meter = new GaugeMeter();
+      attachOpenTelemetryMeter(mockRuntime as unknown as AdaptiveRuntime, meter);
+
+      mockRuntime.emit("decision", {
+        decision: makeDecision({
+          operationId: "op-gauge",
+          signals: [{ name: "heap.used", status: "ok", value: 100, unit: "bytes" }],
+          budgets: [
+            {
+              id: "heap-budget",
+              signal: "heap.used",
+              status: "ok",
+              engaged: true,
+              limit: 200,
+              recoverBelow: 100,
+              tierReduction: 1,
+            },
+          ],
+        }),
+      });
+      mockRuntime.emit("decision", {
+        decision: makeDecision({
+          operationId: "op-gauge",
+          signals: [{ name: "heap.used", status: "ok", value: 150, unit: "bytes" }],
+          budgets: [
+            {
+              id: "heap-budget",
+              signal: "heap.used",
+              status: "ok",
+              engaged: false,
+              limit: 200,
+              recoverBelow: 100,
+              tierReduction: 1,
+            },
+          ],
+        }),
+      });
+
+      const signalGauge = meter.gauges.get("adaptive_runtime_signal_reading");
+      assert.deepEqual(
+        signalGauge?.records.map((entry) => entry.value),
+        [100, 150],
+      );
+      assert.deepEqual(signalGauge?.records[0]?.attributes, {
+        operation_id: "op-gauge",
+        signal: "heap.used",
+        status: "ok",
+      });
+      const budgetGauge = meter.gauges.get("adaptive_runtime_budget_engaged");
+      assert.deepEqual(
+        budgetGauge?.records.map((entry) => entry.value),
+        [1, 0],
+      );
+      assert.deepEqual(budgetGauge?.records[1]?.attributes, {
+        budget_id: "heap-budget",
+        operation_id: "op-gauge",
+      });
+      // Gauges are preferred, so no UpDownCounter is created for these series.
+      assert.equal(meter.upDownCounters.has("adaptive_runtime_signal_reading"), false);
+      assert.equal(meter.upDownCounters.has("adaptive_runtime_budget_engaged"), false);
+    });
+
+    it("falls back to UpDownCounters when gauge creation throws", () => {
+      const mockRuntime = new MockEmitterRuntime();
+      const upDownCounters = new Map<string, MockUpDownCounter>();
+      const meter: OpenTelemetryMeterLike = {
+        createCounter: (name: string) => new MockCounter(name),
+        createHistogram: (name: string) => new MockHistogram(name),
+        createUpDownCounter: (name: string) => {
+          const counter = new MockUpDownCounter(name);
+          upDownCounters.set(name, counter);
+          return counter;
+        },
+        createGauge: () => {
+          throw new Error("gauges unavailable");
+        },
+      };
+
+      attachOpenTelemetryMeter(mockRuntime as unknown as AdaptiveRuntime, meter);
+      mockRuntime.emit("decision", {
+        decision: makeDecision({
+          operationId: "op-fallback",
+          signals: [{ name: "cpu.load", status: "ok", value: 0.5, unit: "ratio" }],
+        }),
+      });
+
+      assert.equal(upDownCounters.get("adaptive_runtime_signal_reading")?.adds.length, 1);
     });
 
     it("isolates throwing instruments so other instruments still record and listeners never throw", () => {
@@ -1550,11 +1727,13 @@ describe("Observability Bridge Unit Tests", () => {
 
       assert.throws(() => collector.removeOperation("" as string), ConfigurationError);
       assert.throws(() => collector.removeOperation("   "), ConfigurationError);
-      assert.throws(() => collector.removeOperation("  op-1"), ConfigurationError);
-      assert.throws(() => collector.removeOperation("op-1  "), ConfigurationError);
       assert.throws(() => collector.removeOperation(null as unknown as string), ConfigurationError);
       assert.throws(() => collector.removeOperation(123 as unknown as string), ConfigurationError);
       assert.throws(() => collector.removeOperation({} as unknown as string), ConfigurationError);
+
+      collector.increment("requests_total", { operation_id: "op-1" });
+      collector.removeOperation("  op-1  ");
+      assert.equal(collector.getSnapshot().counters.length, 0);
     });
 
     it("removes all counters, gauges, and histograms matching operation_id and frees LRU capacity", () => {

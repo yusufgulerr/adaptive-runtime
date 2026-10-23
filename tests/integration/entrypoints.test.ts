@@ -33,7 +33,9 @@ describe("package entry points", () => {
     expectMissing(coreApi, "ProcessMemoryProvider");
     expectMissing(coreApi, "CpuUtilizationProvider");
     expectMissing(coreApi, "EventLoopDelayProvider");
+    expectMissing(coreApi, "EventLoopUtilizationProvider");
     expectMissing(coreApi, "DeviceMemoryProvider");
+    expectMissing(coreApi, "ComputePressureProvider");
     expectMissing(coreApi, "NetworkInformationProvider");
     expectMissing(coreApi, "FrameTimingProvider");
     expectMissing(coreApi, "ExecutionBudgetProvider");
@@ -48,7 +50,10 @@ describe("package entry points", () => {
     expectExport(nodeApi, "ProcessMemoryProvider");
     expectExport(nodeApi, "CpuUtilizationProvider");
     expectExport(nodeApi, "EventLoopDelayProvider");
+    expectExport(nodeApi, "EventLoopUtilizationProvider");
+    assert.equal(nodeApi.EVENT_LOOP_UTILIZATION, "eventLoop.utilization");
     expectMissing(nodeApi, "DeviceMemoryProvider");
+    expectMissing(nodeApi, "ComputePressureProvider");
     expectMissing(nodeApi, "ExecutionBudgetProvider");
     assert.equal(nodeApi.createAdaptiveRuntime, coreApi.createAdaptiveRuntime);
   });
@@ -60,7 +65,10 @@ describe("package entry points", () => {
     expectExport(webApi, "DeviceMemoryProvider");
     expectExport(webApi, "NetworkInformationProvider");
     expectExport(webApi, "FrameTimingProvider");
+    expectExport(webApi, "ComputePressureProvider");
+    assert.equal(webApi.WEB_COMPUTE_PRESSURE, "web.computePressure");
     expectMissing(webApi, "ProcessMemoryProvider");
+    expectMissing(webApi, "EventLoopUtilizationProvider");
     expectMissing(webApi, "ExecutionBudgetProvider");
     assert.equal(webApi.createAdaptiveRuntime, coreApi.createAdaptiveRuntime);
   });
@@ -72,6 +80,7 @@ describe("package entry points", () => {
     expectExport(edgeApi, "ExecutionBudgetProvider");
     expectMissing(edgeApi, "ProcessMemoryProvider");
     expectMissing(edgeApi, "DeviceMemoryProvider");
+    expectMissing(edgeApi, "ComputePressureProvider");
     assert.equal(edgeApi.EDGE_EXECUTION_REMAINING_MS, "edge.execution.remainingMs");
     assert.equal(edgeApi.EDGE_EXECUTION_USED_RATIO, "edge.execution.usedRatio");
     assert.equal(edgeApi.EDGE_CONCURRENCY_SATURATION, "edge.concurrency.saturation");
@@ -81,7 +90,9 @@ describe("package entry points", () => {
   it("the root entry point is the Node.js entry point", () => {
     expectExport(rootApi, "createAdaptiveRuntime");
     expectExport(rootApi, "ProcessMemoryProvider");
+    expectExport(rootApi, "EventLoopUtilizationProvider");
     expectMissing(rootApi, "DeviceMemoryProvider");
+    expectMissing(rootApi, "ComputePressureProvider");
     expectMissing(rootApi, "ExecutionBudgetProvider");
     assert.equal(rootApi.createAdaptiveRuntime, nodeApi.createAdaptiveRuntime);
     assert.equal(rootApi.ProcessMemoryProvider, nodeApi.ProcessMemoryProvider);
@@ -94,6 +105,7 @@ describe("package entry points", () => {
     expectExport(testingApi, "createFakeClock");
     expectExport(testingApi, "ScriptedSignalProvider");
     expectExport(testingApi, "runProviderConformanceCheck");
+    expectExport(testingApi, "simulatePolicyTimeline");
     expectExport(policyApi, "definePolicy");
     expectExport(policyApi, "evaluatePolicy");
     expectExport(providersApi, "ProcessMemoryProvider");
@@ -101,6 +113,8 @@ describe("package entry points", () => {
     expectExport(providersApi, "NetworkInformationProvider");
     expectExport(providersApi, "FrameTimingProvider");
     expectExport(providersApi, "ExecutionBudgetProvider");
+    expectExport(providersApi, "EventLoopUtilizationProvider");
+    expectExport(providersApi, "ComputePressureProvider");
     expectExport(providersApi, "CompositeSignalProvider");
   });
 
@@ -111,7 +125,7 @@ describe("package entry points", () => {
       version?: string;
       exports?: Record<string, unknown>;
     };
-    assert.equal(packageJson.version, "0.4.0");
+    assert.equal(packageJson.version, "0.5.0");
     const exports = packageJson.exports ?? {};
     const required = [
       ".",

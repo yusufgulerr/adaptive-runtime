@@ -1,9 +1,10 @@
 # Roadmap
 
 This roadmap describes intent, not commitments or dates. Priorities may change
-with feedback and evidence. The 0.3.0 line is implemented and verified locally and
-on remote CI/CodeQL. The GitHub release is tag-driven; npm publication is a
-separate owner-approved workflow dispatch and remains pending.
+with feedback and evidence. The 0.5.0 source line is implemented and verified
+locally. The latest GitHub release is v0.3.0; the 0.4.0 and 0.5.0 trees have not
+been tagged, remotely verified, or published. GitHub releases are tag-driven; npm
+publication is a separate owner-approved workflow dispatch and remains pending.
 
 ## 0.1.0 — Foundation (delivered)
 
@@ -74,7 +75,7 @@ Exit criteria:
 These are known, non-blocking issues. None changes the documented 0.x
 semantics, and the existing tests cover the current behavior.
 
-Resolved through 0.3.0:
+Resolved through 0.5.0:
 
 1. **Per-operation state growth.** `Policy.maxTrackedOperations` now bounds all
    operation-keyed maps with LRU eviction, and `removeOperation(operationId)`
@@ -83,8 +84,8 @@ Resolved through 0.3.0:
 2. **Monolithic policy engine.** `src/policy/engine.ts` now coordinates
    `budgets.ts`, `candidates.ts`, and `stability.ts` while preserving the
    `evaluatePolicy` contract.
-3. **Per-file coverage.** Every `src/**` file is above 80% branch coverage; the
-   lowest is 83.33% (`providers/cpu-utilization.ts`).
+3. **Per-file coverage.** Every `src/**` file remains above 80% branch coverage;
+   the lowest is `providers/event-loop-utilization.ts` at 81.48%.
 4. **Inconsistent identifier validation.** `operationId` is trimmed; strategy,
    provider, signal, budget, and fallback identifiers reject surrounding
    whitespace. The rule is documented in [API.md](API.md).
@@ -98,14 +99,9 @@ Open:
 
 6. **No benchmark regression tracking (low).** Benchmarks are intentionally not a
    CI gate because they are noisy on shared runners. Record a trend over time
-   before considering a loose, non-blocking threshold.
-7. **Provider start failure is permanent (low).** `SignalCollector` records a
-   failed `start()` and emits error readings without retrying. Keep this behavior
-   or add an explicit retry/backoff policy; either way, document it for provider
-   authors.
-8. **Queued abort latency is documented but real (low).** A run waiting behind
-   another selection for the same operation id is not observed until the lock is
-   released. Consider an abort-aware queue if this becomes a production issue.
+   before considering a loose, non-blocking threshold. Provider start recovery
+   (0.4.0) and the abort-aware selection queue (0.4.0, ADR 0012) closed the earlier
+   lifecycle and queued-abort items.
 
 ## 0.3.0 — Extensibility without losing determinism (delivered locally)
 
@@ -144,23 +140,75 @@ Not yet delivered:
   and the two owner attestations are pending.
 - Post-0.3.0 work below remains candidate work, contingent on user demand.
 
-Candidate work after 0.3.0:
+Candidate work after 0.3.0 (0.4.0 and 0.5.0 have since delivered part of this
+list):
 
 - **Coverage-guided fuzzing.** The deterministic property-based campaign is
   delivered; a coverage-guided integration remains candidate work.
 - **Async applicability.** Only if a clear need appears; it complicates selection
   latency and determinism.
-- **Per-operation policy overrides.** Useful for multi-tenant services, but needs
-  a careful precedence model against pins and global policy.
-- **Latency-aware selection.** Requires an evidence-based design; simple averages
-  are noisy and can cause oscillation.
 
-Not planned for 0.3.0:
+Not planned for the current line:
 
 - Mid-run strategy switching.
 - Speculative or hedged execution.
 - Distributed state or coordination.
 - An OS-level resource limiter.
+
+## 0.4.0 — Operational control and strategy-level evidence (delivered locally)
+
+Delivered:
+
+- **Abort-aware selection queue.** Queued operations reject immediately when their
+  caller aborts instead of waiting for the in-flight selection, without listener
+  leaks.
+- **Strategy-level statistics.** `RuntimeStats.strategies` exposes per-strategy
+  runs, successes, failures, and durations; custom selectors receive a historical
+  latency estimate.
+- **Per-operation policy overrides.** `setOperationPolicy()` follows a documented
+  precedence order (`pinStrategy`, adaptation override, operation policy, global
+  policy) under `maxTrackedOperations`.
+- **Provider lifecycle context and recovery.** `SignalProvider.start()` receives a
+  context, transient start failures recover after the evaluation interval, and
+  composite providers forward the context.
+- **Observability and resilience.** OpenTelemetry UpDownCounter support, bounded
+  metric series with `maxSeries`, and FIFO cleanup through
+  `MetricsCollector.removeOperation()`.
+- **Opaque-box E2E coverage.** Public multi-entrypoint lifecycle, concurrency and
+  abort storms, dual telemetry export, multi-runtime simulation, and adversarial
+  soak scenarios. ADRs 0012-0015 record the contracts.
+
+Not yet delivered:
+
+- Tagging, remote verification, GitHub release, and npm publication for 0.4.0.
+
+## 0.5.0 — Shadow evaluation and state hydration (delivered locally)
+
+Delivered:
+
+- **Shadow evaluation.** `runtime.evaluate()` computes one policy decision without
+  executing a strategy; `dryRun` avoids persistence and events.
+- **Versioned state hydration.** `exportState()` and `importState()` move policy
+  state, decisions, pins, adaptation overrides, and statistics through validated,
+  deeply frozen, JSON-only snapshots.
+- **Recent-latency and failure statistics.** EWMA latency, duration samples, and
+  error rates are available to stats consumers and custom selectors.
+- **Provider expansion.** Event-loop utilization and browser compute-pressure
+  providers; retained event-loop delay readings are bounded and marked with lower
+  confidence.
+- **Correctness fixes.** Per-operation signal-cache intervals, exact
+  OpenTelemetry gauge/delta/label semantics, trim-aware metric removal, composite
+  child-error draining, and stats hydration consistency.
+- **Policy timeline simulator.** `simulatePolicyTimeline()` reports per-step
+  decisions and state, budget engagement/recovery, switches, and immediate
+  reversals under `adaptive-runtime/testing`.
+- **Release discipline.** ADR 0016 and automated version synchronization across
+  `package.json`, `package-lock.json`, and the changelog in `npm run check`.
+
+Not yet delivered:
+
+- A 0.5.0 tag, GitHub release, remote CI/CodeQL verification, or npm publication.
+  Each requires explicit owner approval.
 
 ## 1.0.0 — Stability
 
@@ -188,7 +236,8 @@ remain application responsibilities.
 
 `engines.node` is `>=22.0.0`. The package uses only stable Node APIs:
 `process.memoryUsage`, `process.cpuUsage`, `perf_hooks.monitorEventLoopDelay`,
-`AbortSignal`, and standard timers. Portable entry points use only
+`perf_hooks.performance.eventLoopUtilization`, `AbortSignal`, and standard
+timers. Portable entry points use only
 `AbortController`, `Promise`, standard timers, and structural globals; they do
 not depend on a specific browser, worker, or edge vendor version. Verify
 `AbortSignal` and ESM support in your target runtime before adopting the edge or

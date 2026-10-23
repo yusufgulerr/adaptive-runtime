@@ -4,6 +4,7 @@ import type { RuntimeEventListener, RuntimeEventName } from "./events.js";
 import type { Policy } from "./policy.js";
 import type { Operation, RunResult, RuntimeStats } from "./run.js";
 import type { SignalProvider } from "./signals.js";
+import type { RuntimeStateSnapshot } from "./state.js";
 
 export interface CreateRuntimeOptions {
   /** Defaults documented in Policy; every field has a safe default. */
@@ -19,12 +20,42 @@ export interface CreateRuntimeOptions {
   readonly providerTimeoutMs?: number;
 }
 
+export interface EvaluateOptions {
+  /**
+   * When true, computes and returns a decision without persisting policy state
+   * or stats, storing the decision, or emitting a `decision` event. Defaults to
+   * false. Evaluation never executes a strategy in either mode.
+   */
+  readonly dryRun?: boolean;
+}
+
 export interface AdaptiveRuntime {
   /**
    * Selects a strategy, executes it exactly once, and returns the value with
    * decision metadata. Rejected strategies are never retried automatically.
    */
   run<TInput, TOutput>(operation: Operation<TInput, TOutput>): Promise<RunResult<TOutput>>;
+  /**
+   * Computes one policy decision without executing a strategy. A non-dry-run
+   * evaluation persists the decision and policy state and emits `decision`, but
+   * does not update run statistics. A dry run changes no observable state.
+   */
+  evaluate<TInput, TOutput>(
+    operation: Operation<TInput, TOutput>,
+    options?: EvaluateOptions,
+  ): Promise<StrategyDecision>;
+  /**
+   * Produces a versioned JSON-compatible snapshot. With an operation id, only
+   * that operation is included; an unknown id produces an empty snapshot.
+   */
+  exportState(operationId?: string): RuntimeStateSnapshot;
+  /**
+   * Validates and restores snapshot state. Existing operations not present in
+   * the snapshot are left untouched. Returns the number of restored operations.
+   * Throws before mutating anything when the snapshot is invalid or targets an
+   * operation with an in-flight selection or run.
+   */
+  importState(snapshot: RuntimeStateSnapshot): number;
   /** Explicit manual override. Bypasses pressure, but not applicability checks. */
   pinStrategy(operationId: string, strategyId: string): void;
   unpinStrategy(operationId: string): void;

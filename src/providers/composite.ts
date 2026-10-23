@@ -9,7 +9,7 @@ import type {
   SignalStatus,
   SignalUnit,
 } from "../types/signals.js";
-import { errorMessage } from "../utils/errors.js";
+import { errorMessage, toError } from "../utils/errors.js";
 
 export interface CompositeSignalRule {
   readonly name: string;
@@ -24,6 +24,11 @@ export interface CompositeSignalProviderOptions {
   readonly providers: readonly SignalProvider[];
   readonly rules: readonly CompositeSignalRule[];
   readonly passthroughInputs?: boolean;
+}
+
+interface ChildReadResult {
+  readonly readings: readonly ResourceSignal[];
+  readonly errors: readonly Error[];
 }
 
 const VALID_SIGNAL_UNITS: readonly SignalUnit[] = [
@@ -93,6 +98,7 @@ export class CompositeSignalProvider implements SignalProvider {
   readonly #rules: readonly CompositeSignalRule[];
   readonly #childDescriptors: readonly SignalDescriptor[];
   readonly #passthroughInputs: boolean;
+  #providerErrors: Error[] = [];
   #closed = false;
 
   constructor(options: CompositeSignalProviderOptions) {
@@ -272,6 +278,45 @@ export class CompositeSignalProvider implements SignalProvider {
     );
   }
 
+  /**
+   * Returns child failures isolated during reads in FIFO order and clears the
+   * queue, so the collector reports them without failing the combined read.
+   */
+  drainProviderErrors(): readonly Error[] {
+    const errors = this.#providerErrors;
+    this.#providerErrors = [];
+    return errors;
+  }
+
+  /**
+   * Drains a child's isolated failures so nested composites bubble them to the
+   * outer provider. A broken child drain becomes a queued failure of its own.
+   */
+  #drainChild(provider: SignalProvider): readonly Error[] {
+    let drained: unknown;
+    try {
+      const drain = provider.drainProviderErrors;
+      if (typeof drain !== "function") {
+        return [];
+      }
+      drained = drain.call(provider);
+    } catch (error) {
+      return [
+        new Error(`Provider "${provider.id}" drainProviderErrors failed: ${errorMessage(error)}`, {
+          cause: error,
+        }),
+      ];
+    }
+
+    if (!Array.isArray(drained)) {
+      return [
+        new TypeError(`Provider "${provider.id}" drainProviderErrors() must return an array.`),
+      ];
+    }
+
+    return (drained as readonly unknown[]).map((error) => toError(error));
+  }
+
   async read(context: SignalReadContext): Promise<readonly ResourceSignal[]> {
     if (context === null || typeof context !== "object" || typeof context.now !== "number") {
       throw new ConfigurationError("SignalReadContext with numeric now is required.");
@@ -290,36 +335,51 @@ export class CompositeSignalProvider implements SignalProvider {
     }
 
     const childResults = await Promise.all(
-      this.#providers.map(async (provider) => {
+      this.#providers.map(async (provider): Promise<ChildReadResult> => {
+        const errors: Error[] = [];
+        let readings: readonly ResourceSignal[];
         try {
-          const readings = await provider.read(context);
-          if (!Array.isArray(readings)) {
-            return provider.signals.map((descriptor) => ({
+          const value = await provider.read(context);
+          if (Array.isArray(value)) {
+            readings = value;
+          } else {
+            const message = `Provider "${provider.id}" returned a non-array reading.`;
+            errors.push(new TypeError(message));
+            readings = provider.signals.map((descriptor) => ({
               name: descriptor.name,
               unit: descriptor.unit,
               status: "error" as const,
               observedAt,
-              error: `Provider "${provider.id}" returned a non-array reading.`,
+              error: message,
             }));
           }
-          return readings;
         } catch (error) {
-          return provider.signals.map((descriptor) => ({
+          const message = `Provider "${provider.id}" read failed: ${errorMessage(error)}`;
+          errors.push(new Error(message, { cause: error }));
+          readings = provider.signals.map((descriptor) => ({
             name: descriptor.name,
             unit: descriptor.unit,
             status: "error" as const,
             observedAt,
-            error: `Provider "${provider.id}" read failed: ${errorMessage(error)}`,
+            error: message,
           }));
         }
+        errors.push(...this.#drainChild(provider));
+        return { readings, errors };
       }),
     );
 
+    for (const result of childResults) {
+      this.#providerErrors.push(...result.errors);
+    }
+
     const readingsByName = new Map<string, ResourceSignal>();
 
-    for (const reading of childResults.flat()) {
-      if (reading !== null && typeof reading === "object" && typeof reading.name === "string") {
-        readingsByName.set(reading.name, reading);
+    for (const result of childResults) {
+      for (const reading of result.readings) {
+        if (reading !== null && typeof reading === "object" && typeof reading.name === "string") {
+          readingsByName.set(reading.name, reading);
+        }
       }
     }
 

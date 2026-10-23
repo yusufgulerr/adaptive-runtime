@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { ConfigurationError } from "../../src/errors/index.js";
 import {
   createFakeClock,
   runProviderConformanceCheck,
   type ScriptedSignal,
   ScriptedSignalProvider,
+  type SimulatedStrategy,
+  simulatePolicyTimeline,
 } from "../../src/testing/index.js";
 import type {
   ResourceSignal,
@@ -534,5 +537,172 @@ describe("runProviderConformanceCheck", () => {
     const report = await runProviderConformanceCheck(provider);
     assert.equal(report.ok, true);
     assert.equal(report.failures.length, 0);
+  });
+});
+
+describe("simulatePolicyTimeline", () => {
+  const tiers: readonly SimulatedStrategy[] = [
+    { id: "high", qualityTier: 2 },
+    { id: "low", qualityTier: 1 },
+  ];
+
+  function load(value: number, observedAt: number): ResourceSignal {
+    return { name: "test.load", unit: "ratio", status: "ok", value, observedAt };
+  }
+
+  it("defaults clock values and reports budget transitions, switches, and reversals", () => {
+    const result = simulatePolicyTimeline({
+      operationId: "timeline",
+      policy: {
+        consecutiveSamples: 1,
+        budgets: [
+          {
+            id: "load",
+            signal: "test.load",
+            limit: 0.7,
+            recoverBelow: 0.3,
+            tierReduction: 1,
+            consecutiveSamples: 1,
+          },
+        ],
+      },
+      strategies: tiers,
+      steps: [
+        { signals: [load(0.1, 0)], sampleSequence: 1 },
+        { signals: [load(0.9, 1000)], sampleSequence: 2 },
+        { signals: [load(0.1, 2000)], sampleSequence: 3 },
+        { signals: [load(0.9, 3000)], sampleSequence: 4 },
+      ],
+    });
+
+    assert.deepEqual(
+      result.steps.map((step) => step.now),
+      [0, 1000, 2000, 3000],
+    );
+    assert.deepEqual(
+      result.decisions.map((decision) => decision.strategyId),
+      ["high", "low", "high", "low"],
+    );
+    assert.deepEqual(
+      result.steps.map((step) => step.engagedBudgetIds),
+      [[], ["load"], [], ["load"]],
+    );
+    assert.deepEqual(
+      result.steps.map((step) => step.recoveredBudgetIds),
+      [[], [], ["load"], []],
+    );
+    assert.deepEqual(result.engagedBudgetIds, ["load"]);
+    assert.deepEqual(result.recoveredBudgetIds, ["load"]);
+    assert.equal(result.strategySwitches, 3);
+    assert.equal(result.strategyReversals, 2);
+    assert.equal(result.finalState.currentStrategyId, "low");
+    assert.equal(result.steps.length, 4);
+  });
+
+  it("honors cached samples, per-step strategy pools, pins, and adaptation overrides", () => {
+    const cached = simulatePolicyTimeline({
+      policy: {
+        consecutiveSamples: 1,
+        budgets: [
+          {
+            id: "load",
+            signal: "test.load",
+            limit: 0.7,
+            recoverBelow: 0.3,
+            consecutiveSamples: 1,
+          },
+        ],
+      },
+      strategies: tiers,
+      steps: [
+        { signals: [load(0.9, 0)], sampleSequence: 1 },
+        { signals: [load(0.1, 1000)], sampleSequence: 1, signalsCached: true },
+        { signals: [load(0.1, 2000)], sampleSequence: 2 },
+      ],
+    });
+    assert.deepEqual(
+      cached.decisions.map((decision) => decision.strategyId),
+      ["low", "low", "high"],
+    );
+    assert.deepEqual(cached.steps[1]?.engagedBudgetIds, []);
+    assert.deepEqual(cached.steps[2]?.recoveredBudgetIds, ["load"]);
+
+    const overridden = simulatePolicyTimeline({
+      strategies: tiers,
+      steps: [
+        {
+          signals: [load(0.1, 0)],
+          strategies: [{ id: "only", qualityTier: 5 }],
+        },
+        { signals: [load(0.1, 1000)], pinnedStrategyId: "low" },
+        { signals: [load(0.9, 2000)], adaptationEnabled: false },
+      ],
+    });
+    assert.equal(overridden.steps[0]?.decision.strategyId, "only");
+    assert.equal(overridden.steps[1]?.decision.strategyId, "low");
+    assert.equal(overridden.steps[1]?.decision.kind, "pinned");
+    assert.equal(overridden.steps[2]?.decision.strategyId, "high");
+    assert.equal(overridden.steps[2]?.decision.kind, "static");
+  });
+
+  it("validates options, strategies, steps, and step fields", () => {
+    assert.throws(() => simulatePolicyTimeline(null as never), ConfigurationError);
+    assert.throws(() => simulatePolicyTimeline({ strategies: [], steps: [] }), ConfigurationError);
+    assert.throws(
+      () =>
+        simulatePolicyTimeline({
+          strategies: [
+            { id: "same", qualityTier: 1 },
+            { id: "same", qualityTier: 2 },
+          ],
+          steps: [{ signals: [] }],
+        }),
+      ConfigurationError,
+    );
+    assert.throws(
+      () =>
+        simulatePolicyTimeline({
+          strategies: tiers,
+          steps: [],
+        }),
+      ConfigurationError,
+    );
+    assert.throws(
+      () =>
+        simulatePolicyTimeline({
+          operationId: " padded ",
+          strategies: tiers,
+          steps: [{ signals: [] }],
+        }),
+      ConfigurationError,
+    );
+
+    const invalidSteps = [
+      { signals: [load(0.1, 0)], now: -1 },
+      { signals: [load(0.1, 0)], now: Number.NaN },
+      { signals: "nope" },
+      { signals: [], sampleSequence: -1 },
+      { signals: [], sampleSequence: 1.5 },
+      { signals: [], pinnedStrategyId: " padded " },
+      { signals: [], adaptationEnabled: "yes" },
+      { signals: [], signalsCached: "yes" },
+      {
+        signals: [],
+        strategies: [
+          { id: "same", qualityTier: 1 },
+          { id: "same", qualityTier: 2 },
+        ],
+      },
+    ];
+    for (const step of invalidSteps) {
+      assert.throws(
+        () =>
+          simulatePolicyTimeline({
+            strategies: tiers,
+            steps: [step as never],
+          }),
+        ConfigurationError,
+      );
+    }
   });
 });

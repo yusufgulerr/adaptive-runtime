@@ -59,6 +59,136 @@ describe("SignalCollector", () => {
     assert.equal(requireOk(third.readings[0]).value, 20);
   });
 
+  it("accepts a per-call evaluation interval and validates it", async () => {
+    let reads = 0;
+    const provider = new FunctionSignalProvider({
+      id: "per-call",
+      signalName: PROVIDER_SIGNAL,
+      read: (context) => {
+        reads += 1;
+        return [okSignal(PROVIDER_SIGNAL, reads, context.now)];
+      },
+    });
+    const { collector, clock } = makeCollector([provider], { evaluationIntervalMs: 10_000 });
+
+    const first = await collector.collect(clock.now(), new AbortController().signal);
+    assert.equal(first.cached, false);
+    assert.equal(reads, 1);
+
+    clock.advance(10);
+    const second = await collector.collect(clock.now(), new AbortController().signal, 0);
+    assert.equal(second.cached, false);
+    assert.equal(reads, 2);
+
+    const third = await collector.collect(clock.now(), new AbortController().signal, 10_000);
+    assert.equal(third.cached, true);
+    assert.equal(reads, 2);
+
+    for (const invalid of [-1, Number.NaN, Number.POSITIVE_INFINITY, "0", null]) {
+      await assert.rejects(
+        () =>
+          collector.collect(
+            clock.now(),
+            new AbortController().signal,
+            invalid as unknown as number,
+          ),
+        ConfigurationError,
+      );
+    }
+
+    await collector.close();
+  });
+
+  it("drains provider-isolated failures only on fresh reads and isolates broken drains", async () => {
+    let drains = 0;
+    let pending: Error[] = [];
+    const provider: SignalProvider = {
+      id: "draining",
+      signals: [{ name: PROVIDER_SIGNAL, unit: "bytes" }],
+      read: (context) => [okSignal(PROVIDER_SIGNAL, 1, context.now)],
+      drainProviderErrors: () => {
+        drains += 1;
+        const errors = pending;
+        pending = [];
+        return errors;
+      },
+    };
+    const { collector, clock, errors } = makeCollector([provider], {
+      evaluationIntervalMs: 1000,
+    });
+
+    await collector.collect(clock.now(), new AbortController().signal);
+    assert.equal(drains, 1);
+    assert.equal(errors.length, 0);
+
+    pending.push(new Error("first isolated failure"));
+    await collector.collect(clock.now(), new AbortController().signal);
+    assert.equal(drains, 1);
+    assert.equal(errors.length, 0);
+
+    clock.advance(1000);
+    pending.push(new Error("second isolated failure"));
+    await collector.collect(clock.now(), new AbortController().signal);
+    assert.equal(drains, 2);
+    assert.deepEqual(
+      errors.map((entry) => entry.error.message),
+      ["first isolated failure", "second isolated failure"],
+    );
+
+    const broken: SignalProvider = {
+      id: "broken-drain",
+      signals: [{ name: "broken.value", unit: "bytes" }],
+      read: (context) => [okSignal("broken.value", 1, context.now)],
+      drainProviderErrors: () => {
+        throw new Error("drain exploded");
+      },
+    };
+    const brokenCollector = makeCollector([broken], { evaluationIntervalMs: 0 });
+    await brokenCollector.collector.collect(
+      brokenCollector.clock.now(),
+      new AbortController().signal,
+    );
+    assert.deepEqual(
+      brokenCollector.errors.map((entry) => entry.error.message),
+      ["drain exploded"],
+    );
+
+    const nonArray: SignalProvider = {
+      id: "non-array-drain",
+      signals: [{ name: "nonarray.value", unit: "bytes" }],
+      read: (context) => [okSignal("nonarray.value", 1, context.now)],
+      drainProviderErrors: () => "not an array" as unknown as readonly Error[],
+    };
+    const nonArrayCollector = makeCollector([nonArray], { evaluationIntervalMs: 0 });
+    await nonArrayCollector.collector.collect(
+      nonArrayCollector.clock.now(),
+      new AbortController().signal,
+    );
+    assert.match(
+      nonArrayCollector.errors[0]?.error.message ?? "",
+      /drainProviderErrors\(\) must return an array/,
+    );
+
+    const shared = new Error("shared read failure");
+    const deduped: SignalProvider = {
+      id: "deduped",
+      signals: [{ name: "deduped.value", unit: "bytes" }],
+      read: () => {
+        throw shared;
+      },
+      drainProviderErrors: () => [shared, new Error("queued sibling")],
+    };
+    const dedupedCollector = makeCollector([deduped], { evaluationIntervalMs: 0 });
+    await dedupedCollector.collector.collect(
+      dedupedCollector.clock.now(),
+      new AbortController().signal,
+    );
+    assert.deepEqual(
+      dedupedCollector.errors.map((entry) => entry.error.message),
+      ["shared read failure", "queued sibling"],
+    );
+  });
+
   it("lets a waiter abort a shared read without cancelling the initiator", async () => {
     let release: ((readings: readonly ResourceSignal[]) => void) | undefined;
     const provider = new FunctionSignalProvider({

@@ -26,6 +26,13 @@ export interface HistogramLikeMetric {
 }
 
 /**
+ * Structural duck-typed synchronous gauge matching OpenTelemetry Gauge.
+ */
+export interface GaugeLike {
+  record(value: number, attributes?: MetricAttributesLike): void;
+}
+
+/**
  * Structural duck-typed UpDownCounter matching OpenTelemetry UpDownCounter.
  */
 export interface UpDownCounterLike {
@@ -47,6 +54,7 @@ export interface MetricOptionsLike {
 export interface OpenTelemetryMeterLike {
   createCounter(name: string, options?: MetricOptionsLike): CounterLike;
   createHistogram(name: string, options?: MetricOptionsLike): HistogramLikeMetric;
+  createGauge?(name: string, options?: MetricOptionsLike): GaugeLike;
   createUpDownCounter?(name: string, options?: MetricOptionsLike): UpDownCounterLike;
 }
 
@@ -107,7 +115,7 @@ export interface RuntimeMetricsCollector {
   getSnapshot(): MetricsSnapshot;
   toPrometheusText(): string;
   reset(): void;
-  /** Removes all series associated with the specified operation id. */
+  /** Removes all series associated with the specified operation id; surrounding whitespace is trimmed. */
   removeOperation(operationId: string): void;
 }
 
@@ -647,26 +655,24 @@ export class MetricsCollector implements RuntimeMetricsCollector {
     if (typeof operationId !== "string" || operationId.trim().length === 0) {
       throw new ConfigurationError("operationId must be a non-empty string.");
     }
-    if (operationId !== operationId.trim()) {
-      throw new ConfigurationError("operationId must not have leading or trailing whitespace.");
-    }
+    const normalizedOperationId = operationId.trim();
 
     for (const [key, series] of this.#counters) {
-      if (series.labels.operation_id === operationId) {
+      if (series.labels.operation_id === normalizedOperationId) {
         this.#counters.delete(key);
         this.#lruOrder.delete(key);
       }
     }
 
     for (const [key, series] of this.#gauges) {
-      if (series.labels.operation_id === operationId) {
+      if (series.labels.operation_id === normalizedOperationId) {
         this.#gauges.delete(key);
         this.#lruOrder.delete(key);
       }
     }
 
     for (const [key, series] of this.#histograms) {
-      if (series.labels.operation_id === operationId) {
+      if (series.labels.operation_id === normalizedOperationId) {
         this.#histograms.delete(key);
         this.#lruOrder.delete(key);
       }
@@ -689,10 +695,79 @@ function safeRecord(action: () => void): void {
   }
 }
 
+function tryCreateGauge(
+  meter: OpenTelemetryMeterLike,
+  name: string,
+  options: MetricOptionsLike,
+): GaugeLike | undefined {
+  if (typeof meter.createGauge !== "function") {
+    return undefined;
+  }
+  try {
+    const gauge = meter.createGauge(name, options);
+    if (gauge !== null && typeof gauge === "object" && typeof gauge.record === "function") {
+      return gauge;
+    }
+  } catch {
+    // A meter may reject gauge creation; fall back to the delta UpDownCounter.
+  }
+  return undefined;
+}
+
+/**
+ * Records a current-value instrument. Gauges receive the value directly.
+ * UpDownCounters are additive, so the fallback keeps the last value per label
+ * set and writes only the delta needed to converge on the current value.
+ * A brand-new series records its initial value (including zero) once so the
+ * series is registered; subsequent no-op deltas are skipped.
+ */
+function recordCurrentValue(
+  gauge: GaugeLike | undefined,
+  upDownCounter: UpDownCounterLike | undefined,
+  lastValues: Map<string, number>,
+  seriesKey: string,
+  value: number,
+  attributes: MetricAttributesLike | undefined,
+): void {
+  if (gauge !== undefined) {
+    safeRecord(() => {
+      gauge.record(value, attributes);
+    });
+    return;
+  }
+  if (upDownCounter === undefined) {
+    return;
+  }
+  const previous = lastValues.get(seriesKey);
+  if (previous === undefined) {
+    safeRecord(() => {
+      upDownCounter.add(value, attributes);
+      lastValues.set(seriesKey, value);
+    });
+    return;
+  }
+  const delta = value - previous;
+  if (delta === 0) {
+    return;
+  }
+  safeRecord(() => {
+    upDownCounter.add(delta, attributes);
+    lastValues.set(seriesKey, value);
+  });
+}
+
 /**
  * Attaches a duck-typed OpenTelemetry Meter to an AdaptiveRuntime instance.
- * Conforms strictly to zero-coercion: non-ok signal and budget readings
- * increment status counters and never record zero gauges or up-down counters.
+ *
+ * Signal readings (`_signal_reading`) and budget engagement (`_budget_engaged`)
+ * prefer synchronous gauges when the meter exposes `createGauge`. When gauges
+ * are unavailable, or gauge creation throws, the adapter falls back to
+ * UpDownCounters and tracks the last value per label set, writing only
+ * `next - previous` deltas so the additive instrument converges to the current
+ * reading. A brand-new series records its initial value once, including zero,
+ * to register it; later no-op deltas are skipped. Non-ok signal and budget
+ * readings increment status counters and never record zero gauges or
+ * UpDownCounter values.
  */
 export function attachOpenTelemetryMeter(
   runtime: AdaptiveRuntime,
@@ -750,19 +825,27 @@ export function attachOpenTelemetryMeter(
     description: "Total number of times runtime was closed.",
   });
 
+  const signalReadingGauge = tryCreateGauge(meter, `${prefix}_signal_reading`, {
+    description: "Current resource signal reading value.",
+  });
   const signalReadingUpDownCounter =
-    typeof meter.createUpDownCounter === "function"
+    signalReadingGauge === undefined && typeof meter.createUpDownCounter === "function"
       ? meter.createUpDownCounter(`${prefix}_signal_reading`, {
           description: "Current resource signal reading value.",
         })
       : undefined;
+  const signalReadingLastValues = new Map<string, number>();
 
+  const budgetEngagedGauge = tryCreateGauge(meter, `${prefix}_budget_engaged`, {
+    description: "Current budget engagement state (1 engaged, 0 healthy).",
+  });
   const budgetEngagedUpDownCounter =
-    typeof meter.createUpDownCounter === "function"
+    budgetEngagedGauge === undefined && typeof meter.createUpDownCounter === "function"
       ? meter.createUpDownCounter(`${prefix}_budget_engaged`, {
           description: "Current budget engagement state (1 engaged, 0 healthy).",
         })
       : undefined;
+  const budgetEngagedLastValues = new Map<string, number>();
 
   const unsubs: Array<() => void> = [
     runtime.on("run:start", ({ operationId, strategyId }) => {
@@ -843,22 +926,23 @@ export function attachOpenTelemetryMeter(
         );
       });
       for (const signal of decision.signals) {
-        if (signal.status === "ok") {
-          if (
-            signalReadingUpDownCounter !== undefined &&
-            typeof signal.value === "number" &&
-            Number.isFinite(signal.value)
-          ) {
-            safeRecord(() => {
-              signalReadingUpDownCounter.add(
-                signal.value as number,
-                mergeMetricAttributes(defaultAttrs, {
-                  signal: signal.name,
-                  unit: signal.unit,
-                }),
-              );
-            });
-          }
+        const value = signal.value;
+        if (signal.status === "ok" && typeof value === "number" && Number.isFinite(value)) {
+          recordCurrentValue(
+            signalReadingGauge,
+            signalReadingUpDownCounter,
+            signalReadingLastValues,
+            buildSeriesKey("signal_reading", {
+              operation_id: decision.operationId,
+              signal: signal.name,
+            }),
+            value,
+            mergeMetricAttributes(defaultAttrs, {
+              operation_id: decision.operationId,
+              signal: signal.name,
+              status: signal.status,
+            }),
+          );
         } else {
           safeRecord(() => {
             signalStatusCounter.add(
@@ -874,17 +958,20 @@ export function attachOpenTelemetryMeter(
       }
       for (const budget of decision.budgets) {
         if (budget.status === "ok") {
-          if (budgetEngagedUpDownCounter !== undefined) {
-            safeRecord(() => {
-              const budgetName = (budget as unknown as { name?: string }).name ?? budget.id;
-              budgetEngagedUpDownCounter.add(
-                budget.engaged ? 1 : 0,
-                mergeMetricAttributes(defaultAttrs, {
-                  budget: budgetName,
-                }),
-              );
-            });
-          }
+          recordCurrentValue(
+            budgetEngagedGauge,
+            budgetEngagedUpDownCounter,
+            budgetEngagedLastValues,
+            buildSeriesKey("budget_engaged", {
+              budget_id: budget.id,
+              operation_id: decision.operationId,
+            }),
+            budget.engaged ? 1 : 0,
+            mergeMetricAttributes(defaultAttrs, {
+              budget_id: budget.id,
+              operation_id: decision.operationId,
+            }),
+          );
         } else {
           safeRecord(() => {
             budgetStatusCounter.add(

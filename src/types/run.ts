@@ -43,7 +43,17 @@ export interface StrategyStats {
   readonly successes: number;
   readonly failures: number;
   readonly lastDurationMs: number | null;
+  /** Unbounded arithmetic mean of all sampled durations. */
   readonly averageDurationMs: number | null;
+  /**
+   * Exponentially weighted moving average of sampled durations (alpha 0.2).
+   * Reacts to recent latency changes without losing the arithmetic average.
+   */
+  readonly ewmaDurationMs: number | null;
+  /** Number of duration observations used by the averages. */
+  readonly durationSamples: number;
+  /** failures / runs, or 0 when the strategy has not run yet. */
+  readonly errorRate: number;
 }
 
 export interface RuntimeStats {
@@ -52,7 +62,14 @@ export interface RuntimeStats {
   readonly successes: number;
   readonly failures: number;
   readonly lastDurationMs: number | null;
+  /** Unbounded arithmetic mean of all sampled durations. */
   readonly averageDurationMs: number | null;
+  /** Exponentially weighted moving average of sampled durations (alpha 0.2). */
+  readonly ewmaDurationMs: number | null;
+  /** Number of duration observations used by the averages. */
+  readonly durationSamples: number;
+  /** failures / runs, or 0 when the operation has not run yet. */
+  readonly errorRate: number;
   readonly strategyRuns: Readonly<Record<string, number>>;
   readonly strategies: Readonly<Record<string, StrategyStats>>;
 }

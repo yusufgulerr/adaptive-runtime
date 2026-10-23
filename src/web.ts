@@ -5,6 +5,15 @@
 
 export * from "./core.js";
 export {
+  ComputePressureProvider,
+  type ComputePressureProviderOptions,
+  type ComputePressureRecordLike,
+  type ComputePressureState,
+  type PressureObserverFactory,
+  type PressureObserverLike,
+  WEB_COMPUTE_PRESSURE,
+} from "./providers/web/compute-pressure.js";
+export {
   type DeviceMemoryEnvironmentLike,
   DeviceMemoryProvider,
   type DeviceMemoryProviderOptions,

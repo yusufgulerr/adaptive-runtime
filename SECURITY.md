@@ -2,13 +2,13 @@
 
 ## Supported versions
 
-Version **0.3.0** is the current development line. Security fixes are issued for
+Version **0.5.0** is the current development line. Security fixes are issued for
 the latest 0.x minor line; older lines require an upgrade.
 
 | Version | Supported |
 | --- | --- |
-| 0.3.x | Supported (security patches applied to the latest 0.x minor release) |
-| < 0.3 | Not released |
+| 0.5.x | Supported (security patches applied to the latest 0.x minor release) |
+| < 0.5 | Upgrade to the latest 0.x minor line |
 
 ## Reporting a vulnerability
 
