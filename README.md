@@ -25,15 +25,14 @@ strategies with declared quality and cost tiers. The runtime reads the signals
 you supply, applies a deterministic policy, and runs exactly one strategy with
 inspectable metadata explaining the choice.
 
-> **Status: v0.5.0 source line (local).** The public repository is live and its
-> released v0.3.0 baseline passes CI/CodeQL on Node.js 22, 24, and 26, plus OpenSSF
-> Scorecard on `main`. The 0.5.0 source tree keeps the verified multi-runtime core
-> for Node.js, browsers, and WinterCG edge runtimes with **zero runtime
-> dependencies** and a fully typed ESM surface, and adds shadow evaluation,
-> versioned state hydration, event-loop utilization and compute-pressure
-> providers, per-operation signal-cache intervals, EWMA/error-rate statistics,
-> and a policy timeline simulator. The 0.5.0 tree is verified locally; remote CI
-> and npm publication for 0.5.0 have not been run. The public API follows semantic
+> **Status: v0.5.0 GitHub release.** The public repository is live and the
+> v0.5.0 tree passes CI on Node.js 22, 24, and 26, plus CodeQL and OpenSSF
+> Scorecard on `main`; the tag-triggered release workflow also passed. The release
+> keeps the verified multi-runtime core for Node.js, browsers, and WinterCG edge
+> runtimes with **zero runtime dependencies** and a fully typed ESM surface, and
+> adds shadow evaluation, versioned state hydration, event-loop utilization and
+> compute-pressure providers, per-operation signal-cache intervals, EWMA/error-rate
+> statistics, and a policy timeline simulator. The public API follows semantic
 > versioning; the 0.x series may still make documented breaking changes. GitHub
 > releases are tag-driven; npm publication is a separate owner-approved
 > OIDC/provenance dispatch and is pending. See
@@ -520,9 +519,9 @@ responsible for:
   and custom selectors and do not coordinate multiple processes. Bound live state
   with `maxTrackedOperations` or release it with `removeOperation`.
 - The public source repository is at
-  <https://github.com/yusufgulerr/adaptive-runtime>; the v0.3.0 tree passes CI,
-  CodeQL, and Scorecard there. The local v0.5.0 source line has not been remotely
-  verified or published. See
+  <https://github.com/yusufgulerr/adaptive-runtime>; the v0.5.0 tree passes CI,
+  CodeQL, and Scorecard there, and the v0.5.0 GitHub release is published. npm
+  publication remains pending. See
   [docs/VERIFICATION.md](docs/VERIFICATION.md) for the verification record.
 
 See [docs/ROADMAP.md](docs/ROADMAP.md) and [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).

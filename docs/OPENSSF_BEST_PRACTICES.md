@@ -1,7 +1,7 @@
 # OpenSSF Best Practices readiness
 
 **Status:** Passing-level self-assessment prepared on **2026-10-22** and updated
-for the 0.5.0 source line on **2026-10-23**. The project has **not** registered
+for the 0.5.0 release on **2026-10-23**. The project has **not** registered
 for or earned an OpenSSF Best Practices badge. This document is a readiness
 record and an application checklist, not a badge claim.
 
@@ -14,7 +14,7 @@ record and an application checklist, not a badge claim.
 | Target level | Passing |
 | Repository | <https://github.com/yusufgulerr/adaptive-runtime> |
 | Project website | <https://github.com/yusufgulerr/adaptive-runtime#readme> |
-| Version assessed | `0.5.0` source line (latest release `0.3.0`) |
+| Version assessed | `0.5.0` (latest release) |
 | License | Apache-2.0 |
 | Criteria snapshot | [Passing criteria](https://www.bestpractices.dev/en/criteria/0?details=true), retrieved 2026-10-22 |
 
@@ -79,7 +79,7 @@ Use absolute URLs in the BadgeApp form. These are the stable values:
 | Bug reports | <https://github.com/yusufgulerr/adaptive-runtime/issues> |
 | Bug report form | <https://github.com/yusufgulerr/adaptive-runtime/issues/new?template=bug_report.yml> |
 | Release notes | <https://github.com/yusufgulerr/adaptive-runtime/blob/main/CHANGELOG.md> |
-| Latest release | <https://github.com/yusufgulerr/adaptive-runtime/releases/tag/v0.3.0> |
+| Latest release | <https://github.com/yusufgulerr/adaptive-runtime/releases/tag/v0.5.0> |
 | Vulnerability process | <https://github.com/yusufgulerr/adaptive-runtime/blob/main/SECURITY.md> |
 | Private vulnerability reporting | <https://github.com/yusufgulerr/adaptive-runtime/security/advisories/new> |
 | Support | <https://github.com/yusufgulerr/adaptive-runtime/blob/main/SUPPORT.md> |
@@ -106,7 +106,7 @@ Use absolute URLs in the BadgeApp form. These are the stable values:
 | `sites_https` | **Met** | Repository, release, documentation, and issue URLs use HTTPS on GitHub. Registry delivery will use HTTPS on npm. |
 | `discussion` | **Met** | GitHub Discussions is enabled; GitHub Issues and pull-request discussions provide searchable, URL-addressable, asynchronous discussion. |
 | `english` | **Met** | All project documentation and issue templates are in English. |
-| `maintained` | **Met** | Active 0.5.0 source line, released v0.3.0 baseline, regular commits, CI, CodeQL, Dependabot, and a documented security-response path. |
+| `maintained` | **Met** | Released v0.5.0, active development, regular commits, CI, CodeQL, Dependabot, and a documented security-response path. |
 
 ### Change control
 
@@ -116,11 +116,11 @@ Use absolute URLs in the BadgeApp form. These are the stable values:
 | `repo_track` | **Met** | Git history records author, timestamp, and change content for every commit. |
 | `repo_interim` | **Met** | Pull requests and the commit history expose interim review versions between releases. |
 | `repo_distributed` | **Met** | Git is used; the repository is distributed through GitHub and normal clones/forks. |
-| `version_unique` | **Met** | `0.3.0` identifies the release; annotated tag `v0.3.0` points to the release commit. |
+| `version_unique` | **Met** | `0.5.0` identifies the latest release; annotated tag `v0.5.0` points to the release commit. |
 | `version_semver` | **Met** | `package.json` and the release process use Semantic Versioning. |
-| `version_tags` | **Met** | [Release v0.3.0](https://github.com/yusufgulerr/adaptive-runtime/releases/tag/v0.3.0) is identified by an annotated Git tag. |
+| `version_tags` | **Met** | [Release v0.5.0](https://github.com/yusufgulerr/adaptive-runtime/releases/tag/v0.5.0) is identified by an annotated Git tag. |
 | `release_notes` | **Met** | [CHANGELOG.md](../CHANGELOG.md) provides human-readable release notes; the GitHub release has generated categorized notes. |
-| `release_notes_vulns` | **N/A** | No publicly known runtime vulnerability or CVE existed for 0.3.0 at release time; GitHub security advisories are empty. |
+| `release_notes_vulns` | **N/A** | No publicly known runtime vulnerability or CVE existed for 0.5.0 at release time; GitHub security advisories are empty. |
 
 ### Reporting
 
@@ -147,7 +147,7 @@ Use absolute URLs in the BadgeApp form. These are the stable values:
 | `test_most` | **Met** | [VERIFICATION.md](VERIFICATION.md) records 98.81% lines, 95.12% branches, and 98.79% functions; every `src/**` file is above 80% branch coverage. |
 | `test_continuous_integration` | **Met** | [ci.yml](../.github/workflows/ci.yml) runs the suite on Node 22/24/26 and on Windows/macOS; [fuzz.yml](../.github/workflows/fuzz.yml) adds a weekly 10,000-run property campaign, a 1,000-run pull-request campaign for relevant paths, and manual dispatch; [security.yml](../.github/workflows/security.yml) verifies zero runtime dependencies, audits production dependencies at high severity, and checks relative Markdown links. Pull requests and `main` are covered. |
 | `test_policy` | **Met** | [CONTRIBUTING.md § Tests](../CONTRIBUTING.md#tests) requires regression tests for bug fixes, unit/integration tests for new behavior, and deterministic property/fuzz tests for policy/runtime invariants. |
-| `tests_are_added` | **Met** | Recent feature PRs added substantial tests: #8 (composite/web/edge providers), #10 (observability), #11 (testing SDK and packaging), #12 (export and PR-title checks), and the property/fuzz PR (budget hysteresis, selection, purity, and exactly-one execution). |
+| `tests_are_added` | **Met** | Recent feature PRs added substantial tests: #8 (composite/web/edge providers), #10 (observability), #11 (testing SDK and packaging), #12 (export and PR-title checks), #24 (shadow evaluation and state hydration), and the property/fuzz PR (budget hysteresis, selection, purity, and exactly-one execution). |
 | `tests_documented_added` | **Met** | The test policy is documented in CONTRIBUTING, the scheduled campaign and reproduction steps are in [FUZZING.md](FUZZING.md), and the pull-request checklist requires added or updated tests. |
 | `warnings` | **Met** | Biome lint/format and TypeScript `strict` with `noUncheckedIndexedAccess`, `noUnusedLocals`, `noUnusedParameters`, and `noImplicitOverride`. |
 | `warnings_fixed` | **Met** | `npm run check` passes lint, typecheck, tests, build, and export verification on the release tree. |

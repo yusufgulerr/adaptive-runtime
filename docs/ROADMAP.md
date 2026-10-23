@@ -1,10 +1,10 @@
 # Roadmap
 
 This roadmap describes intent, not commitments or dates. Priorities may change
-with feedback and evidence. The 0.5.0 source line is implemented and verified
-locally. The latest GitHub release is v0.3.0; the 0.4.0 and 0.5.0 trees have not
-been tagged, remotely verified, or published. GitHub releases are tag-driven; npm
-publication is a separate owner-approved workflow dispatch and remains pending.
+with feedback and evidence. The 0.5.0 source line is implemented, verified
+locally and remotely, and released on GitHub. The latest GitHub release is
+v0.5.0; 0.4.0 was superseded and has no separate release. npm publication is a
+separate owner-approved workflow dispatch and remains pending.
 
 ## 0.1.0 — Foundation (delivered)
 
@@ -103,7 +103,7 @@ Open:
    (0.4.0) and the abort-aware selection queue (0.4.0, ADR 0012) closed the earlier
    lifecycle and queued-abort items.
 
-## 0.3.0 — Extensibility without losing determinism (delivered locally)
+## 0.3.0 — Extensibility without losing determinism (delivered and released)
 
 Delivered:
 
@@ -180,9 +180,10 @@ Delivered:
 
 Not yet delivered:
 
-- Tagging, remote verification, GitHub release, and npm publication for 0.4.0.
+- A separate 0.4.0 release. Its delivered work is included in 0.5.0; no 0.4.0
+  tag or GitHub release exists.
 
-## 0.5.0 — Shadow evaluation and state hydration (delivered locally)
+## 0.5.0 — Shadow evaluation and state hydration (delivered and released)
 
 Delivered:
 
@@ -207,8 +208,8 @@ Delivered:
 
 Not yet delivered:
 
-- A 0.5.0 tag, GitHub release, remote CI/CodeQL verification, or npm publication.
-  Each requires explicit owner approval.
+- npm publication and post-publish registry/provenance verification. The 0.5.0
+  tag, GitHub release, remote CI, CodeQL, and Scorecard checks are complete.
 
 ## 1.0.0 — Stability
 

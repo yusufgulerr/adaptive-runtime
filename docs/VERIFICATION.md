@@ -1,7 +1,7 @@
 # Verification record
 
 This document records the historical 0.3.0 release verification on
-**2026-10-22** and the current 0.5.0 local source-line verification on
+**2026-10-22** and the 0.5.0 source-line and release verification on
 **2026-10-23**. It distinguishes local verification, remote workflow evidence,
 GitHub repository settings, and npm registry status. The 0.3.0 tree was merged to
 `main` at `5504f21`; the release-workflow fix and the OpenSSF readiness
@@ -9,14 +9,17 @@ documentation merged at `953a484` and `6f67ff3`. The property/fuzz suite merged
 at `8441299` and the scheduled campaign merged at `3d846ea`; a manual
 10,000-run dispatch passed. Remote CI, CodeQL, and Scorecard pass for these
 commits. The `v0.3.0` tag points to `5504f21` and the GitHub release is
-published; npm publication remains pending. The 0.5.0 tree has not been
-committed, pushed, tagged, remotely verified, or published.
+published; npm publication remains pending. The 0.5.0 tree was committed and
+pushed in pull request #24, merged to `main` at `815c938`, tagged `v0.5.0`, and
+released on GitHub; its remote CI, CodeQL, Scorecard, and release workflow
+passed. npm publication for 0.5.0 remains pending.
 
-## 0.5.0 local source-line verification
+## 0.5.0 source-line and release verification
 
 The 0.5.0 quality gates were run locally on **2026-10-23** with the repository's
-documented commands. No remote workflow or registry check was performed for this
-tree.
+documented commands. The release commit was then verified remotely through
+pull request #24 and the tag-triggered release workflow. npm publication has not
+been performed.
 
 | Command | Result |
 | --- | --- |
@@ -51,8 +54,21 @@ Every `src/**` file remains above 80% branch coverage. The lowest per-file branc
 results are `providers/event-loop-utilization.ts` at 81.48%,
 `runtime/state.ts` at 87.44%, and `providers/cpu-utilization.ts` at 87.88%.
 The package inspection above is a dry-run inventory, not a clean-consumer install
-of a published tarball. The npm registry, provenance attestation, remote CI, and
-remote CodeQL/Scorecard remain **not verified** for 0.5.0.
+of a published tarball. The npm registry and provenance attestation remain
+**not verified** for 0.5.0; remote CI, CodeQL, Scorecard, and release evidence
+are recorded below.
+
+### 0.5.0 remote release verification
+
+| Evidence | Result |
+| --- | --- |
+| Pull request [#24](https://github.com/yusufgulerr/adaptive-runtime/pull/24) | **MERGED** — squash merge at `815c938` on 2026-10-23 |
+| CI on `main` at `815c938` | **PASS** — run [40025899325](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/40025899325) |
+| CodeQL on `main` at `815c938` | **PASS** — run [40025899337](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/40025899337) |
+| OpenSSF Scorecard on `main` at `815c938` | **PASS** — run [40025899281](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/40025899281) |
+| Security and documentation on `main` at `815c938` | **PASS** — run [40025899407](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/40025899407) |
+| Release workflow (`v0.5.0`) | **PASS** — run [40025954565](https://github.com/yusufgulerr/adaptive-runtime/actions/runs/40025954565); `Verify release tag` and `Create GitHub release` succeeded |
+| npm jobs in the release workflow | **SKIPPED** — `Publish to npm` and `Verify published package` are part of the separate owner-approved npm phase |
 
 ## Wave 2 quality-gate verification
 
@@ -94,7 +110,7 @@ section.
 | @types/node | 26.6.5 |
 | Biome | 2.5.15 |
 | fast-check | 4.10.2 (development only) |
-| Package | adaptive-runtime 0.3.0 |
+| Package | adaptive-runtime 0.5.0 |
 
 ## Commands and results
 
@@ -317,7 +333,7 @@ The `PR title` required check, `ossf/scorecard-action` allow-list entry,
 as described in [GITHUB_SETTINGS.md](GITHUB_SETTINGS.md). The first Scorecard run
 on `main` succeeded and published a score; see the current evidence below.
 
-Current remote workflow evidence for the 0.3.0 release tree and post-0.3.0
+Remote workflow evidence for the historical 0.3.0 release tree and post-0.3.0
 fuzzing and hardening work:
 
 | Workflow | Result |
@@ -378,18 +394,19 @@ earned.
 
 ## Release status
 
-| Artifact | Status on 2026-10-22 |
+| Artifact | Status on 2026-10-23 |
 | --- | --- |
-| npm registry package | **NOT PUBLISHED** — no 0.3.0 publish was attempted; the name returned 404 on 2026-10-22 |
-| Git tag `v0.3.0` | **CREATED** at `5504f21` |
-| GitHub release | **CREATED** — <https://github.com/yusufgulerr/adaptive-runtime/releases/tag/v0.3.0> |
+| npm registry package | **NOT PUBLISHED** — `npm view adaptive-runtime version` returned `E404` on 2026-10-23; no publish was attempted |
+| Git tag `v0.5.0` | **CREATED** at `815c938` (annotated tag object `b5e345d4f340659fc7c04ce6dd84e9d6fab66a6b`) |
+| GitHub release `v0.5.0` | **CREATED** — <https://github.com/yusufgulerr/adaptive-runtime/releases/tag/v0.5.0> |
 | npm provenance attestation | **NOT AVAILABLE** until the first successful publish |
 
-The source repository is public, but the npm release is a separate, irreversible
-phase. The GitHub release does not imply that the package is on npm. Do not
-describe the package as published, released, or remotely verified until the
-registry, provenance, remote CI, and clean-consumer checks pass after an approved
-npm dispatch.
+The historical 0.3.0 GitHub release remains at `v0.3.0` on `5504f21`; npm
+publication for 0.3.0 was never performed. The source repository and the v0.5.0
+GitHub release are public, but the npm package is not. A GitHub release does not
+imply that the package is on npm. Do not describe the npm package as published or
+verified until the registry, provenance, and clean-consumer checks pass after an
+approved npm dispatch.
 
 ## Not verified
 
@@ -418,9 +435,9 @@ zero-Node portability scan, zero runtime dependencies, and 38 Markdown files wit
 documented subpath imports and a strict TypeScript consumer. The source is
 coherent for the 0.x line.
 
-The 0.3.0 source is merged at `5504f21` and tagged `v0.3.0`; the GitHub release is
-published. The tag verification job passed, and the release was created manually
-after the automated release step failed to find a git checkout. npm publication is
-a separate owner-approved dispatch. After the npm workflow completes, update this
-document with the registry version, integrity, provenance, and clean-consumer
-result.
+The 0.5.0 source is merged at `815c938` and tagged `v0.5.0`; the GitHub release
+is published and its verification workflow passed. The 0.3.0 source remains
+tagged at `5504f21` with its published GitHub release. npm publication for the
+0.x line is a separate owner-approved dispatch. After the npm workflow completes,
+update this document with the registry version, integrity, provenance, and
+clean-consumer result.
