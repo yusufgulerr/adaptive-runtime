@@ -3,7 +3,7 @@ import type { StrategyDecision } from "./decision.js";
 import type { RuntimeEventListener, RuntimeEventName } from "./events.js";
 import type { Policy, ResolvedPolicy } from "./policy.js";
 import type { Operation, RunResult, RuntimeStats } from "./run.js";
-import type { SignalProvider } from "./signals.js";
+import type { SignalDescriptor, SignalProvider } from "./signals.js";
 import type { RuntimeStateSnapshot } from "./state.js";
 
 export interface CreateRuntimeOptions {
@@ -77,6 +77,13 @@ export interface AdaptiveRuntime {
    * exists.
    */
   getOperationPolicy(operationId: string): ResolvedPolicy | null;
+  /**
+   * Returns the effective resolved policy governing the specified operation.
+   * When an operation-specific override is set, returns that override; otherwise
+   * returns the runtime's root policy. Crucially, does not refresh or alter the
+   * LRU tracking order.
+   */
+  getEffectivePolicy(operationId: string): ResolvedPolicy;
   getDecision(operationId: string): StrategyDecision | null;
   getStats(operationId: string): RuntimeStats;
   /**
@@ -89,6 +96,12 @@ export interface AdaptiveRuntime {
    * current RuntimeStats. Does not refresh or alter the LRU order.
    */
   getAllStats(): Readonly<Record<string, RuntimeStats>>;
+  /**
+   * Returns a frozen array of signal descriptors declared by the registered
+   * signal providers. Does not refresh or alter the LRU order. Remains readable
+   * after close().
+   */
+  getProviderDescriptors(): readonly SignalDescriptor[];
   /**
    * Removes all retained state and stats for one operation. Returns false when
    * a selection or run is in flight for that operation; the active work is not

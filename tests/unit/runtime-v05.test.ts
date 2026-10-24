@@ -6,6 +6,7 @@ import {
   QualityCheckError,
 } from "../../src/errors/index.js";
 import { createAdaptiveRuntime } from "../../src/runtime/runtime.js";
+import { SignalCollector } from "../../src/signals/collector.js";
 import type { CustomSelectorCandidate } from "../../src/types/policy.js";
 import type { RuntimeStateSnapshot } from "../../src/types/state.js";
 import type { Strategy } from "../../src/types/strategy.js";
@@ -706,6 +707,140 @@ describe("AdaptiveRuntime v0.5 surfaces", () => {
       assert.equal(res.metadata.quality.detail, `${"z".repeat(1000)}…`);
 
       await runtime.close();
+    });
+  });
+
+  describe("getEffectivePolicy and getProviderDescriptors introspection", () => {
+    it("getEffectivePolicy returns root policy when no override is set and returns override when set", async () => {
+      const runtime = createAdaptiveRuntime({
+        policy: { minQualityTier: 1 },
+      });
+
+      // Root policy returned for untracked/unconfigured operation
+      const rootEffective = runtime.getEffectivePolicy("op-1");
+      assert.equal(rootEffective.minQualityTier, 1);
+      assert.ok(Object.isFrozen(rootEffective));
+
+      // Set override
+      runtime.setOperationPolicy("op-1", { minQualityTier: 3 });
+      const overridden = runtime.getEffectivePolicy("op-1");
+      assert.equal(overridden.minQualityTier, 3);
+      assert.ok(Object.isFrozen(overridden));
+
+      // Reverts after setOperationPolicy(id, null)
+      runtime.setOperationPolicy("op-1", null);
+      assert.equal(runtime.getEffectivePolicy("op-1").minQualityTier, 1);
+
+      // Reverts after removeOperation(id)
+      runtime.setOperationPolicy("op-2", { minQualityTier: 2 });
+      assert.equal(runtime.getEffectivePolicy("op-2").minQualityTier, 2);
+      runtime.removeOperation("op-2");
+      assert.equal(runtime.getEffectivePolicy("op-2").minQualityTier, 1);
+
+      // Trims whitespace from valid operationId
+      assert.equal(runtime.getEffectivePolicy(" op-1 ").minQualityTier, 1);
+
+      // Rejects invalid operationId
+      for (const invalid of ["", "   ", null, undefined, 123, false]) {
+        assert.throws(
+          () => runtime.getEffectivePolicy(invalid as unknown as string),
+          ConfigurationError,
+        );
+      }
+
+      await runtime.close();
+      // Remains readable after close()
+      assert.equal(runtime.getEffectivePolicy("op-1").minQualityTier, 1);
+    });
+
+    it("getEffectivePolicy does not disturb LRU cache order or track untracked operations", async () => {
+      const runtime = createAdaptiveRuntime({
+        policy: { minQualityTier: 1 },
+      });
+
+      runtime.setOperationPolicy("tenant-a", { minQualityTier: 1 });
+      runtime.setOperationPolicy("tenant-b", { minQualityTier: 2 });
+      runtime.setOperationPolicy("tenant-c", { minQualityTier: 3 });
+      assert.deepEqual(runtime.getTrackedOperations(), ["tenant-a", "tenant-b", "tenant-c"]);
+
+      // Querying tenant-a with getEffectivePolicy does NOT move it to the end
+      const policyA = runtime.getEffectivePolicy("tenant-a");
+      assert.equal(policyA.minQualityTier, 1);
+      assert.deepEqual(runtime.getTrackedOperations(), ["tenant-a", "tenant-b", "tenant-c"]);
+
+      // Querying an untracked operation does NOT add it to tracked operations
+      runtime.getEffectivePolicy("untracked-op");
+      assert.deepEqual(runtime.getTrackedOperations(), ["tenant-a", "tenant-b", "tenant-c"]);
+
+      // In contrast, getOperationPolicy does refresh LRU order
+      runtime.getOperationPolicy("tenant-a");
+      assert.deepEqual(runtime.getTrackedOperations(), ["tenant-b", "tenant-c", "tenant-a"]);
+
+      await runtime.close();
+    });
+
+    it("getProviderDescriptors returns declared descriptors and does not affect LRU tracking", async () => {
+      // Empty providers
+      const runtimeEmpty = createAdaptiveRuntime({});
+      const emptyDescriptors = runtimeEmpty.getProviderDescriptors();
+      assert.deepEqual(emptyDescriptors, []);
+      assert.ok(Object.isFrozen(emptyDescriptors));
+      await runtimeEmpty.close();
+      assert.deepEqual(runtimeEmpty.getProviderDescriptors(), []);
+
+      // Configured providers
+      const p1 = new FunctionSignalProvider({
+        id: "p1",
+        signalName: "signal.a",
+        unit: "count",
+        read: () => [],
+      });
+      const p2 = new FunctionSignalProvider({
+        id: "p2",
+        signalName: "signal.b",
+        unit: "milliseconds",
+        read: () => [],
+      });
+      const runtime = createAdaptiveRuntime({
+        providers: [p1, p2],
+      });
+
+      const descriptors = runtime.getProviderDescriptors();
+      assert.equal(descriptors.length, 2);
+      assert.equal(descriptors[0]?.name, "signal.a");
+      assert.equal(descriptors[0]?.unit, "count");
+      assert.equal(descriptors[1]?.name, "signal.b");
+      assert.equal(descriptors[1]?.unit, "milliseconds");
+      assert.ok(Object.isFrozen(descriptors));
+
+      // Does not alter LRU tracking
+      assert.deepEqual(runtime.getTrackedOperations(), []);
+
+      // Remains readable after close()
+      await runtime.close();
+      assert.equal(runtime.getProviderDescriptors().length, 2);
+    });
+
+    it("getProviderDescriptors delegates to collector.getDescriptors when present", async () => {
+      const mockDescriptors = Object.freeze([
+        { name: "collector.signal", unit: "custom" as const },
+      ]);
+      const collectorProto = SignalCollector.prototype as unknown as {
+        getDescriptors?: () => readonly unknown[];
+      };
+      const original = collectorProto.getDescriptors;
+      try {
+        collectorProto.getDescriptors = () => mockDescriptors;
+        const runtime = createAdaptiveRuntime({});
+        assert.equal(runtime.getProviderDescriptors(), mockDescriptors);
+        await runtime.close();
+      } finally {
+        if (original === undefined) {
+          delete collectorProto.getDescriptors;
+        } else {
+          collectorProto.getDescriptors = original;
+        }
+      }
     });
   });
 });

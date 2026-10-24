@@ -25,6 +25,7 @@ import type {
   RuntimeStats,
 } from "../types/run.js";
 import type { AdaptiveRuntime, CreateRuntimeOptions, EvaluateOptions } from "../types/runtime.js";
+import type { SignalDescriptor } from "../types/signals.js";
 import type { OperationRuntimeState, RuntimeStateSnapshot } from "../types/state.js";
 import type { QualityCheckResult, Strategy, StrategyRunContext } from "../types/strategy.js";
 import { errorMessage, toError } from "../utils/errors.js";
@@ -115,6 +116,7 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
   readonly #policy: ResolvedPolicy;
   readonly #clock: Clock;
   readonly #collector: SignalCollector;
+  readonly #providerDescriptors: readonly SignalDescriptor[];
   readonly #maxQualityCheckDetailLength: number;
   readonly #emitter = new RuntimeEmitter();
   readonly #states = new Map<string, PolicyState>();
@@ -140,6 +142,17 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
     if (options.providers !== undefined && !Array.isArray(options.providers)) {
       throw new ConfigurationError("providers must be an array.");
     }
+    const descriptors: SignalDescriptor[] = [];
+    if (options.providers !== undefined) {
+      for (const provider of options.providers) {
+        if (provider !== null && typeof provider === "object" && Array.isArray(provider.signals)) {
+          for (const descriptor of provider.signals) {
+            descriptors.push(descriptor);
+          }
+        }
+      }
+    }
+    this.#providerDescriptors = Object.freeze(descriptors);
     this.#collector = new SignalCollector({
       providers: options.providers ?? [],
       evaluationIntervalMs: this.#policy.evaluationIntervalMs,
@@ -384,6 +397,11 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
     return policy;
   }
 
+  getEffectivePolicy(operationId: string): ResolvedPolicy {
+    const id = validateOperationId(operationId);
+    return this.#effectivePolicy(id);
+  }
+
   getDecision(operationId: string): StrategyDecision | null {
     const id = validateOperationId(operationId);
     const decision = this.#decisions.get(id) ?? null;
@@ -412,6 +430,18 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
       result[id] = this.#stats.get(id);
     }
     return Object.freeze(result);
+  }
+
+  getProviderDescriptors(): readonly SignalDescriptor[] {
+    if (
+      typeof (this.#collector as unknown as { getDescriptors?: () => readonly SignalDescriptor[] })
+        .getDescriptors === "function"
+    ) {
+      return (
+        this.#collector as unknown as { getDescriptors: () => readonly SignalDescriptor[] }
+      ).getDescriptors();
+    }
+    return this.#providerDescriptors;
   }
 
   removeOperation(operationId: string): boolean {
