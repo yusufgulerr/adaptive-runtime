@@ -16,6 +16,7 @@
 - [0014 — Provider contract harmonization, lifecycle resilience, and reading bounds](0014-provider-contract-harmonization-and-lifecycle-resilience.md)
 - [0015 — Per-operation policy overrides in multi-tenant runtimes](0015-per-operation-policy-overrides.md)
 - [0016 — Shadow evaluation, state hydration, and provider expansion](0016-shadow-evaluation-state-hydration-and-provider-expansion.md)
+- [0017 — Runtime introspection, bounded quality details, and composable policy selectors](0017-runtime-introspection-and-composable-selectors.md)
 
 ## Decision map
 
@@ -40,6 +41,7 @@ duplicating records:
 | Provider contract harmonization and lifecycle resilience | [0014](0014-provider-contract-harmonization-and-lifecycle-resilience.md) |
 | Per-operation policy overrides and multi-tenant precedence | [0015](0015-per-operation-policy-overrides.md) |
 | Shadow evaluation, state hydration, telemetry parity, provider expansion | [0016](0016-shadow-evaluation-state-hydration-and-provider-expansion.md) |
+| Runtime introspection, bounded quality details, composable policy selectors | [0017](0017-runtime-introspection-and-composable-selectors.md) |
 
 New decisions use the same structure: status, date, context, decision,
 consequences, alternatives, and follow-up. A decision that changes public
