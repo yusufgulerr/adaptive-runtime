@@ -70,6 +70,50 @@ The emitted declaration uses a TypeScript 5.0 `const` type parameter, so the
 package requires TypeScript `>=5.0` for declarations (the project is developed
 with TypeScript 5.9).
 
+## `createErrorRateGuardSelector(options)`
+
+Creates a pure, zero-dependency `CustomPolicySelector` that filters strategy candidates
+based on their observed failure ratio (`errorRate`):
+
+```ts
+const selector = createErrorRateGuardSelector({
+  maxErrorRate: 0.1, // Discard candidates exceeding 10% failure rate
+  fallbackSelector: (context) => undefined, // Optional delegation among eligible candidates
+});
+```
+
+- When eligible candidates remain at or below `maxErrorRate`, it selects the highest quality tier,
+  breaking ties by lowest cost tier and code-unit strategy id.
+- If all candidates exceed `maxErrorRate`, it selects the candidate with the lowest observed
+  error rate to mitigate total outage.
+- Candidates with unobserved error rates (`errorRate === null`) are treated as eligible.
+
+## `createLatencyBudgetSelector(options)`
+
+Creates a pure, zero-dependency `CustomPolicySelector` that selects strategies within a target
+latency budget:
+
+```ts
+const selector = createLatencyBudgetSelector({
+  maxLatencyMs: 150,
+  preferLowestCost: true, // When true, optimizes cost over quality among budget-compliant candidates
+});
+```
+
+- Selects candidates whose `estimatedLatencyMs <= maxLatencyMs` (or unmeasured `null`).
+- By default selects highest quality tier; with `preferLowestCost: true` it selects lowest cost tier.
+- If all candidates exceed `maxLatencyMs`, it selects the candidate with the lowest estimated latency.
+
+## `formatDecisionSummary(decision)`
+
+Formats a `StrategyDecision` into a deterministic, single-line structured string suitable for
+audit logging and structured diagnostics:
+
+```ts
+const summary = formatDecisionSummary(decision);
+// [search-op] strategy="fast" tier=1/3 kind=adapted changed=true budgets=heap(engaged) reasons=quality-pressure,strategy-switched
+```
+
 ## `AdaptiveRuntime`
 
 ```ts
@@ -85,8 +129,11 @@ interface AdaptiveRuntime {
   unpinStrategy(operationId: string): void;
   setAdaptationEnabled(operationId: string, enabled: boolean): void;
   setOperationPolicy(operationId: string, policy: Partial<Policy> | null): void;
+  getOperationPolicy(operationId: string): ResolvedPolicy | null;
   getDecision(operationId: string): StrategyDecision | null;
   getStats(operationId: string): RuntimeStats;
+  getTrackedOperations(): readonly string[];
+  getAllStats(): Readonly<Record<string, RuntimeStats>>;
   removeOperation(operationId: string): boolean;
   resetStats(operationId?: string): void;
   on<K extends RuntimeEventName>(event: K, listener: RuntimeEventListener<K>): () => void;
@@ -200,6 +247,12 @@ The selection engine evaluates rules under a strict 4-tier precedence hierarchy:
 Operation policy overrides are tracked under `maxTrackedOperations` LRU bounds and
 are immediately purged when `removeOperation(operationId)` is called.
 
+### `getOperationPolicy(operationId)`
+
+Returns the frozen `ResolvedPolicy` override configured for the operation, or `null`
+if no override has been set. When an operation record exists, calling `getOperationPolicy`
+refreshes the operation's position in the LRU tracking order.
+
 ### `getDecision(operationId)`
 
 Returns the most recent decision for the operation, or `null` if it has never
@@ -246,7 +299,18 @@ occurred after selection. `ewmaDurationMs` uses alpha `0.2`; `errorRate` is
 of duration observations and is persisted in state snapshots. Reading stats
 refreshes the operation's LRU position.
 
-### `removeOperation(operationId)
+### `getTrackedOperations()`
+
+Returns a frozen array of all currently tracked `operationId`s in LRU order (from
+oldest to newest). Unlike `getDecision` and `getStats`, inspecting tracked operations
+is read-only and **does not** alter or refresh LRU order. Remains readable after `close()`.
+
+### `getAllStats()`
+
+Returns a frozen dictionary mapping each tracked `operationId` to its current
+`RuntimeStats`. Does not alter or refresh LRU tracking order. Remains readable after `close()`.
+
+### `removeOperation(operationId)`
 
 Removes the operation's policy state, decision, pin, adaptation override, and
 stats. Returns `true` when at least one record existed and `false` when the

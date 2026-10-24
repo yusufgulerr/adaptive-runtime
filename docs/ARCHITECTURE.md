@@ -69,6 +69,7 @@ types.
 | `src/policy/candidates.ts` | Candidate filtering, clamping, and deterministic tie-breaking |
 | `src/policy/stability.ts` | Minimum mode duration and pending-candidate streaks |
 | `src/policy/resolve.ts` | Policy defaults and construction-time validation |
+| `src/policy/selectors.ts` | Built-in composable policy selectors (`createErrorRateGuardSelector`, `createLatencyBudgetSelector`) and `formatDecisionSummary` |
 | `src/policy/index.ts` | Platform-neutral `adaptive-runtime/policy` entry point |
 | `src/signals/collector.ts` | Provider start/close, snapshot cache, timeouts, reading validation |
 | `src/runtime/executor.ts` | Exactly-once strategy invocation, timeout and abort races |
@@ -315,8 +316,14 @@ the number of distinct operation ids. `Policy.maxTrackedOperations` bounds them.
 
 - The default is `null` (unbounded). A configured value must be a positive safe
   integer.
-- Retained operation records form an LRU list. Reading a decision or stats,
-  selecting, pinning, and updating stats all refresh recency.
+- Retained operation records form an LRU list. Reading a decision, stats, or
+  operation policy, selecting, pinning, and updating stats all refresh recency.
+- Batch inspection methods `getTrackedOperations()` and `getAllStats()` return
+  frozen views of the tracked operations and stats without refreshing or altering
+  the LRU order, enabling non-intrusive scraping, diagnostics, and telemetry
+  bridging. They remain readable after `close()`.
+- `getOperationPolicy(id)` inspects the resolved operation-level policy override,
+  returning a frozen `ResolvedPolicy` or `null`.
 - When an insert would exceed the bound, the least-recently-used operation that
   is not pinned, selecting, or executing is evicted. That operation loses its
   decision, stats, policy state, and adaptation override. Pins prevent eviction,
