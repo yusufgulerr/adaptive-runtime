@@ -34,3 +34,10 @@ export {
   type StrategyCandidate,
 } from "./engine.js";
 export { resolvePolicy } from "./resolve.js";
+export {
+  createErrorRateGuardSelector,
+  createLatencyBudgetSelector,
+  type ErrorRateGuardSelectorOptions,
+  formatDecisionSummary,
+  type LatencyBudgetSelectorOptions,
+} from "./selectors.js";

@@ -361,6 +361,15 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
     this.#enforceTrackingLimit(id);
   }
 
+  getOperationPolicy(operationId: string): ResolvedPolicy | null {
+    const id = validateOperationId(operationId);
+    const policy = this.#operationPolicies.get(id) ?? null;
+    if (this.#hasOperationRecord(id)) {
+      this.#trackOperation(id);
+    }
+    return policy;
+  }
+
   getDecision(operationId: string): StrategyDecision | null {
     const id = validateOperationId(operationId);
     const decision = this.#decisions.get(id) ?? null;
@@ -377,6 +386,18 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
       this.#trackOperation(id);
     }
     return stats;
+  }
+
+  getTrackedOperations(): readonly string[] {
+    return Object.freeze([...this.#tracked.keys()]);
+  }
+
+  getAllStats(): Readonly<Record<string, RuntimeStats>> {
+    const result: Record<string, RuntimeStats> = {};
+    for (const id of this.#tracked.keys()) {
+      result[id] = this.#stats.get(id);
+    }
+    return Object.freeze(result);
   }
 
   removeOperation(operationId: string): boolean {
@@ -580,7 +601,10 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
     }
 
     if (!result.ok) {
-      const detail = result.detail ?? "Quality check returned ok: false.";
+      const detail =
+        result.detail !== undefined
+          ? errorMessage(result.detail)
+          : "Quality check returned ok: false.";
       if (effectivePolicy.qualityCheck === "error") {
         throw new QualityCheckError(
           operationId,
@@ -599,7 +623,7 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
 
     return {
       status: "passed",
-      ...(result.detail === undefined ? {} : { detail: result.detail }),
+      ...(result.detail === undefined ? {} : { detail: errorMessage(result.detail) }),
       ...(result.score === undefined ? {} : { score: result.score }),
     };
   }

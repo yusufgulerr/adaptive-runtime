@@ -189,10 +189,10 @@ export function resolvePolicy(input: Policy | undefined): ResolvedPolicy {
       throw new ConfigurationError(`Duplicate budget id "${resolved.id}".`);
     }
     seenBudgetIds.add(resolved.id);
-    budgets.push(resolved);
+    budgets.push(Object.freeze(resolved));
   }
 
-  return {
+  return Object.freeze({
     evaluationIntervalMs,
     maxSignalAgeMs,
     minimumModeDurationMs,
@@ -203,10 +203,10 @@ export function resolvePolicy(input: Policy | undefined): ResolvedPolicy {
     missingSignalBehavior,
     adaptationEnabled,
     qualityCheck,
-    budgets,
+    budgets: Object.freeze(budgets),
     maxTrackedOperations,
     customSelector,
-  };
+  });
 }
 
 /**
