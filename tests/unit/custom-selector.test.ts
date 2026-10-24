@@ -691,12 +691,14 @@ describe("Built-in Policy Selectors and formatDecisionSummary", () => {
     errorRate: number | null = null,
     estimatedLatencyMs: number | null = null,
     samples?: number | null,
+    ewmaLatencyMs?: number | null,
   ): CustomSelectorCandidate => ({
     candidate: { id, qualityTier, costTier, applicable: true },
     estimatedCost: costTier,
     estimatedLatencyMs,
     errorRate,
     samples,
+    ewmaLatencyMs,
   });
 
   describe("createErrorRateGuardSelector", () => {
@@ -973,6 +975,30 @@ describe("Built-in Policy Selectors and formatDecisionSummary", () => {
         () => createLatencyBudgetSelector({ maxLatencyMs: Number.NaN }),
         ConfigurationError,
       );
+      assert.throws(
+        () =>
+          createLatencyBudgetSelector({
+            maxLatencyMs: 50,
+            fallbackSelector: "invalid" as unknown as CustomPolicySelector,
+          }),
+        ConfigurationError,
+      );
+      assert.throws(
+        () =>
+          createLatencyBudgetSelector({
+            maxLatencyMs: 50,
+            useEwma: "true" as unknown as boolean,
+          }),
+        ConfigurationError,
+      );
+      assert.throws(
+        () =>
+          createLatencyBudgetSelector({
+            maxLatencyMs: 50,
+            useEwma: 123 as unknown as boolean,
+          }),
+        ConfigurationError,
+      );
     });
 
     it("returns null when candidates are empty", () => {
@@ -1047,6 +1073,104 @@ describe("Built-in Policy Selectors and formatDecisionSummary", () => {
       const cands = [cand("strat-z", 2, 1, null, 20), cand("strat-a", 2, 1, null, 20)];
       const res = selector({ operation: "test", candidates: cands, signals: {}, now: 1000 });
       assert.equal(typeof res === "object" ? res?.strategyId : res, "strat-a");
+    });
+
+    it("chains to fallbackSelector when provided and candidates within budget exist", () => {
+      let delegatedCount = 0;
+      const selector = createLatencyBudgetSelector({
+        maxLatencyMs: 50,
+        fallbackSelector: (ctx) => {
+          delegatedCount = ctx.candidates.length;
+          return { strategyId: "delegated-choice", reason: "custom budget fallback" };
+        },
+      });
+
+      const cands = [
+        cand("fast", 1, 1, null, 20),
+        cand("mid", 2, 2, null, 40),
+        cand("slow", 3, 3, null, 100),
+      ];
+      const res = selector({ operation: "test", candidates: cands, signals: {}, now: 1000 });
+      assert.equal(delegatedCount, 2);
+      assert.ok(typeof res === "object" && res !== null);
+      assert.equal(res.strategyId, "delegated-choice");
+      assert.equal(res.reason, "custom budget fallback");
+    });
+
+    it("falls back to default latency sorting if fallbackSelector returns null or undefined", () => {
+      const selector = createLatencyBudgetSelector({
+        maxLatencyMs: 50,
+        fallbackSelector: () => null,
+      });
+
+      const cands = [cand("fast", 1, 1, null, 20), cand("high-quality", 3, 2, null, 30)];
+      const res = selector({ operation: "test", candidates: cands, signals: {}, now: 1000 });
+      assert.ok(typeof res === "object" && res !== null);
+      assert.equal(res.strategyId, "high-quality");
+    });
+
+    it("does not invoke fallbackSelector when all candidates exceed budget", () => {
+      let fallbackInvoked = false;
+      const selector = createLatencyBudgetSelector({
+        maxLatencyMs: 50,
+        fallbackSelector: () => {
+          fallbackInvoked = true;
+          return { strategyId: "should-not-be-called" };
+        },
+      });
+
+      const cands = [cand("over1", 2, 1, null, 80), cand("over2", 1, 1, null, 60)];
+      const res = selector({ operation: "test", candidates: cands, signals: {}, now: 1000 });
+      assert.equal(fallbackInvoked, false);
+      assert.ok(typeof res === "object" && res !== null);
+      assert.equal(res.strategyId, "over2"); // lowest latency over budget
+    });
+
+    it("evaluates candidates using ewmaLatencyMs when useEwma is true", () => {
+      const selector = createLatencyBudgetSelector({ maxLatencyMs: 50, useEwma: true });
+      const cands = [
+        // strat-a: estimated is 100 (over budget), but EWMA is 30 (within budget)
+        cand("strat-a", 2, 2, null, 100, null, 30),
+        // strat-b: estimated is 20 (within budget), but EWMA is 80 (over budget)
+        cand("strat-b", 3, 3, null, 20, null, 80),
+      ];
+      const res = selector({ operation: "test", candidates: cands, signals: {}, now: 1000 });
+      assert.ok(typeof res === "object" && res !== null);
+      assert.equal(res.strategyId, "strat-a");
+      assert.equal(
+        res.reason,
+        'latency-budget: selected strategy "strat-a" within budget 50ms (latency=30ms)',
+      );
+    });
+
+    it("treats null ewmaLatencyMs as unmeasured when useEwma is true", () => {
+      const selector = createLatencyBudgetSelector({ maxLatencyMs: 50, useEwma: true });
+      const cands = [
+        cand("unmeasured-ewma", 3, 1, null, 20, null, null),
+        cand("measured-ewma", 2, 1, null, 20, null, 40),
+      ];
+      const res = selector({ operation: "test", candidates: cands, signals: {}, now: 1000 });
+      assert.ok(typeof res === "object" && res !== null);
+      assert.equal(res.strategyId, "unmeasured-ewma");
+      assert.equal(
+        res.reason,
+        'latency-budget: selected strategy "unmeasured-ewma" within budget 50ms (latency=unmeasuredms)',
+      );
+    });
+
+    it("selects lowest ewmaLatencyMs candidate when all exceed budget under useEwma: true", () => {
+      const selector = createLatencyBudgetSelector({ maxLatencyMs: 50, useEwma: true });
+      const cands = [
+        cand("slow-ewma", 3, 1, null, 10, null, 120),
+        cand("moderate-ewma", 2, 1, null, 10, null, 70),
+      ];
+      const res = selector({ operation: "test", candidates: cands, signals: {}, now: 1000 });
+      assert.ok(typeof res === "object" && res !== null);
+      assert.equal(res.strategyId, "moderate-ewma");
+      assert.equal(
+        res.reason,
+        'latency-budget: all candidates exceeded budget 50ms; selected candidate "moderate-ewma" with lowest latency 70ms',
+      );
     });
   });
 

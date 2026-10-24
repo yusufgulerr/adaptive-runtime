@@ -18,6 +18,8 @@ export interface ErrorRateGuardSelectorOptions {
 export interface LatencyBudgetSelectorOptions {
   readonly maxLatencyMs: number;
   readonly preferLowestCost?: boolean;
+  readonly fallbackSelector?: CustomPolicySelector;
+  readonly useEwma?: boolean;
 }
 
 function compareCandidatesQualityFirst(
@@ -56,6 +58,15 @@ function getCandidateSamples(c: CustomSelectorCandidate): number | null {
     (c as { sampleCount?: number | null }).sampleCount ??
     (c as { runs?: number | null }).runs;
   return typeof raw === "number" && Number.isFinite(raw) && raw >= 0 ? raw : null;
+}
+
+function getCandidateLatency(c: CustomSelectorCandidate, useEwma: boolean): number | null {
+  if (useEwma) {
+    const ewma = c.ewmaLatencyMs;
+    return typeof ewma === "number" && Number.isFinite(ewma) ? ewma : null;
+  }
+  const est = c.estimatedLatencyMs;
+  return typeof est === "number" && Number.isFinite(est) ? est : null;
 }
 
 /**
@@ -165,9 +176,15 @@ export function createLatencyBudgetSelector(
   if (options === null || typeof options !== "object") {
     throw new ConfigurationError("options must be an object.");
   }
-  const { maxLatencyMs, preferLowestCost } = options;
+  const { maxLatencyMs, preferLowestCost, fallbackSelector, useEwma = false } = options;
   if (typeof maxLatencyMs !== "number" || !Number.isFinite(maxLatencyMs) || maxLatencyMs <= 0) {
     throw new ConfigurationError("maxLatencyMs must be a positive finite number.");
+  }
+  if (fallbackSelector !== undefined && typeof fallbackSelector !== "function") {
+    throw new ConfigurationError("fallbackSelector must be a function.");
+  }
+  if (typeof useEwma !== "boolean") {
+    throw new ConfigurationError("useEwma must be a boolean.");
   }
 
   const comparator = preferLowestCost ? compareCandidatesCostFirst : compareCandidatesQualityFirst;
@@ -177,31 +194,40 @@ export function createLatencyBudgetSelector(
       return null;
     }
 
-    const withinBudget = context.candidates.filter(
-      (c) => c.estimatedLatencyMs === null || c.estimatedLatencyMs <= maxLatencyMs,
-    );
+    const withinBudget = context.candidates.filter((c) => {
+      const lat = getCandidateLatency(c, useEwma);
+      return lat === null || lat <= maxLatencyMs;
+    });
 
     if (withinBudget.length > 0) {
+      if (fallbackSelector !== undefined) {
+        const delegated = fallbackSelector({ ...context, candidates: withinBudget });
+        if (delegated !== null && delegated !== undefined) {
+          return delegated;
+        }
+      }
       const sorted = [...withinBudget].sort(comparator);
       const chosen = sorted[0] as CustomSelectorCandidate;
+      const chosenLatency = getCandidateLatency(chosen, useEwma);
       return {
         strategyId: chosen.candidate.id,
-        reason: `latency-budget: selected strategy "${chosen.candidate.id}" within budget ${maxLatencyMs}ms (latency=${chosen.estimatedLatencyMs ?? "unmeasured"}ms)`,
+        reason: `latency-budget: selected strategy "${chosen.candidate.id}" within budget ${maxLatencyMs}ms (latency=${chosenLatency ?? "unmeasured"}ms)`,
       };
     }
 
     const sortedByLatency = [...context.candidates].sort((a, b) => {
-      const latA = a.estimatedLatencyMs ?? Number.POSITIVE_INFINITY;
-      const latB = b.estimatedLatencyMs ?? Number.POSITIVE_INFINITY;
+      const latA = getCandidateLatency(a, useEwma) ?? Number.POSITIVE_INFINITY;
+      const latB = getCandidateLatency(b, useEwma) ?? Number.POSITIVE_INFINITY;
       if (latA !== latB) {
         return latA - latB;
       }
       return comparator(a, b);
     });
     const chosen = sortedByLatency[0] as CustomSelectorCandidate;
+    const chosenLatency = getCandidateLatency(chosen, useEwma);
     return {
       strategyId: chosen.candidate.id,
-      reason: `latency-budget: all candidates exceeded budget ${maxLatencyMs}ms; selected candidate "${chosen.candidate.id}" with lowest latency ${chosen.estimatedLatencyMs}ms`,
+      reason: `latency-budget: all candidates exceeded budget ${maxLatencyMs}ms; selected candidate "${chosen.candidate.id}" with lowest latency ${chosenLatency}ms`,
     };
   };
 }
