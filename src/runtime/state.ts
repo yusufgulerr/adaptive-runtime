@@ -435,12 +435,20 @@ function validateStrategyStats(
   if (errorRate > 1) {
     throw new ConfigurationError(`${label}.errorRate must be between 0 and 1.`);
   }
+  const totalDurationMs =
+    stats.totalDurationMs === undefined
+      ? undefined
+      : requireNonNegativeNumber(stats.totalDurationMs, `${label}.totalDurationMs`);
+  if (durationSamples === 0 && totalDurationMs !== undefined && totalDurationMs !== 0) {
+    throw new ConfigurationError(`${label}.totalDurationMs must be 0 when durationSamples is 0.`);
+  }
   return {
     runs,
     successes,
     failures,
     lastDurationMs,
     averageDurationMs,
+    ...(totalDurationMs === undefined ? {} : { totalDurationMs }),
     ewmaDurationMs,
     durationSamples,
     errorRate,
@@ -490,6 +498,13 @@ function validateStats(value: unknown, operationId: string, label: string): Runt
   const errorRate = requireNonNegativeNumber(stats.errorRate, `${label}.errorRate`);
   if (errorRate > 1) {
     throw new ConfigurationError(`${label}.errorRate must be between 0 and 1.`);
+  }
+  const totalDurationMs =
+    stats.totalDurationMs === undefined
+      ? undefined
+      : requireNonNegativeNumber(stats.totalDurationMs, `${label}.totalDurationMs`);
+  if (durationSamples === 0 && totalDurationMs !== undefined && totalDurationMs !== 0) {
+    throw new ConfigurationError(`${label}.totalDurationMs must be 0 when durationSamples is 0.`);
   }
   const rawStrategyRuns = requireRecord(stats.strategyRuns, `${label}.strategyRuns`);
   const strategyRuns: Record<string, number> = {};
@@ -559,6 +574,7 @@ function validateStats(value: unknown, operationId: string, label: string): Runt
     failures,
     lastDurationMs,
     averageDurationMs,
+    ...(totalDurationMs === undefined ? {} : { totalDurationMs }),
     ewmaDurationMs,
     durationSamples,
     errorRate,

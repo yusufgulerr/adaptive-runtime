@@ -46,6 +46,11 @@ export interface StrategyStats {
   /** Unbounded arithmetic mean of all sampled durations. */
   readonly averageDurationMs: number | null;
   /**
+   * Total observed duration across all duration samples in milliseconds.
+   * Preserved exactly across export/import cycles to eliminate floating-point drift.
+   */
+  readonly totalDurationMs?: number;
+  /**
    * Exponentially weighted moving average of sampled durations (alpha 0.2).
    * Reacts to recent latency changes without losing the arithmetic average.
    */
@@ -64,6 +69,11 @@ export interface RuntimeStats {
   readonly lastDurationMs: number | null;
   /** Unbounded arithmetic mean of all sampled durations. */
   readonly averageDurationMs: number | null;
+  /**
+   * Total observed duration across all duration samples in milliseconds.
+   * Preserved exactly across export/import cycles to eliminate floating-point drift.
+   */
+  readonly totalDurationMs?: number;
   /** Exponentially weighted moving average of sampled durations (alpha 0.2). */
   readonly ewmaDurationMs: number | null;
   /** Number of duration observations used by the averages. */

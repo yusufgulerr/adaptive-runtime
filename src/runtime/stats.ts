@@ -120,6 +120,7 @@ export class StatsRegistry {
         failures: 0,
         lastDurationMs: null,
         averageDurationMs: null,
+        totalDurationMs: 0,
         ewmaDurationMs: null,
         durationSamples: 0,
         errorRate: 0,
@@ -135,6 +136,7 @@ export class StatsRegistry {
         failures: s.failures,
         lastDurationMs: s.lastDurationMs,
         averageDurationMs: s.durationSamples === 0 ? null : s.totalDurationMs / s.durationSamples,
+        totalDurationMs: s.totalDurationMs,
         ewmaDurationMs: s.ewmaDurationMs,
         durationSamples: s.durationSamples,
         errorRate: errorRate(s.failures, s.runs),
@@ -148,6 +150,7 @@ export class StatsRegistry {
       lastDurationMs: stats.lastDurationMs,
       averageDurationMs:
         stats.durationSamples === 0 ? null : stats.totalDurationMs / stats.durationSamples,
+      totalDurationMs: stats.totalDurationMs,
       ewmaDurationMs: stats.ewmaDurationMs,
       durationSamples: stats.durationSamples,
       errorRate: errorRate(stats.failures, stats.runs),
@@ -177,9 +180,11 @@ export class StatsRegistry {
     stats.lastDurationMs = snapshot.lastDurationMs;
     stats.durationSamples = snapshot.durationSamples;
     stats.totalDurationMs =
-      snapshot.averageDurationMs === null
-        ? 0
-        : snapshot.averageDurationMs * snapshot.durationSamples;
+      snapshot.totalDurationMs !== undefined
+        ? snapshot.totalDurationMs
+        : snapshot.averageDurationMs === null
+          ? 0
+          : snapshot.averageDurationMs * snapshot.durationSamples;
     stats.ewmaDurationMs = snapshot.ewmaDurationMs;
     for (const [strategyId, count] of Object.entries(snapshot.strategyRuns)) {
       stats.strategyRuns.set(strategyId, count);
@@ -192,9 +197,11 @@ export class StatsRegistry {
         lastDurationMs: strategySnapshot.lastDurationMs,
         durationSamples: strategySnapshot.durationSamples,
         totalDurationMs:
-          strategySnapshot.averageDurationMs === null
-            ? 0
-            : strategySnapshot.averageDurationMs * strategySnapshot.durationSamples,
+          strategySnapshot.totalDurationMs !== undefined
+            ? strategySnapshot.totalDurationMs
+            : strategySnapshot.averageDurationMs === null
+              ? 0
+              : strategySnapshot.averageDurationMs * strategySnapshot.durationSamples,
         ewmaDurationMs: strategySnapshot.ewmaDurationMs,
       });
     }
