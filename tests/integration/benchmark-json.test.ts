@@ -32,6 +32,7 @@ type BenchmarkDocument = {
     readonly iterations: number;
     readonly rounds: number;
     readonly warmup: number;
+    readonly entrypoint: string;
   };
   readonly verification: { readonly input: number; readonly expected: number };
   readonly modes: readonly ModeEntry[];
@@ -44,8 +45,8 @@ const EXPECTED_LABELS = [
   "runtime, adaptive (cached read)",
 ];
 
-function runBenchmark(): BenchmarkDocument {
-  const stdout = execFileSync(process.execPath, ["--import", "tsx", benchmark, "--json"], {
+function runBenchmark(args: readonly string[] = []): BenchmarkDocument {
+  const stdout = execFileSync(process.execPath, ["--import", "tsx", benchmark, "--json", ...args], {
     cwd: repositoryRoot,
     encoding: "utf8",
     env: { ...process.env, BENCH_ITERATIONS: "100", BENCH_ROUNDS: "1" },
@@ -92,6 +93,7 @@ describe("benchmark JSON output", () => {
     assert.equal(document.config.iterations, 100);
     assert.equal(document.config.rounds, 1);
     assert.equal(document.config.warmup, 25);
+    assert.equal(document.config.entrypoint, "source");
   });
 
   it("preserves mode order and reports finite measurements", () => {
@@ -116,5 +118,37 @@ describe("benchmark JSON output", () => {
     const direct = document.modes.find((mode) => mode.label === "direct call");
     assert.ok(direct !== undefined);
     assert.equal(direct.relativeToDirect, 1);
+  });
+});
+
+describe("benchmark compiled entry point", () => {
+  let document: BenchmarkDocument;
+
+  before(() => {
+    const tsc = fileURLToPath(new URL("../../node_modules/typescript/bin/tsc", import.meta.url));
+    execFileSync(process.execPath, [tsc, "-p", "tsconfig.json"], {
+      cwd: repositoryRoot,
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 120_000,
+    });
+    document = runBenchmark(["--dist"]);
+  });
+
+  it("measures the compiled dist entry point with the same schema", () => {
+    assert.equal(document.schemaVersion, 1);
+    assert.equal(document.config.entrypoint, "dist");
+    assert.equal(document.package.name, "adaptive-runtime");
+    assert.equal(document.package.version, JSON.parse(readFileSync(packageFile, "utf8")).version);
+    assert.deepEqual(
+      document.modes.map((mode) => mode.label),
+      EXPECTED_LABELS,
+    );
+    for (const mode of document.modes) {
+      assertFinitePositive(mode.medianUsPerRun, `${mode.label} medianUsPerRun`);
+      assertFinitePositive(mode.relativeToDirect, `${mode.label} relativeToDirect`);
+      for (const sample of mode.samplesUsPerRun) {
+        assertFinitePositive(sample, `${mode.label} sample`);
+      }
+    }
   });
 });

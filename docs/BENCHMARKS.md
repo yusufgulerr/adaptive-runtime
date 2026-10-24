@@ -31,6 +31,9 @@ Procedure:
   [`benchmarks/concurrency.ts`](../benchmarks/concurrency.ts).
 - The adaptive modes use one budget that stays disengaged (`value = 5`,
   `limit = 100`), so no switching occurs.
+- The default run imports the TypeScript source through `tsx`. `--dist` imports
+  the compiled `dist/index.js` instead, so the measured entry point matches what
+  package consumers load.
 
 Run it:
 
@@ -39,6 +42,10 @@ npm run benchmark
 # Optional: BENCH_ITERATIONS=50000 BENCH_ROUNDS=9 npm run benchmark
 npm run benchmark:concurrency
 # Optional: CONCURRENCY_RUNS=8192 CONCURRENCY_LEVELS=1,8,32 npm run benchmark:concurrency
+
+# Measure the compiled package entry point instead of the source tree
+npm run build
+node --expose-gc --import tsx benchmarks/runtime-overhead.ts --dist
 ```
 
 ## JSON output and trend comparison
@@ -50,6 +57,7 @@ one document with no human-readable lines.
 
 ```bash
 node --expose-gc --import tsx benchmarks/runtime-overhead.ts --json > current.json
+node --expose-gc --import tsx benchmarks/runtime-overhead.ts --dist --json > current-dist.json
 node scripts/compare-benchmarks.mjs baseline.json current.json
 node scripts/compare-benchmarks.mjs baseline.json current.json --max-regression-percent 15
 ```
@@ -64,7 +72,7 @@ The document uses `schemaVersion: 1`:
 | `generatedAt` | ISO-8601 timestamp of the run |
 | `package` | `name` and `version` read from `package.json` |
 | `environment` | Node.js version, platform, OS release, CPU model, logical cores, total memory (GiB) |
-| `config` | `iterations`, `rounds`, and `warmup` |
+| `config` | `iterations`, `rounds`, `warmup`, and `entrypoint` (`"source"` or `"dist"`) |
 | `verification` | Checked input (`42`) and the value every mode returned |
 | `modes` | Per mode: label, median µs/run, relative to the direct call, and raw samples |
 
@@ -108,11 +116,13 @@ baseline history; comparisons are always manual.
 | Logical cores | 14 |
 | RAM | 31.4 GiB |
 | Package | 0.5.0, local source via `tsx` |
+| Entry point | `source` (the table below); run `--dist` for the compiled artifact |
 
-`tsx` is used to run TypeScript directly. The compiled `dist/` output is not
-separately benchmarked. Type stripping/loader overhead, if any, applies equally
-to the runtime modes but not to the direct-call baseline; the absolute numbers
-should therefore be treated as indicative.
+`tsx` is used to run TypeScript directly. Type stripping/loader overhead, if
+any, applies equally to the runtime modes but not to the direct-call baseline;
+the absolute numbers should therefore be treated as indicative. Re-run with
+`--dist` after `npm run build` to measure the compiled `dist/index.js` without
+the TypeScript loader, and compare `config.entrypoint` before comparing numbers.
 
 ## Results
 

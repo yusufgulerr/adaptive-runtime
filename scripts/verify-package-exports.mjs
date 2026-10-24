@@ -62,6 +62,18 @@ async function main() {
     throw new Error("package.json has no package name.");
   }
 
+  const exportSubpaths = Object.keys(exportsMap).filter((subpath) => subpath !== "./package.json");
+  for (const subpath of Object.keys(EXPECTED_EXPORTS)) {
+    if (!Object.hasOwn(exportsMap, subpath)) {
+      throw new Error(`package.json is missing the expected "${subpath}" export.`);
+    }
+  }
+  for (const subpath of exportSubpaths) {
+    if (!Object.hasOwn(EXPECTED_EXPORTS, subpath)) {
+      throw new Error(`The "${subpath}" export has no EXPECTED_EXPORTS entry.`);
+    }
+  }
+
   let verifiedFiles = 0;
 
   for (const [subpath, target] of Object.entries(exportsMap)) {

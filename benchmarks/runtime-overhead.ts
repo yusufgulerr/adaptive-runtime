@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { cpus, platform, release, totalmem } from "node:os";
-import { createAdaptiveRuntime, type SignalProvider, type Strategy } from "../src/index.js";
+import type { SignalProvider, Strategy } from "../src/index.js";
 
 /**
  * Measures end-to-end call overhead on the local machine.
@@ -16,6 +16,33 @@ const ROUNDS = Number.parseInt(process.env.BENCH_ROUNDS ?? "7", 10);
 const WARMUP = Math.min(2_000, Math.floor(ITERATIONS / 4));
 const WORK = Array.from({ length: 64 }, (_, index) => (index * 17) % 29);
 const JSON_OUTPUT = process.argv.includes("--json");
+
+type CreateRuntime = typeof import("../src/index.js").createAdaptiveRuntime;
+type BenchmarkEntrypoint = "source" | "dist";
+
+/**
+ * Measures the source tree by default. `--dist` loads the compiled
+ * `dist/index.js`, so consumers can verify the artifact they actually install.
+ */
+const ENTRYPOINT: BenchmarkEntrypoint = process.argv.includes("--dist") ? "dist" : "source";
+
+async function loadEntrypoint(): Promise<{ readonly createAdaptiveRuntime: CreateRuntime }> {
+  const entryUrl = new URL(
+    ENTRYPOINT === "dist" ? "../dist/index.js" : "../src/index.js",
+    import.meta.url,
+  );
+  try {
+    return (await import(entryUrl.href)) as { readonly createAdaptiveRuntime: CreateRuntime };
+  } catch (error) {
+    const message =
+      ENTRYPOINT === "dist"
+        ? "Unable to load ../dist/index.js. Run `npm run build` before using --dist."
+        : "Unable to load ../src/index.js.";
+    throw new Error(message, { cause: error });
+  }
+}
+
+const { createAdaptiveRuntime } = await loadEntrypoint();
 
 function work(input: number): number {
   let total = input + 1;
@@ -191,6 +218,7 @@ type BenchmarkDocument = {
     readonly iterations: number;
     readonly rounds: number;
     readonly warmup: number;
+    readonly entrypoint: BenchmarkEntrypoint;
   };
   readonly verification: {
     readonly input: number;
@@ -233,7 +261,7 @@ function buildDocument(modes: readonly ModeResult[], verification: number): Benc
     generatedAt: new Date().toISOString(),
     package: readPackageIdentity(),
     environment: describeEnvironment(),
-    config: { iterations: ITERATIONS, rounds: ROUNDS, warmup: WARMUP },
+    config: { iterations: ITERATIONS, rounds: ROUNDS, warmup: WARMUP, entrypoint: ENTRYPOINT },
     verification: { input: 42, expected: verification },
     modes,
   };
@@ -316,6 +344,9 @@ async function main(): Promise<void> {
 
   const environment = describeEnvironment();
   console.log("Adaptive Runtime local micro-benchmark");
+  console.log(
+    `Entry point: ${ENTRYPOINT === "dist" ? "compiled dist/index.js" : "TypeScript source via tsx"}`,
+  );
   console.log(
     `Node ${environment.node}; ${environment.platform} ${environment.release}; ${environment.cpu}; ${environment.logicalCores} logical cores; ${environment.totalMemoryGiB.toFixed(1)} GiB RAM`,
   );
