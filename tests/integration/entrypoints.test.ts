@@ -27,6 +27,7 @@ describe("package entry points", () => {
   it("core exposes only platform-neutral runtime and policy primitives", () => {
     expectExport(coreApi, "createAdaptiveRuntime");
     expectExport(coreApi, "definePolicy");
+    expectExport(coreApi, "composeSelectors");
     expectExport(coreApi, "CompositeSignalProvider");
     expectExport(coreApi, "NetworkLatencyProvider");
     expectExport(coreApi, "ConfigurationError");
@@ -89,6 +90,7 @@ describe("package entry points", () => {
 
   it("the root entry point is the Node.js entry point", () => {
     expectExport(rootApi, "createAdaptiveRuntime");
+    expectExport(rootApi, "composeSelectors");
     expectExport(rootApi, "ProcessMemoryProvider");
     expectExport(rootApi, "EventLoopUtilizationProvider");
     expectMissing(rootApi, "DeviceMemoryProvider");
@@ -107,6 +109,7 @@ describe("package entry points", () => {
     expectExport(testingApi, "runProviderConformanceCheck");
     expectExport(testingApi, "simulatePolicyTimeline");
     expectExport(policyApi, "definePolicy");
+    expectExport(policyApi, "composeSelectors");
     expectExport(policyApi, "evaluatePolicy");
     expectExport(providersApi, "ProcessMemoryProvider");
     expectExport(providersApi, "DeviceMemoryProvider");
