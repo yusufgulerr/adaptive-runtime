@@ -6,6 +6,35 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) after 1.0.
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-10-24
+
+### Added
+
+- **Runtime inspection APIs (`getOperationPolicy`, `getTrackedOperations`, `getAllStats`):**
+  - `runtime.getOperationPolicy(operationId)` retrieves the registered policy definition for an operation.
+  - `runtime.getTrackedOperations()` enumerates all currently tracked operation IDs.
+  - `runtime.getAllStats()` returns an immutable snapshot mapping of operational statistics across all tracked operations.
+- **Configurable quality check detail length bounding (`maxQualityCheckDetailLength`):**
+  - Allows configuring maximum detail string length (default: 1,000 characters) on runtime options, truncating excessive error or diagnostic detail strings defensively.
+- **Built-in policy selectors and formatting utilities:**
+  - Standard selectors `lowestLatencySelector`, `lowestErrorRateSelector`, and `balancedLatencyAndErrorSelector` exported from `adaptive-runtime/policy`.
+  - `formatDecisionSummary(decision)` utility for human-readable diagnostic logging of policy decisions.
+- **OpenTelemetry UpDownCounter LRU series bounding (`maxSeries`):**
+  - Protects `attachOpenTelemetryMeter` against high-cardinality series memory growth by enforcing an LRU eviction bound (configurable via `maxSeries`, default: 1,000) on UpDownCounter delta tracking maps.
+- **Enhanced Provider Conformance Test Suite:**
+  - `runProviderConformanceCheck` in `adaptive-runtime/testing` now validates that providers explicitly report `unsupported` status after `close()`, and verifies `drainProviderErrors()` bridge contract compliance.
+
+### Changed
+
+- **EventLoopUtilizationProvider branch coverage and validation:**
+  - Streamlined option parsing and input validation branches in `EventLoopUtilizationProvider` with comprehensive test coverage.
+- **Package subpath export verification:**
+  - Enhanced `scripts/verify-package-exports.mjs` with comprehensive export assertions across all 10 documented entry points and runtime symbols.
+
+### Fixed
+
+- Fixed tier-5 adversarial soak test policy definitions to align with strict `PolicyDefinition` schema.
+
 ## [0.5.0] — 2026-10-23
 
 ### Added

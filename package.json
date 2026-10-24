@@ -1,6 +1,6 @@
 {
   "name": "adaptive-runtime",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Deterministic, zero-dependency adaptive execution runtime for TypeScript across Node.js, browsers, and edge/WinterCG runtimes — orchestrating algorithmic strategies via explicit resource signals, budgets, and hysteresis policies.",
   "license": "Apache-2.0",
   "author": "The Adaptive Runtime Contributors",
