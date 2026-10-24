@@ -1021,6 +1021,274 @@ describe("Observability Bridge Unit Tests", () => {
       });
       assert.equal(safeCounters.get("adaptive_runtime_runtime_closed_total")?.adds.length, 1);
     });
+
+    it("automatically purges OpenTelemetry series on runtime.removeOperation and resets delta tracking", () => {
+      const mockRuntime = new MockEmitterRuntime();
+      let removeCalled = false;
+      let removeArg = "";
+      (mockRuntime as unknown as Record<string, unknown>).removeOperation = (
+        opId: string,
+      ): boolean => {
+        removeCalled = true;
+        removeArg = opId;
+        return true;
+      };
+
+      const mockMeter = new MockOpenTelemetryMeter();
+      const sub = attachOpenTelemetryMeter(mockRuntime as unknown as AdaptiveRuntime, mockMeter);
+
+      const emitDecision = (opId: string, val: number, engaged: boolean) => {
+        mockRuntime.emit("decision", {
+          decision: makeDecision({
+            operationId: opId,
+            signals: [{ name: "mem.used", status: "ok", value: val, unit: "bytes" }],
+            budgets: [
+              {
+                id: "mem.budget",
+                signal: "mem.used",
+                status: "ok",
+                engaged,
+                limit: 100,
+                recoverBelow: 50,
+                tierReduction: 1,
+              },
+            ],
+          }),
+        });
+      };
+
+      // 1. First decision: records initial value 50 and engaged: 1
+      emitDecision("op-test", 50, true);
+      const signalUpDown = mockMeter.upDownCounters.get("adaptive_runtime_signal_reading");
+      const budgetUpDown = mockMeter.upDownCounters.get("adaptive_runtime_budget_engaged");
+      assert.equal(signalUpDown?.adds.length, 1);
+      assert.equal(signalUpDown?.adds[0]?.value, 50);
+      assert.equal(budgetUpDown?.adds.length, 1);
+      assert.equal(budgetUpDown?.adds[0]?.value, 1);
+
+      // 2. Second decision with SAME value: delta is 0, so no new add is emitted
+      emitDecision("op-test", 50, true);
+      assert.equal(signalUpDown?.adds.length, 1);
+      assert.equal(budgetUpDown?.adds.length, 1);
+
+      // 3. Remove operation from runtime
+      const removed = (mockRuntime as unknown as AdaptiveRuntime).removeOperation("op-test");
+      assert.equal(removed, true);
+      assert.equal(removeCalled, true);
+      assert.equal(removeArg, "op-test");
+
+      // 4. Third decision with SAME value (50, true) after operation removal:
+      // Because series was purged, previous value is gone, so delta converges from zero again!
+      emitDecision("op-test", 50, true);
+      assert.equal(signalUpDown?.adds.length, 2);
+      assert.equal(signalUpDown?.adds[1]?.value, 50);
+      assert.equal(budgetUpDown?.adds.length, 2);
+      assert.equal(budgetUpDown?.adds[1]?.value, 1);
+
+      sub();
+    });
+
+    it("supports explicit series purging via subscription.purgeOperation and subscription.removeOperation", () => {
+      const mockRuntime = new MockEmitterRuntime();
+      const mockMeter = new MockOpenTelemetryMeter();
+      const sub = attachOpenTelemetryMeter(mockRuntime as unknown as AdaptiveRuntime, mockMeter);
+
+      assert.equal(typeof sub.purgeOperation, "function");
+      assert.equal(typeof sub.removeOperation, "function");
+
+      // Validates argument
+      assert.throws(() => sub.purgeOperation(""), ConfigurationError);
+      assert.throws(() => sub.purgeOperation("   "), ConfigurationError);
+      assert.throws(() => sub.purgeOperation(null as unknown as string), ConfigurationError);
+      assert.throws(() => sub.purgeOperation(123 as unknown as string), ConfigurationError);
+      assert.throws(() => sub.removeOperation(""), ConfigurationError);
+
+      const emitDecision = (opId: string, val: number) => {
+        mockRuntime.emit("decision", {
+          decision: makeDecision({
+            operationId: opId,
+            signals: [{ name: "cpu", status: "ok", value: val, unit: "ratio" }],
+            budgets: [],
+          }),
+        });
+      };
+
+      emitDecision("op-explicit", 0.7);
+      const signalUpDown = mockMeter.upDownCounters.get("adaptive_runtime_signal_reading");
+      assert.equal(signalUpDown?.adds.length, 1);
+      assert.equal(signalUpDown?.adds[0]?.value, 0.7);
+
+      // Re-emitting same value is suppressed
+      emitDecision("op-explicit", 0.7);
+      assert.equal(signalUpDown?.adds.length, 1);
+
+      // Explicit purge with whitespace trimming
+      sub.purgeOperation("  op-explicit  ");
+
+      // Re-emitting now writes full value again
+      emitDecision("op-explicit", 0.7);
+      assert.equal(signalUpDown?.adds.length, 2);
+      assert.equal(signalUpDown?.adds[1]?.value, 0.7);
+
+      // Non-existent operation purge is a safe no-op
+      assert.doesNotThrow(() => sub.purgeOperation("op-non-existent"));
+      assert.doesNotThrow(() => sub.removeOperation("op-non-existent"));
+
+      sub();
+    });
+
+    it("cleans up removal hook and internal maps on detach", () => {
+      const mockRuntime = new MockEmitterRuntime();
+      let removeCount = 0;
+      (mockRuntime as unknown as Record<string, unknown>).removeOperation = () => {
+        removeCount += 1;
+        return true;
+      };
+
+      const mockMeter = new MockOpenTelemetryMeter();
+      const sub = attachOpenTelemetryMeter(mockRuntime as unknown as AdaptiveRuntime, mockMeter);
+
+      // Detach
+      sub();
+
+      // removeOperation should succeed without errors and not fire any hook
+      assert.doesNotThrow(() => {
+        (mockRuntime as unknown as AdaptiveRuntime).removeOperation("op-any");
+      });
+      assert.equal(removeCount, 1);
+
+      // purgeOperation on detached subscription is safe
+      assert.doesNotThrow(() => sub.purgeOperation("op-any"));
+    });
+
+    it("does not purge series when runtime.removeOperation returns false", () => {
+      const mockRuntime = new MockEmitterRuntime();
+      (mockRuntime as unknown as Record<string, unknown>).removeOperation = () => false;
+
+      const mockMeter = new MockOpenTelemetryMeter();
+      const sub = attachOpenTelemetryMeter(mockRuntime as unknown as AdaptiveRuntime, mockMeter);
+
+      mockRuntime.emit("decision", {
+        decision: makeDecision({
+          operationId: "op-locked",
+          signals: [{ name: "cpu", status: "ok", value: 10, unit: "ratio" }],
+          budgets: [],
+        }),
+      });
+
+      const signalUpDown = mockMeter.upDownCounters.get("adaptive_runtime_signal_reading");
+      assert.equal(signalUpDown?.adds.length, 1);
+
+      // Attempt remove, returns false
+      const result = (mockRuntime as unknown as AdaptiveRuntime).removeOperation("op-locked");
+      assert.equal(result, false);
+
+      // Re-emit same value: because removal returned false, series was NOT purged, so 0 delta is suppressed!
+      mockRuntime.emit("decision", {
+        decision: makeDecision({
+          operationId: "op-locked",
+          signals: [{ name: "cpu", status: "ok", value: 10, unit: "ratio" }],
+          budgets: [],
+        }),
+      });
+      assert.equal(signalUpDown?.adds.length, 1);
+
+      sub();
+    });
+
+    it("isolates errors thrown in removal hooks", () => {
+      const mockRuntime = new MockEmitterRuntime();
+      (mockRuntime as unknown as Record<string, unknown>).removeOperation = () => true;
+
+      const sub1 = attachOpenTelemetryMeter(
+        mockRuntime as unknown as AdaptiveRuntime,
+        new MockOpenTelemetryMeter(),
+      );
+      const sub2 = attachOpenTelemetryMeter(
+        mockRuntime as unknown as AdaptiveRuntime,
+        new MockOpenTelemetryMeter(),
+      );
+
+      const REMOVAL_HOOKS = Symbol.for("adaptive-runtime.observability.removeOperationHooks");
+      const hooks = (mockRuntime as unknown as Record<symbol, unknown>)[REMOVAL_HOOKS] as Set<
+        (opId: string) => void
+      >;
+      assert.ok(hooks && hooks.size === 2);
+
+      const firstHook = Array.from(hooks)[0];
+      if (firstHook !== undefined) {
+        hooks.delete(firstHook);
+      }
+      hooks.add(() => {
+        throw new Error("hook explosion");
+      });
+
+      assert.doesNotThrow(() => {
+        const removed = (mockRuntime as unknown as AdaptiveRuntime).removeOperation("op-faulty");
+        assert.equal(removed, true);
+      });
+
+      sub1();
+      sub2();
+    });
+
+    it("handles runtime without removeOperation method gracefully", () => {
+      const mockRuntime = new MockEmitterRuntime();
+      const mockMeter = new MockOpenTelemetryMeter();
+      const sub = attachOpenTelemetryMeter(mockRuntime as unknown as AdaptiveRuntime, mockMeter);
+      assert.equal(typeof sub, "function");
+      assert.doesNotThrow(() => sub());
+    });
+
+    it("syncs MetricsCollector auto-purge with runtime.removeOperation on attach", () => {
+      const mockRuntime = new MockEmitterRuntime();
+      (mockRuntime as unknown as Record<string, unknown>).removeOperation = () => true;
+
+      const collector = createMetricsCollector();
+      const unsub = collector.attach(mockRuntime as unknown as AdaptiveRuntime);
+
+      mockRuntime.emit("decision", {
+        decision: makeDecision({
+          operationId: "op-collector-sync",
+          signals: [{ name: "load", status: "ok", value: 0.8, unit: "ratio" }],
+          budgets: [],
+        }),
+      });
+      mockRuntime.emit("run:success", {
+        metadata: {
+          operationId: "op-collector-sync",
+          strategyId: "strat",
+          qualityTier: 1,
+          startedAt: 100,
+          finishedAt: 150,
+          durationMs: 50,
+          attempts: 1,
+          quality: { status: "passed" },
+          decision: makeDecision(),
+          signals: [],
+        },
+      });
+
+      assert.ok(
+        collector.getSnapshot().gauges.some((g) => g.labels.operation_id === "op-collector-sync"),
+      );
+      assert.ok(
+        collector.getSnapshot().counters.some((c) => c.labels.operation_id === "op-collector-sync"),
+      );
+
+      (mockRuntime as unknown as AdaptiveRuntime).removeOperation("op-collector-sync");
+
+      assert.equal(
+        collector.getSnapshot().gauges.some((g) => g.labels.operation_id === "op-collector-sync"),
+        false,
+      );
+      assert.equal(
+        collector.getSnapshot().counters.some((c) => c.labels.operation_id === "op-collector-sync"),
+        false,
+      );
+
+      unsub();
+    });
   });
 
   describe("createMetricsCollector & MetricsCollector", () => {

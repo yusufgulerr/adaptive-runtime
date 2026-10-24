@@ -632,7 +632,7 @@ describe("runProviderConformanceCheck", () => {
     const report = await runProviderConformanceCheck({
       id: "readings",
       signals: [
-        { name: "ok", unit: "count" },
+        { name: "ok", unit: "count", description: "valid description" },
         { name: "duplicate", unit: "count" },
         { name: "bad-unit", unit: "count" },
         { name: "bad-time", unit: "count" },
@@ -646,7 +646,14 @@ describe("runProviderConformanceCheck", () => {
           null,
           { name: "", unit: "count", status: "ok", value: 1, observedAt: context.now },
           { name: "undeclared", unit: "count", status: "ok", value: 1, observedAt: context.now },
-          { name: "ok", unit: "count", status: "ok", value: 1, observedAt: context.now },
+          {
+            name: "ok",
+            unit: "count",
+            status: "ok",
+            value: 1,
+            observedAt: context.now,
+            confidence: 0.8,
+          },
           {
             name: "ok",
             unit: "count",
