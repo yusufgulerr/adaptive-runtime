@@ -35,6 +35,7 @@ export {
 } from "./engine.js";
 export { resolvePolicy } from "./resolve.js";
 export {
+  composeSelectors,
   createErrorRateGuardSelector,
   createLatencyBudgetSelector,
   type ErrorRateGuardSelectorOptions,

@@ -2,14 +2,24 @@ import { ConfigurationError } from "../errors/index.js";
 import type { StrategyDecision } from "../types/decision.js";
 import type { CustomPolicySelector, CustomSelectorCandidate } from "../types/policy.js";
 
+declare module "../types/policy.js" {
+  interface CustomSelectorCandidate {
+    /** Number of execution samples observed for this candidate, or null/undefined if untracked. */
+    readonly samples?: number | null;
+  }
+}
+
 export interface ErrorRateGuardSelectorOptions {
   readonly maxErrorRate: number;
   readonly fallbackSelector?: CustomPolicySelector;
+  readonly minSamples?: number;
 }
 
 export interface LatencyBudgetSelectorOptions {
   readonly maxLatencyMs: number;
   readonly preferLowestCost?: boolean;
+  readonly fallbackSelector?: CustomPolicySelector;
+  readonly useEwma?: boolean;
 }
 
 function compareCandidatesQualityFirst(
@@ -42,6 +52,23 @@ function compareCandidatesCostFirst(
   return a.candidate.id < b.candidate.id ? -1 : a.candidate.id > b.candidate.id ? 1 : 0;
 }
 
+function getCandidateSamples(c: CustomSelectorCandidate): number | null {
+  const raw =
+    (c as { samples?: number | null; sampleCount?: number | null; runs?: number | null }).samples ??
+    (c as { sampleCount?: number | null }).sampleCount ??
+    (c as { runs?: number | null }).runs;
+  return typeof raw === "number" && Number.isFinite(raw) && raw >= 0 ? raw : null;
+}
+
+function getCandidateLatency(c: CustomSelectorCandidate, useEwma: boolean): number | null {
+  if (useEwma) {
+    const ewma = c.ewmaLatencyMs;
+    return typeof ewma === "number" && Number.isFinite(ewma) ? ewma : null;
+  }
+  const est = c.estimatedLatencyMs;
+  return typeof est === "number" && Number.isFinite(est) ? est : null;
+}
+
 /**
  * Creates a pure custom selector that filters out strategy candidates whose
  * observed error rate exceeds `maxErrorRate`.
@@ -58,7 +85,7 @@ export function createErrorRateGuardSelector(
   if (options === null || typeof options !== "object") {
     throw new ConfigurationError("options must be an object.");
   }
-  const { maxErrorRate, fallbackSelector } = options;
+  const { maxErrorRate, fallbackSelector, minSamples = 1 } = options;
   if (
     typeof maxErrorRate !== "number" ||
     !Number.isFinite(maxErrorRate) ||
@@ -70,6 +97,9 @@ export function createErrorRateGuardSelector(
   if (fallbackSelector !== undefined && typeof fallbackSelector !== "function") {
     throw new ConfigurationError("fallbackSelector must be a function.");
   }
+  if (typeof minSamples !== "number" || !Number.isSafeInteger(minSamples) || minSamples < 1) {
+    throw new ConfigurationError("minSamples must be a positive integer.");
+  }
 
   return (context) => {
     if (context.candidates.length === 0) {
@@ -77,6 +107,10 @@ export function createErrorRateGuardSelector(
     }
 
     const eligible = context.candidates.filter((c) => {
+      const samples = getCandidateSamples(c);
+      if (samples !== null && samples < minSamples) {
+        return true;
+      }
       const rate = c.errorRate;
       return rate === null || rate === undefined || rate <= maxErrorRate;
     });
@@ -90,9 +124,15 @@ export function createErrorRateGuardSelector(
       }
       const sorted = [...eligible].sort(compareCandidatesQualityFirst);
       const chosen = sorted[0] as CustomSelectorCandidate;
+      const isColdStart = typeof chosen.errorRate === "number" && chosen.errorRate > maxErrorRate;
+
+      const reason = isColdStart
+        ? `error-rate-guard: selected cold-start strategy "${chosen.candidate.id}" with errorRate ${chosen.errorRate} (samples < minSamples ${minSamples})`
+        : `error-rate-guard: selected strategy "${chosen.candidate.id}" with errorRate ${chosen.errorRate ?? 0} <= ${maxErrorRate}`;
+
       return {
         strategyId: chosen.candidate.id,
-        reason: `error-rate-guard: selected strategy "${chosen.candidate.id}" with errorRate ${chosen.errorRate ?? 0} <= ${maxErrorRate}`,
+        reason,
       };
     }
 
@@ -126,9 +166,15 @@ export function createLatencyBudgetSelector(
   if (options === null || typeof options !== "object") {
     throw new ConfigurationError("options must be an object.");
   }
-  const { maxLatencyMs, preferLowestCost } = options;
+  const { maxLatencyMs, preferLowestCost, fallbackSelector, useEwma = false } = options;
   if (typeof maxLatencyMs !== "number" || !Number.isFinite(maxLatencyMs) || maxLatencyMs <= 0) {
     throw new ConfigurationError("maxLatencyMs must be a positive finite number.");
+  }
+  if (fallbackSelector !== undefined && typeof fallbackSelector !== "function") {
+    throw new ConfigurationError("fallbackSelector must be a function.");
+  }
+  if (typeof useEwma !== "boolean") {
+    throw new ConfigurationError("useEwma must be a boolean.");
   }
 
   const comparator = preferLowestCost ? compareCandidatesCostFirst : compareCandidatesQualityFirst;
@@ -138,32 +184,80 @@ export function createLatencyBudgetSelector(
       return null;
     }
 
-    const withinBudget = context.candidates.filter(
-      (c) => c.estimatedLatencyMs === null || c.estimatedLatencyMs <= maxLatencyMs,
-    );
+    const withinBudget = context.candidates.filter((c) => {
+      const lat = getCandidateLatency(c, useEwma);
+      return lat === null || lat <= maxLatencyMs;
+    });
 
     if (withinBudget.length > 0) {
+      if (fallbackSelector !== undefined) {
+        const delegated = fallbackSelector({ ...context, candidates: withinBudget });
+        if (delegated !== null && delegated !== undefined) {
+          return delegated;
+        }
+      }
       const sorted = [...withinBudget].sort(comparator);
       const chosen = sorted[0] as CustomSelectorCandidate;
+      const chosenLatency = getCandidateLatency(chosen, useEwma);
       return {
         strategyId: chosen.candidate.id,
-        reason: `latency-budget: selected strategy "${chosen.candidate.id}" within budget ${maxLatencyMs}ms (latency=${chosen.estimatedLatencyMs ?? "unmeasured"}ms)`,
+        reason: `latency-budget: selected strategy "${chosen.candidate.id}" within budget ${maxLatencyMs}ms (latency=${chosenLatency ?? "unmeasured"}ms)`,
       };
     }
 
     const sortedByLatency = [...context.candidates].sort((a, b) => {
-      const latA = a.estimatedLatencyMs ?? Number.POSITIVE_INFINITY;
-      const latB = b.estimatedLatencyMs ?? Number.POSITIVE_INFINITY;
+      const latA = getCandidateLatency(a, useEwma) ?? Number.POSITIVE_INFINITY;
+      const latB = getCandidateLatency(b, useEwma) ?? Number.POSITIVE_INFINITY;
       if (latA !== latB) {
         return latA - latB;
       }
       return comparator(a, b);
     });
     const chosen = sortedByLatency[0] as CustomSelectorCandidate;
+    const chosenLatency = getCandidateLatency(chosen, useEwma);
     return {
       strategyId: chosen.candidate.id,
-      reason: `latency-budget: all candidates exceeded budget ${maxLatencyMs}ms; selected candidate "${chosen.candidate.id}" with lowest latency ${chosen.estimatedLatencyMs}ms`,
+      reason: `latency-budget: all candidates exceeded budget ${maxLatencyMs}ms; selected candidate "${chosen.candidate.id}" with lowest latency ${chosenLatency}ms`,
     };
+  };
+}
+
+/**
+ * Composes multiple CustomPolicySelector functions into a single sequential
+ * pipeline. Selectors are evaluated in the order provided.
+ *
+ * The first selector that returns a non-null, non-undefined selection determines
+ * the outcome. If all selectors return null or undefined, the composed selector
+ * returns null (allowing downstream policy defaults to take effect).
+ *
+ * If `context.candidates` is empty, evaluation short-circuits to null.
+ */
+export function composeSelectors(selectors: readonly CustomPolicySelector[]): CustomPolicySelector {
+  if (!Array.isArray(selectors)) {
+    throw new ConfigurationError("selectors must be an array.");
+  }
+  if (selectors.length === 0) {
+    throw new ConfigurationError("selectors must not be empty.");
+  }
+  for (let i = 0; i < selectors.length; i++) {
+    if (typeof selectors[i] !== "function") {
+      throw new ConfigurationError(`Selector at index ${i} must be a function.`);
+    }
+  }
+
+  const pipeline = [...selectors];
+
+  return (context) => {
+    if (context.candidates.length === 0) {
+      return null;
+    }
+    for (const selector of pipeline) {
+      const selection = selector(context);
+      if (selection !== null && selection !== undefined) {
+        return selection;
+      }
+    }
+    return null;
   };
 }
 

@@ -9,6 +9,7 @@ import {
 } from "../../src/policy/engine.js";
 import { resolvePolicy } from "../../src/policy/resolve.js";
 import {
+  composeSelectors,
   createErrorRateGuardSelector,
   createLatencyBudgetSelector,
 } from "../../src/policy/selectors.js";
@@ -209,6 +210,10 @@ describe("property: policy evaluation", () => {
         estimatedLatencyMs: fc.option(fc.double({ min: 1, max: 1_000, noNaN: true }), {
           nil: null,
         }),
+        ewmaLatencyMs: fc.option(fc.double({ min: 1, max: 1_000, noNaN: true }), {
+          nil: null,
+        }),
+        samples: fc.option(fc.integer({ min: 0, max: 100 }), { nil: null }),
       }),
       { minLength: 1, maxLength: 6, selector: (c) => c.id },
     );
@@ -256,6 +261,10 @@ describe("property: policy evaluation", () => {
         estimatedLatencyMs: fc.option(fc.double({ min: 1, max: 1_000, noNaN: true }), {
           nil: null,
         }),
+        ewmaLatencyMs: fc.option(fc.double({ min: 1, max: 1_000, noNaN: true }), {
+          nil: null,
+        }),
+        samples: fc.option(fc.integer({ min: 0, max: 100 }), { nil: null }),
       }),
       { minLength: 1, maxLength: 6, selector: (c) => c.id },
     );
@@ -288,6 +297,122 @@ describe("property: policy evaluation", () => {
         );
         assert.equal(result.decision.strategyId, chosen.id);
       }),
+      { numRuns: fuzzRuns },
+    );
+  });
+
+  it("always selects an eligible automatic candidate with composeSelectors pipeline", () => {
+    const richCandidatesArb = fc.uniqueArray(
+      fc.record({
+        id: identifierArb,
+        qualityTier: fc.integer({ min: 1, max: 5 }),
+        costTier: fc.option(fc.integer({ min: 1, max: 5 }), { nil: undefined }),
+        applicable: fc.boolean(),
+        errorRate: fc.option(fc.double({ min: 0, max: 1, noNaN: true }), { nil: null }),
+        estimatedLatencyMs: fc.option(fc.double({ min: 1, max: 1_000, noNaN: true }), {
+          nil: null,
+        }),
+        ewmaLatencyMs: fc.option(fc.double({ min: 1, max: 1_000, noNaN: true }), {
+          nil: null,
+        }),
+        samples: fc.option(fc.integer({ min: 0, max: 100 }), { nil: null }),
+      }),
+      { minLength: 1, maxLength: 6, selector: (c) => c.id },
+    );
+
+    fc.assert(
+      fc.property(
+        richCandidatesArb,
+        errorRateGuardOptionsArb,
+        latencyBudgetOptionsArb,
+        (candidates, errOptions, latOptions) => {
+          const composed = composeSelectors([
+            createErrorRateGuardSelector(errOptions),
+            createLatencyBudgetSelector(latOptions),
+          ]);
+          const policy = resolvePolicy({
+            customSelector: composed,
+          });
+          const automatic = filterAutomaticCandidates(candidates, policy);
+          fc.pre(automatic.length > 0);
+
+          const state = createInitialPolicyState();
+          const input: PolicyEvaluationInput = {
+            operationId: "fuzz-compose-selectors",
+            now: 1000,
+            signals: [],
+            strategies: candidates,
+            pinnedStrategyId: null,
+            adaptationEnabled: true,
+            sampleSequence: 1,
+            signalsCached: false,
+          };
+
+          const result = evaluatePolicy(state, input, policy);
+          const chosen = automatic.find((c) => c.id === result.decision.strategyId);
+          assert.ok(
+            chosen,
+            `chosen candidate ${result.decision.strategyId} must belong to automatic pool`,
+          );
+          assert.equal(result.decision.strategyId, chosen.id);
+        },
+      ),
+      { numRuns: fuzzRuns },
+    );
+  });
+
+  it("is pure and deterministic when evaluated under composeSelectors", () => {
+    const richCandidatesArb = fc.uniqueArray(
+      fc.record({
+        id: identifierArb,
+        qualityTier: fc.integer({ min: 1, max: 5 }),
+        costTier: fc.option(fc.integer({ min: 1, max: 5 }), { nil: undefined }),
+        applicable: fc.boolean(),
+        errorRate: fc.option(fc.double({ min: 0, max: 1, noNaN: true }), { nil: null }),
+        estimatedLatencyMs: fc.option(fc.double({ min: 1, max: 1_000, noNaN: true }), {
+          nil: null,
+        }),
+        ewmaLatencyMs: fc.option(fc.double({ min: 1, max: 1_000, noNaN: true }), {
+          nil: null,
+        }),
+        samples: fc.option(fc.integer({ min: 0, max: 100 }), { nil: null }),
+      }),
+      { minLength: 1, maxLength: 6, selector: (c) => c.id },
+    );
+
+    fc.assert(
+      fc.property(
+        richCandidatesArb,
+        errorRateGuardOptionsArb,
+        latencyBudgetOptionsArb,
+        (candidates, errOptions, latOptions) => {
+          const composed = composeSelectors([
+            createErrorRateGuardSelector(errOptions),
+            createLatencyBudgetSelector(latOptions),
+          ]);
+          const policy = resolvePolicy({
+            customSelector: composed,
+          });
+          const automatic = filterAutomaticCandidates(candidates, policy);
+          fc.pre(automatic.length > 0);
+
+          const state = createInitialPolicyState();
+          const input: PolicyEvaluationInput = {
+            operationId: "fuzz-compose-determinism",
+            now: 1000,
+            signals: [],
+            strategies: candidates,
+            pinnedStrategyId: null,
+            adaptationEnabled: true,
+            sampleSequence: 1,
+            signalsCached: false,
+          };
+
+          const first = evaluatePolicy(state, input, policy);
+          const second = evaluatePolicy(state, input, policy);
+          assert.deepEqual(first, second);
+        },
+      ),
       { numRuns: fuzzRuns },
     );
   });
