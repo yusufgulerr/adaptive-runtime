@@ -11,11 +11,17 @@ import { resolvePolicy } from "../../src/policy/resolve.js";
 import {
   createErrorRateGuardSelector,
   createLatencyBudgetSelector,
+  type ErrorRateGuardSelectorOptions,
   formatDecisionSummary,
+  type LatencyBudgetSelectorOptions,
 } from "../../src/policy/selectors.js";
 import { createAdaptiveRuntime } from "../../src/runtime/runtime.js";
 import type { StrategyDecision } from "../../src/types/decision.js";
-import type { CustomSelectorCandidate, Policy } from "../../src/types/policy.js";
+import type {
+  CustomPolicySelector,
+  CustomSelectorCandidate,
+  Policy,
+} from "../../src/types/policy.js";
 import type { Strategy } from "../../src/types/strategy.js";
 import { FakeClock } from "../helpers/fake-clock.js";
 
@@ -693,14 +699,26 @@ describe("Built-in Policy Selectors and formatDecisionSummary", () => {
 
   describe("createErrorRateGuardSelector", () => {
     it("validates input options", () => {
-      // @ts-expect-error invalid options
-      assert.throws(() => createErrorRateGuardSelector(null), ConfigurationError);
+      assert.throws(
+        () => createErrorRateGuardSelector(null as unknown as ErrorRateGuardSelectorOptions),
+        ConfigurationError,
+      );
+      assert.throws(
+        () => createErrorRateGuardSelector({ maxErrorRate: "0.1" as unknown as number }),
+        ConfigurationError,
+      );
       assert.throws(() => createErrorRateGuardSelector({ maxErrorRate: -0.1 }), ConfigurationError);
       assert.throws(() => createErrorRateGuardSelector({ maxErrorRate: 1.1 }), ConfigurationError);
-      assert.throws(() => createErrorRateGuardSelector({ maxErrorRate: Number.NaN }), ConfigurationError);
       assert.throws(
-        // @ts-expect-error invalid fallbackSelector
-        () => createErrorRateGuardSelector({ maxErrorRate: 0.5, fallbackSelector: "invalid" }),
+        () => createErrorRateGuardSelector({ maxErrorRate: Number.NaN }),
+        ConfigurationError,
+      );
+      assert.throws(
+        () =>
+          createErrorRateGuardSelector({
+            maxErrorRate: 0.5,
+            fallbackSelector: "invalid" as unknown as CustomPolicySelector,
+          }),
         ConfigurationError,
       );
     });
@@ -756,7 +774,10 @@ describe("Built-in Policy Selectors and formatDecisionSummary", () => {
         signals: {},
         now: 1000,
       });
-      assert.equal(typeof resRelaxed === "object" ? resRelaxed?.strategyId : resRelaxed, "fail-heavy");
+      assert.equal(
+        typeof resRelaxed === "object" ? resRelaxed?.strategyId : resRelaxed,
+        "fail-heavy",
+      );
     });
 
     it("chains to fallbackSelector when provided and eligible candidates exist", () => {
@@ -769,11 +790,7 @@ describe("Built-in Policy Selectors and formatDecisionSummary", () => {
         },
       });
 
-      const cands = [
-        cand("a", 2, 2, 0.1),
-        cand("b", 1, 1, 0.05),
-        cand("c", 3, 3, 0.8),
-      ];
+      const cands = [cand("a", 2, 2, 0.1), cand("b", 1, 1, 0.05), cand("c", 3, 3, 0.8)];
       const result = selector({
         operation: "test",
         candidates: cands,
@@ -804,11 +821,7 @@ describe("Built-in Policy Selectors and formatDecisionSummary", () => {
 
     it("selects lowest errorRate candidate when all candidates exceed maxErrorRate", () => {
       const selector = createErrorRateGuardSelector({ maxErrorRate: 0.1 });
-      const cands = [
-        cand("terrible", 3, 1, 0.9),
-        cand("bad", 2, 1, 0.4),
-        cand("worse", 1, 1, 0.6),
-      ];
+      const cands = [cand("terrible", 3, 1, 0.9), cand("bad", 2, 1, 0.4), cand("worse", 1, 1, 0.6)];
       const result = selector({
         operation: "test",
         candidates: cands,
@@ -822,10 +835,7 @@ describe("Built-in Policy Selectors and formatDecisionSummary", () => {
 
     it("breaks ties by code-unit id comparison when quality, cost and error rate match", () => {
       const selector = createErrorRateGuardSelector({ maxErrorRate: 0.5 });
-      const cands = [
-        cand("beta", 2, 1, 0.1),
-        cand("alpha", 2, 1, 0.1),
-      ];
+      const cands = [cand("beta", 2, 1, 0.1), cand("alpha", 2, 1, 0.1)];
       const result = selector({
         operation: "test",
         candidates: cands,
@@ -839,11 +849,20 @@ describe("Built-in Policy Selectors and formatDecisionSummary", () => {
 
   describe("createLatencyBudgetSelector", () => {
     it("validates input options", () => {
-      // @ts-expect-error invalid options
-      assert.throws(() => createLatencyBudgetSelector(null), ConfigurationError);
+      assert.throws(
+        () => createLatencyBudgetSelector(null as unknown as LatencyBudgetSelectorOptions),
+        ConfigurationError,
+      );
+      assert.throws(
+        () => createLatencyBudgetSelector({ maxLatencyMs: "50" as unknown as number }),
+        ConfigurationError,
+      );
       assert.throws(() => createLatencyBudgetSelector({ maxLatencyMs: 0 }), ConfigurationError);
       assert.throws(() => createLatencyBudgetSelector({ maxLatencyMs: -5 }), ConfigurationError);
-      assert.throws(() => createLatencyBudgetSelector({ maxLatencyMs: Number.NaN }), ConfigurationError);
+      assert.throws(
+        () => createLatencyBudgetSelector({ maxLatencyMs: Number.NaN }),
+        ConfigurationError,
+      );
     });
 
     it("returns null when candidates are empty", () => {
@@ -879,10 +898,7 @@ describe("Built-in Policy Selectors and formatDecisionSummary", () => {
       const qualityFirst = createLatencyBudgetSelector({ maxLatencyMs: 50 });
       const costFirst = createLatencyBudgetSelector({ maxLatencyMs: 50, preferLowestCost: true });
 
-      const cands = [
-        cand("high-cost", 3, 3, null, 25),
-        cand("cheap-low-quality", 1, 1, null, 20),
-      ];
+      const cands = [cand("high-cost", 3, 3, null, 25), cand("cheap-low-quality", 1, 1, null, 20)];
       const resQ = qualityFirst({ operation: "test", candidates: cands, signals: {}, now: 1000 });
       const resC = costFirst({ operation: "test", candidates: cands, signals: {}, now: 1000 });
 
@@ -890,11 +906,12 @@ describe("Built-in Policy Selectors and formatDecisionSummary", () => {
       assert.equal(typeof resC === "object" ? resC?.strategyId : resC, "cheap-low-quality");
     });
 
-    it("selects lowest latency candidate when all exceed maxLatencyMs", () => {
+    it("selects lowest latency candidate when all exceed maxLatencyMs and breaks ties", () => {
       const selector = createLatencyBudgetSelector({ maxLatencyMs: 50 });
       const cands = [
         cand("slow", 3, 1, null, 120),
-        cand("moderate", 2, 2, null, 65),
+        cand("moderate-b", 2, 2, null, 65),
+        cand("moderate-a", 2, 1, null, 65), // lower cost wins tie
         cand("very-slow", 1, 1, null, 200),
       ];
       const result = selector({
@@ -904,8 +921,22 @@ describe("Built-in Policy Selectors and formatDecisionSummary", () => {
         now: 1000,
       });
       assert.ok(typeof result === "object" && result !== null);
-      assert.equal(result.strategyId, "moderate");
+      assert.equal(result.strategyId, "moderate-a");
       assert.ok(result.reason?.includes("all candidates exceeded budget"));
+    });
+
+    it("breaks ties in preferLowestCost when cost is identical but quality differs", () => {
+      const costFirst = createLatencyBudgetSelector({ maxLatencyMs: 50, preferLowestCost: true });
+      const cands = [cand("cheap-low", 1, 1, null, 20), cand("cheap-high", 3, 1, null, 20)];
+      const res = costFirst({ operation: "test", candidates: cands, signals: {}, now: 1000 });
+      assert.equal(typeof res === "object" ? res?.strategyId : res, "cheap-high");
+    });
+
+    it("breaks ties by code-unit id when quality and cost are identical", () => {
+      const selector = createLatencyBudgetSelector({ maxLatencyMs: 50 });
+      const cands = [cand("strat-z", 2, 1, null, 20), cand("strat-a", 2, 1, null, 20)];
+      const res = selector({ operation: "test", candidates: cands, signals: {}, now: 1000 });
+      assert.equal(typeof res === "object" ? res?.strategyId : res, "strat-a");
     });
   });
 
@@ -976,4 +1007,3 @@ describe("Built-in Policy Selectors and formatDecisionSummary", () => {
     });
   });
 });
-

@@ -89,10 +89,7 @@ export function createErrorRateGuardSelector(
         }
       }
       const sorted = [...eligible].sort(compareCandidatesQualityFirst);
-      const chosen = sorted[0];
-      if (chosen === undefined) {
-        return null;
-      }
+      const chosen = sorted[0] as CustomSelectorCandidate;
       return {
         strategyId: chosen.candidate.id,
         reason: `error-rate-guard: selected strategy "${chosen.candidate.id}" with errorRate ${chosen.errorRate ?? 0} <= ${maxErrorRate}`,
@@ -107,10 +104,7 @@ export function createErrorRateGuardSelector(
       }
       return compareCandidatesQualityFirst(a, b);
     });
-    const fallback = sortedByError[0];
-    if (fallback === undefined) {
-      return null;
-    }
+    const fallback = sortedByError[0] as CustomSelectorCandidate;
     return {
       strategyId: fallback.candidate.id,
       reason: `error-rate-guard: all candidates exceeded maxErrorRate ${maxErrorRate}; selected candidate "${fallback.candidate.id}" with lowest errorRate ${fallback.errorRate ?? 0}`,
@@ -150,10 +144,7 @@ export function createLatencyBudgetSelector(
 
     if (withinBudget.length > 0) {
       const sorted = [...withinBudget].sort(comparator);
-      const chosen = sorted[0];
-      if (chosen === undefined) {
-        return null;
-      }
+      const chosen = sorted[0] as CustomSelectorCandidate;
       return {
         strategyId: chosen.candidate.id,
         reason: `latency-budget: selected strategy "${chosen.candidate.id}" within budget ${maxLatencyMs}ms (latency=${chosen.estimatedLatencyMs ?? "unmeasured"}ms)`,
@@ -168,10 +159,7 @@ export function createLatencyBudgetSelector(
       }
       return comparator(a, b);
     });
-    const chosen = sortedByLatency[0];
-    if (chosen === undefined) {
-      return null;
-    }
+    const chosen = sortedByLatency[0] as CustomSelectorCandidate;
     return {
       strategyId: chosen.candidate.id,
       reason: `latency-budget: all candidates exceeded budget ${maxLatencyMs}ms; selected candidate "${chosen.candidate.id}" with lowest latency ${chosen.estimatedLatencyMs}ms`,
