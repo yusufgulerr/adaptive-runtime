@@ -25,6 +25,15 @@ export const fuzzSeed = readSeed(process.env.FUZZ_SEED);
 export const asyncFuzzRuns = Math.min(fuzzRuns, 50);
 export const identifierArb = fc.stringMatching(/^[A-Za-z][A-Za-z0-9_-]{0,7}$/);
 
+export const errorRateGuardOptionsArb = fc.record({
+  maxErrorRate: fc.double({ min: 0, max: 1, noNaN: true }),
+});
+
+export const latencyBudgetOptionsArb = fc.record({
+  maxLatencyMs: fc.double({ min: 0.1, max: 10_000, noNaN: true }),
+  preferLowestCost: fc.boolean(),
+});
+
 fc.configureGlobal({ numRuns: fuzzRuns, seed: fuzzSeed });
 
 export { fc };

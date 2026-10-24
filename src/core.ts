@@ -23,6 +23,13 @@ export {
 } from "./errors/index.js";
 export { definePolicy } from "./policy/define-policy.js";
 export {
+  createErrorRateGuardSelector,
+  createLatencyBudgetSelector,
+  type ErrorRateGuardSelectorOptions,
+  formatDecisionSummary,
+  type LatencyBudgetSelectorOptions,
+} from "./policy/selectors.js";
+export {
   CompositeSignalProvider,
   type CompositeSignalProviderOptions,
   type CompositeSignalRule,

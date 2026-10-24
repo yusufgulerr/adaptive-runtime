@@ -156,6 +156,15 @@ export class StatsRegistry {
     };
   }
 
+  getAllStats(operationIds?: readonly string[]): Readonly<Record<string, RuntimeStats>> {
+    const ids = operationIds ?? [...this.#stats.keys()];
+    const result: Record<string, RuntimeStats> = {};
+    for (const id of ids) {
+      result[id] = this.get(id);
+    }
+    return Object.freeze(result);
+  }
+
   /**
    * Replaces one operation's counters with a validated snapshot. Used by state
    * hydration; callers are responsible for structural validation.
