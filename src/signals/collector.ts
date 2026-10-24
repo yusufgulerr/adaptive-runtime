@@ -89,7 +89,7 @@ function validateDescriptor(
   if (descriptor.description !== undefined && typeof descriptor.description !== "string") {
     throw new ConfigurationError(`Signal "${name}" description must be a string.`);
   }
-  return descriptor;
+  return Object.freeze({ ...descriptor });
 }
 
 /**
@@ -98,6 +98,7 @@ function validateDescriptor(
  */
 export class SignalCollector {
   readonly #entries: readonly ProviderEntry[];
+  readonly #descriptors: readonly SignalDescriptor[];
   readonly #evaluationIntervalMs: number;
   readonly #providerTimeoutMs: number;
   readonly #clock: Clock;
@@ -117,6 +118,7 @@ export class SignalCollector {
     const seenProviderIds = new Set<string>();
     const seenSignalNames = new Set<string>();
     const entries: ProviderEntry[] = [];
+    const descriptorsList: SignalDescriptor[] = [];
     for (const provider of options.providers) {
       if (provider === null || typeof provider !== "object") {
         throw new ConfigurationError("Signal providers must be objects.");
@@ -136,6 +138,7 @@ export class SignalCollector {
       for (const descriptor of provider.signals) {
         const validated = validateDescriptor(descriptor, providerId, seenSignalNames);
         descriptors.set(validated.name, validated);
+        descriptorsList.push(validated);
       }
       entries.push({
         provider,
@@ -146,10 +149,15 @@ export class SignalCollector {
       });
     }
     this.#entries = entries;
+    this.#descriptors = Object.freeze(descriptorsList);
   }
 
   get closed(): boolean {
     return this.#closed;
+  }
+
+  getDescriptors(): readonly SignalDescriptor[] {
+    return this.#descriptors;
   }
 
   async collect(

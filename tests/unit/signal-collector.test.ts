@@ -962,4 +962,67 @@ describe("SignalCollector", () => {
     assert.equal(childBContext.now, clock.now());
     assert.ok(childBContext.signal instanceof AbortSignal);
   });
+
+  describe("getDescriptors()", () => {
+    it("exposes frozen signal descriptors in provider registration and declaration order", () => {
+      const providerA: SignalProvider = {
+        id: "provider-a",
+        signals: [
+          { name: "sig.a1", unit: "count", description: "first" },
+          { name: "sig.a2", unit: "bytes" },
+        ],
+        read: () => [],
+      };
+      const providerB: SignalProvider = {
+        id: "provider-b",
+        signals: [{ name: "sig.b1", unit: "ratio" }],
+        read: () => [],
+      };
+      const { collector } = makeCollector([providerA, providerB]);
+      const descriptors = collector.getDescriptors();
+
+      assert.equal(descriptors.length, 3);
+      assert.equal(Object.isFrozen(descriptors), true);
+      assert.deepEqual(
+        descriptors.map((d) => d.name),
+        ["sig.a1", "sig.a2", "sig.b1"],
+      );
+      assert.deepEqual(descriptors[0], {
+        name: "sig.a1",
+        unit: "count",
+        description: "first",
+      });
+      for (const descriptor of descriptors) {
+        assert.equal(Object.isFrozen(descriptor), true);
+      }
+      assert.throws(() => {
+        (descriptors as unknown as unknown[]).push({ name: "illegal", unit: "count" });
+      }, TypeError);
+      assert.throws(() => {
+        (descriptors[0] as unknown as { description: string }).description = "mutated";
+      }, TypeError);
+    });
+
+    it("returns empty frozen descriptors array when collector has no providers", () => {
+      const { collector } = makeCollector([]);
+      const descriptors = collector.getDescriptors();
+
+      assert.deepEqual(descriptors, []);
+      assert.equal(Object.isFrozen(descriptors), true);
+    });
+
+    it("preserves descriptors reference across collect and close calls", async () => {
+      const provider = new FunctionSignalProvider({
+        read: (ctx) => [okSignal(PROVIDER_SIGNAL, 1, ctx.now)],
+      });
+      const { collector, clock } = makeCollector([provider]);
+      const initialDescriptors = collector.getDescriptors();
+
+      assert.equal(collector.getDescriptors(), initialDescriptors);
+      await collector.collect(clock.now(), new AbortController().signal);
+      assert.equal(collector.getDescriptors(), initialDescriptors);
+      await collector.close();
+      assert.equal(collector.getDescriptors(), initialDescriptors);
+    });
+  });
 });
