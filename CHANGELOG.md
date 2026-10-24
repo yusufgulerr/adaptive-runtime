@@ -6,6 +6,34 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) after 1.0.
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-10-24
+
+### Added
+
+- **Composable policy selectors & cold-start guards (ADR 0018):**
+  - `composeSelectors(selectors)` combinator: Deterministic pipeline evaluation that runs custom selectors sequentially and yields the first non-null/non-undefined decision.
+  - `minSamples` option (default `1`, validated safe positive integer) on `createErrorRateGuardSelector`: Prevents premature disqualification of cold-start candidates before statistically meaningful error sample counts accumulate.
+  - `fallbackSelector` and `useEwma` options on `createLatencyBudgetSelector`: Enables delegating within-budget candidate selection to secondary selectors (such as error rate guards or quality pickers) and selecting between EWMA (`ewmaLatencyMs`) and arithmetic mean (`estimatedLatencyMs`) latency measurements.
+- **Runtime introspection & configurable detail bounds:**
+  - `maxQualityCheckDetailLength` option (default `1,000`, validated safe positive integer) on `CreateRuntimeOptions`: Bounds error and diagnostic detail strings produced by quality check functions.
+  - Exact `totalDurationMs` persistence across `exportState()` and `importState()` cycles in `StatsRegistry`: Eliminates IEEE 754 floating-point drift across repeated state hydration cycles.
+  - `runtime.getEffectivePolicy(operationId)`: Resolves an operation's active policy definition without altering LRU tracking order or marking operations as active.
+  - `runtime.getProviderDescriptors()`: Returns deeply frozen signal descriptors declared by registered providers.
+- **Signal collector shared-read semantics & provider diagnostics:**
+  - `SignalSnapshot.coalesced`: Distinguishes concurrent callers joining an in-flight live collection (`cached: false, coalesced: true`) from historical cache hits (`cached: true, coalesced: false`), preventing false cached-sample penalties in policy evaluation.
+  - `collector.getDescriptors()`: Exposes immutable, frozen signal descriptors on `SignalCollector`.
+  - Resilience against cancellation storms (100+ concurrent aborts) and deterministic provider timeout recovery.
+- **Observability lifecycle synchronization & simulation fidelity:**
+  - `estimatedLatencyMs`, `ewmaLatencyMs`, and `errorRate` parameters on `SimulatedStrategy` in `adaptive-runtime/testing`: Allows realistic simulation of latency-aware and error-rate-aware policy selector logic during timeline simulations.
+  - OpenTelemetry series purging: Automatically purges internal delta state for removed operations via `runtime.removeOperation(operationId)` lifecycle hooks, preventing memory leaks in high-churn multi-tenant environments.
+- **Architecture Decision Record:**
+  - Added ADR 0018: Selector Composition and Simulation Fidelity (`docs/adr/0018-selector-composition-and-simulation-fidelity.md`).
+
+### Changed
+
+- Barrel exports in `adaptive-runtime` and `adaptive-runtime/policy` now expose `composeSelectors`.
+- Enforced `CITATION.cff` version synchronization alongside `package.json`, `package-lock.json`, and `CHANGELOG.md` in `scripts/verify-version-sync.mjs`.
+
 ## [0.6.0] — 2026-10-24
 
 ### Added
