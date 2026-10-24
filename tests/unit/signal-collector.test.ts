@@ -963,6 +963,52 @@ describe("SignalCollector", () => {
     assert.ok(childBContext.signal instanceof AbortSignal);
   });
 
+  it("collects empty snapshot with cached: false and coalesced: false when no providers registered", async () => {
+    const { collector, clock } = makeCollector([], { evaluationIntervalMs: 1000 });
+    const first = await collector.collect(clock.now(), new AbortController().signal);
+    assert.deepEqual(first.readings, []);
+    assert.equal(first.cached, false);
+    assert.equal(first.coalesced, false);
+    assert.equal(first.sequence, 1);
+
+    const second = await collector.collect(clock.now(), new AbortController().signal);
+    assert.deepEqual(second.readings, []);
+    assert.equal(second.cached, true);
+    assert.equal(second.coalesced, false);
+    assert.equal(second.sequence, 1);
+
+    clock.advance(1000);
+    const third = await collector.collect(clock.now(), new AbortController().signal);
+    assert.deepEqual(third.readings, []);
+    assert.equal(third.cached, false);
+    assert.equal(third.coalesced, false);
+    assert.equal(third.sequence, 2);
+  });
+
+  it("marks multiple concurrent joiners as coalesced: true and cached: false", async () => {
+    let release: (() => void) | undefined;
+    const provider = new FunctionSignalProvider({
+      read: (ctx) =>
+        new Promise((resolve) => {
+          release = () => resolve([okSignal(PROVIDER_SIGNAL, 99, ctx.now)]);
+        }),
+    });
+    const { collector, clock } = makeCollector([provider]);
+    const callers = Array.from({ length: 4 }, () =>
+      collector.collect(clock.now(), new AbortController().signal),
+    );
+    await Promise.resolve();
+    release?.();
+    const snapshots = await Promise.all(callers);
+    assert.equal(snapshots[0]?.cached, false);
+    assert.equal(snapshots[0]?.coalesced, false);
+    for (let i = 1; i < snapshots.length; i++) {
+      assert.equal(snapshots[i]?.cached, false);
+      assert.equal(snapshots[i]?.coalesced, true);
+      assert.equal(snapshots[i]?.sequence, snapshots[0]?.sequence);
+    }
+  });
+
   describe("getDescriptors()", () => {
     it("exposes frozen signal descriptors in provider registration and declaration order", () => {
       const providerA: SignalProvider = {
