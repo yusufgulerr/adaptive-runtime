@@ -8,8 +8,14 @@ import {
   type StrategyCandidate,
 } from "../../src/policy/engine.js";
 import { resolvePolicy } from "../../src/policy/resolve.js";
+import {
+  createErrorRateGuardSelector,
+  createLatencyBudgetSelector,
+  formatDecisionSummary,
+} from "../../src/policy/selectors.js";
 import { createAdaptiveRuntime } from "../../src/runtime/runtime.js";
-import type { Policy } from "../../src/types/policy.js";
+import type { StrategyDecision } from "../../src/types/decision.js";
+import type { CustomSelectorCandidate, Policy } from "../../src/types/policy.js";
 import type { Strategy } from "../../src/types/strategy.js";
 import { FakeClock } from "../helpers/fake-clock.js";
 
@@ -670,3 +676,304 @@ describe("CustomPolicySelector Hook", () => {
     });
   });
 });
+
+describe("Built-in Policy Selectors and formatDecisionSummary", () => {
+  const cand = (
+    id: string,
+    qualityTier: number,
+    costTier: number,
+    errorRate: number | null = null,
+    estimatedLatencyMs: number | null = null,
+  ): CustomSelectorCandidate => ({
+    candidate: { id, qualityTier, costTier, applicable: true },
+    estimatedCost: costTier,
+    estimatedLatencyMs,
+    errorRate,
+  });
+
+  describe("createErrorRateGuardSelector", () => {
+    it("validates input options", () => {
+      // @ts-expect-error invalid options
+      assert.throws(() => createErrorRateGuardSelector(null), ConfigurationError);
+      assert.throws(() => createErrorRateGuardSelector({ maxErrorRate: -0.1 }), ConfigurationError);
+      assert.throws(() => createErrorRateGuardSelector({ maxErrorRate: 1.1 }), ConfigurationError);
+      assert.throws(() => createErrorRateGuardSelector({ maxErrorRate: Number.NaN }), ConfigurationError);
+      assert.throws(
+        // @ts-expect-error invalid fallbackSelector
+        () => createErrorRateGuardSelector({ maxErrorRate: 0.5, fallbackSelector: "invalid" }),
+        ConfigurationError,
+      );
+    });
+
+    it("returns null when candidates are empty", () => {
+      const selector = createErrorRateGuardSelector({ maxErrorRate: 0.1 });
+      const result = selector({
+        operation: "test",
+        candidates: [],
+        signals: {},
+        now: 1000,
+      });
+      assert.equal(result, null);
+    });
+
+    it("filters out candidates exceeding maxErrorRate and selects best remaining", () => {
+      const selector = createErrorRateGuardSelector({ maxErrorRate: 0.1 });
+      const cands = [
+        cand("high-broken", 3, 3, 0.5),
+        cand("mid-ok", 2, 2, 0.05),
+        cand("low-ok", 1, 1, 0.0),
+      ];
+      const result = selector({
+        operation: "test",
+        candidates: cands,
+        signals: {},
+        now: 1000,
+      });
+      assert.ok(typeof result === "object" && result !== null);
+      assert.equal(result.strategyId, "mid-ok");
+      assert.ok(result.reason?.includes("error-rate-guard"));
+    });
+
+    it("supports boundary 0% and 100% maxErrorRate and null errorRate", () => {
+      const strict = createErrorRateGuardSelector({ maxErrorRate: 0 });
+      const cands = [
+        cand("unmeasured", 3, 2, null),
+        cand("zero-error", 2, 1, 0.0),
+        cand("tiny-error", 1, 1, 0.01),
+      ];
+      const resStrict = strict({
+        operation: "test",
+        candidates: cands,
+        signals: {},
+        now: 1000,
+      });
+      assert.equal(typeof resStrict === "object" ? resStrict?.strategyId : resStrict, "unmeasured");
+
+      const relaxed = createErrorRateGuardSelector({ maxErrorRate: 1.0 });
+      const resRelaxed = relaxed({
+        operation: "test",
+        candidates: [cand("fail-heavy", 3, 1, 1.0), cand("safe", 2, 1, 0.0)],
+        signals: {},
+        now: 1000,
+      });
+      assert.equal(typeof resRelaxed === "object" ? resRelaxed?.strategyId : resRelaxed, "fail-heavy");
+    });
+
+    it("chains to fallbackSelector when provided and eligible candidates exist", () => {
+      let delegatedCandidatesCount = 0;
+      const selector = createErrorRateGuardSelector({
+        maxErrorRate: 0.2,
+        fallbackSelector: (ctx) => {
+          delegatedCandidatesCount = ctx.candidates.length;
+          return { strategyId: "delegated-strat", reason: "custom fallback" };
+        },
+      });
+
+      const cands = [
+        cand("a", 2, 2, 0.1),
+        cand("b", 1, 1, 0.05),
+        cand("c", 3, 3, 0.8),
+      ];
+      const result = selector({
+        operation: "test",
+        candidates: cands,
+        signals: {},
+        now: 1000,
+      });
+      assert.equal(delegatedCandidatesCount, 2);
+      assert.ok(typeof result === "object" && result !== null);
+      assert.equal(result.strategyId, "delegated-strat");
+      assert.equal(result.reason, "custom fallback");
+    });
+
+    it("falls back to default sorting if fallbackSelector returns null or undefined", () => {
+      const selector = createErrorRateGuardSelector({
+        maxErrorRate: 0.2,
+        fallbackSelector: () => null,
+      });
+      const cands = [cand("strat-low", 1, 1, 0.1), cand("strat-high", 2, 1, 0.1)];
+      const result = selector({
+        operation: "test",
+        candidates: cands,
+        signals: {},
+        now: 1000,
+      });
+      assert.ok(typeof result === "object" && result !== null);
+      assert.equal(result.strategyId, "strat-high");
+    });
+
+    it("selects lowest errorRate candidate when all candidates exceed maxErrorRate", () => {
+      const selector = createErrorRateGuardSelector({ maxErrorRate: 0.1 });
+      const cands = [
+        cand("terrible", 3, 1, 0.9),
+        cand("bad", 2, 1, 0.4),
+        cand("worse", 1, 1, 0.6),
+      ];
+      const result = selector({
+        operation: "test",
+        candidates: cands,
+        signals: {},
+        now: 1000,
+      });
+      assert.ok(typeof result === "object" && result !== null);
+      assert.equal(result.strategyId, "bad");
+      assert.ok(result.reason?.includes("all candidates exceeded"));
+    });
+
+    it("breaks ties by code-unit id comparison when quality, cost and error rate match", () => {
+      const selector = createErrorRateGuardSelector({ maxErrorRate: 0.5 });
+      const cands = [
+        cand("beta", 2, 1, 0.1),
+        cand("alpha", 2, 1, 0.1),
+      ];
+      const result = selector({
+        operation: "test",
+        candidates: cands,
+        signals: {},
+        now: 1000,
+      });
+      assert.ok(typeof result === "object" && result !== null);
+      assert.equal(result.strategyId, "alpha");
+    });
+  });
+
+  describe("createLatencyBudgetSelector", () => {
+    it("validates input options", () => {
+      // @ts-expect-error invalid options
+      assert.throws(() => createLatencyBudgetSelector(null), ConfigurationError);
+      assert.throws(() => createLatencyBudgetSelector({ maxLatencyMs: 0 }), ConfigurationError);
+      assert.throws(() => createLatencyBudgetSelector({ maxLatencyMs: -5 }), ConfigurationError);
+      assert.throws(() => createLatencyBudgetSelector({ maxLatencyMs: Number.NaN }), ConfigurationError);
+    });
+
+    it("returns null when candidates are empty", () => {
+      const selector = createLatencyBudgetSelector({ maxLatencyMs: 50 });
+      const result = selector({
+        operation: "test",
+        candidates: [],
+        signals: {},
+        now: 1000,
+      });
+      assert.equal(result, null);
+    });
+
+    it("treats null estimatedLatencyMs as eligible and selects highest quality by default", () => {
+      const selector = createLatencyBudgetSelector({ maxLatencyMs: 50 });
+      const cands = [
+        cand("unmeasured", 3, 3, null, null),
+        cand("fast", 2, 1, null, 20),
+        cand("too-slow", 3, 2, null, 80),
+      ];
+      const result = selector({
+        operation: "test",
+        candidates: cands,
+        signals: {},
+        now: 1000,
+      });
+      assert.ok(typeof result === "object" && result !== null);
+      assert.equal(result.strategyId, "unmeasured");
+      assert.ok(result.reason?.includes("within budget"));
+    });
+
+    it("supports preferLowestCost option", () => {
+      const qualityFirst = createLatencyBudgetSelector({ maxLatencyMs: 50 });
+      const costFirst = createLatencyBudgetSelector({ maxLatencyMs: 50, preferLowestCost: true });
+
+      const cands = [
+        cand("high-cost", 3, 3, null, 25),
+        cand("cheap-low-quality", 1, 1, null, 20),
+      ];
+      const resQ = qualityFirst({ operation: "test", candidates: cands, signals: {}, now: 1000 });
+      const resC = costFirst({ operation: "test", candidates: cands, signals: {}, now: 1000 });
+
+      assert.equal(typeof resQ === "object" ? resQ?.strategyId : resQ, "high-cost");
+      assert.equal(typeof resC === "object" ? resC?.strategyId : resC, "cheap-low-quality");
+    });
+
+    it("selects lowest latency candidate when all exceed maxLatencyMs", () => {
+      const selector = createLatencyBudgetSelector({ maxLatencyMs: 50 });
+      const cands = [
+        cand("slow", 3, 1, null, 120),
+        cand("moderate", 2, 2, null, 65),
+        cand("very-slow", 1, 1, null, 200),
+      ];
+      const result = selector({
+        operation: "test",
+        candidates: cands,
+        signals: {},
+        now: 1000,
+      });
+      assert.ok(typeof result === "object" && result !== null);
+      assert.equal(result.strategyId, "moderate");
+      assert.ok(result.reason?.includes("all candidates exceeded budget"));
+    });
+  });
+
+  describe("formatDecisionSummary", () => {
+    it("formats complete decision with budgets and reasons into structured single line", () => {
+      const decision: StrategyDecision = {
+        operationId: "search-op",
+        strategyId: "fast",
+        qualityTier: 1,
+        previousStrategyId: "thorough",
+        changed: true,
+        kind: "adapted",
+        decidedAt: 1000,
+        modeSince: 500,
+        baseQualityTier: 3,
+        targetQualityTier: 1,
+        signals: [{ name: "cpu.utilization", status: "ok", value: 0.9 }],
+        budgets: [
+          {
+            id: "heap",
+            signal: "node.heap.used",
+            engaged: true,
+            status: "ok",
+            limit: 100,
+            recoverBelow: 80,
+            tierReduction: 1,
+          },
+        ],
+        reasons: [
+          { code: "quality-pressure", message: "pressure" },
+          { code: "strategy-switched", message: "switched" },
+        ],
+        sampleSequence: 1,
+        signalsCached: false,
+      };
+
+      const summary = formatDecisionSummary(decision);
+      assert.equal(
+        summary,
+        '[search-op] strategy="fast" tier=1/3 kind=adapted changed=true budgets=heap(engaged) reasons=quality-pressure,strategy-switched',
+      );
+    });
+
+    it("handles empty budgets and empty reasons with 'none'", () => {
+      const decision: StrategyDecision = {
+        operationId: "static-op",
+        strategyId: "baseline",
+        qualityTier: 2,
+        previousStrategyId: null,
+        changed: false,
+        kind: "initial",
+        decidedAt: 1000,
+        modeSince: 1000,
+        baseQualityTier: 2,
+        targetQualityTier: 2,
+        signals: [],
+        budgets: [],
+        reasons: [],
+        sampleSequence: null,
+        signalsCached: false,
+      };
+
+      const summary = formatDecisionSummary(decision);
+      assert.equal(
+        summary,
+        '[static-op] strategy="baseline" tier=2/2 kind=initial changed=false budgets=none reasons=none',
+      );
+    });
+  });
+});
+
