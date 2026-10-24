@@ -403,6 +403,7 @@ interface ProviderShape {
   readonly start?: unknown;
   readonly read?: unknown;
   readonly close?: unknown;
+  readonly drainProviderErrors?: unknown;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -535,6 +536,30 @@ function validateReading(
   }
 }
 
+function validatePostCloseReadings(
+  readings: unknown,
+  descriptors: ReadonlyMap<string, SignalDescriptor>,
+  now: number,
+  recorder: ConformanceRecorder,
+): void {
+  if (!Array.isArray(readings)) {
+    recorder.fail("provider.read() after close() must return an array.");
+    return;
+  }
+  recorder.pass();
+
+  const observedSeen = new Set<string>();
+  for (const [index, reading] of readings.entries()) {
+    validateReading(reading, index, descriptors, observedSeen, now, recorder);
+    if (isRecord(reading)) {
+      recorder.check(
+        reading.status === "unsupported",
+        `readings[${index}] must report status "unsupported" after close().`,
+      );
+    }
+  }
+}
+
 /**
  * Verifies that a provider satisfies the signal-provider contract without
  * requiring the runtime. Lifecycle hooks are invoked once. The function reports
@@ -612,15 +637,45 @@ export async function runProviderConformanceCheck(
     }
   }
 
+  if (typeof maybe.drainProviderErrors === "function") {
+    let drained: unknown;
+    try {
+      drained = await (maybe.drainProviderErrors as () => unknown)();
+      recorder.check(
+        Array.isArray(drained),
+        "provider.drainProviderErrors() must return an array.",
+      );
+    } catch {
+      recorder.fail("provider.drainProviderErrors() threw or rejected.");
+    }
+  }
+
+  let closeSucceeded = false;
   if (typeof maybe.close === "function") {
     try {
       await (maybe.close as () => void | Promise<void>)();
       recorder.pass();
+      closeSucceeded = true;
     } catch {
       recorder.fail("provider.close() threw or rejected.");
     }
   } else {
     recorder.pass();
+  }
+
+  if (closeSucceeded && options.checkPostClose !== false && typeof maybe.read === "function") {
+    let postCloseReadings: unknown;
+    let postCloseSucceeded = false;
+    try {
+      postCloseReadings = await (maybe.read as (ctx: SignalReadContext) => unknown)(context);
+      postCloseSucceeded = true;
+      recorder.pass();
+    } catch {
+      recorder.fail("provider.read() after close() threw or rejected.");
+    }
+    if (postCloseSucceeded) {
+      validatePostCloseReadings(postCloseReadings, descriptors, now, recorder);
+    }
   }
 
   return {
