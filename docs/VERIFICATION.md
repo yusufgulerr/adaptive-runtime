@@ -2,7 +2,7 @@
 
 This document records the historical 0.3.0 release verification on
 **2026-10-22**, the 0.5.0 source-line and release verification on
-**2026-10-23**, and the 0.6.0 source-line and release verification on
+**2026-10-23**, and the 0.6.0 source-line and release-integration verification on
 **2026-10-24**. It distinguishes local verification, remote workflow evidence,
 GitHub repository settings, and npm registry status. The 0.3.0 tree was merged to
 `main` at `5504f21`; the release-workflow fix and the OpenSSF readiness
@@ -14,14 +14,15 @@ published; npm publication remains pending. The 0.5.0 tree was committed and
 pushed in pull request #24, merged to `main` at `815c938`, tagged `v0.5.0`, and
 released on GitHub; its remote CI, CodeQL, Scorecard, and release workflow
 passed. npm publication for 0.5.0 remains pending. The 0.6.0 tree integrates Track A
-(PR #26) and Track B (PR #27) into `main`, prepared via release integration PR #28.
-npm publication remains pending owner approval.
+(PR #26 and PR #28) and Track B (PR #27) into `main` at `49c5f48`, prepared via
+release integration PR #29. npm publication remains pending owner approval.
 
-## 0.6.0 source-line and release verification
+## 0.6.0 source-line and release-integration verification
 
 The 0.6.0 quality gates were run locally on **2026-10-24** with the repository's
 documented commands. All changes were integrated via conventional pull requests
-with all required CI checks green.
+with all required CI checks green. Measurements below were captured on final
+`main` after the release integration merge.
 
 | Command | Result |
 | --- | --- |
@@ -29,27 +30,28 @@ with all required CI checks green.
 | `npm run lint` | **PASS** — 105 files checked, no fixes applied |
 | `npm run typecheck` | **PASS** — `tsc -p tsconfig.check.json` |
 | `npm run verify:version-sync` | **PASS** — `adaptive-runtime 0.6.0` in `package.json`, `package-lock.json`, and `CHANGELOG.md` |
-| `npm run check` | **PASS** — lint, typecheck, version sync, 449 tests / 72 suites, build, exports, zero dependencies, and Markdown links |
-| `npm test` | **PASS** — 449 tests, 72 suites, 0 failures, 0 skipped |
-| `npm run test:fuzz` | **PASS** — 9 property tests, 4 suites, 0 failures |
-| `npm run test:coverage` | **PASS** — 98.99% lines, 95.52% branches, 99.03% functions |
+| `npm run check` | **PASS** — lint, typecheck, version sync, 450 tests / 72 suites, build, exports, zero dependencies, and Markdown links |
+| `npm test` | **PASS** — 450 tests, 72 suites, 0 failures, 0 skipped |
+| `npm run test:fuzz` | **PASS** — 12 property tests, 4 suites, 0 failures |
+| `npm run test:coverage` | **PASS** — 98.99% lines, 95.73% branches, 99.03% functions |
 | `npm run build` | **PASS** — ESM, declarations, and maps emitted to `dist/` |
 | `npm run verify:exports` | **PASS** — 10 export entries, 27 files, and 33 runtime symbols |
 | `npm run verify:zero-deps` | **PASS** — 64 lockfile entries, no production packages |
 | `npm audit --omit=dev --audit-level=high` | **PASS** — 0 vulnerabilities |
 | Six `npm run example:*` commands | **PASS** — basic, search, planning, quick-start, observability, edge |
 | `npm run benchmark` | **PASS** — 20,000 runs per round, 7 rounds; see [BENCHMARKS.md](BENCHMARKS.md) |
+| `npm run benchmark -- --dist` | **PASS** — compiled `dist/index.js`, 20,000 runs per round, 7 rounds, result `299533`; see [BENCHMARKS.md](BENCHMARKS.md) |
 | `npm run benchmark:concurrency` | **PASS** — 4,096 runs per level per round, 3 rounds; see [BENCHMARKS.md](BENCHMARKS.md) |
 | `npm pack --dry-run` | **PASS** — 188 files, 202.4 kB packed, 987.2 kB unpacked, version 0.6.0 |
 | Portable source scan | **PASS** — zero `node:` / `process.` matches across 37 portable files |
-| `npm run check:links` | **PASS** — 43 Markdown files, 239 relative links, 0 broken |
+| `npm run check:links` | **PASS** — 44 Markdown files, 245 relative links, 0 broken |
 
 Coverage from the 0.6.0 run:
 
 | Metric | Result | Threshold | Status |
 | --- | ---: | ---: | --- |
 | Lines | 98.99% | 80% | PASS |
-| Branches | 95.52% | 80% | PASS |
+| Branches | 95.73% | 80% | PASS |
 | Functions | 99.03% | 80% | PASS |
 
 Every `src/**` file remains above 80% branch coverage. The package inspection above is a dry-run inventory, not a clean-consumer install of a published tarball. The npm registry and provenance attestation remain **not verified** for 0.6.0; npm publication requires explicit owner approval.
