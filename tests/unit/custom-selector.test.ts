@@ -690,11 +690,13 @@ describe("Built-in Policy Selectors and formatDecisionSummary", () => {
     costTier: number,
     errorRate: number | null = null,
     estimatedLatencyMs: number | null = null,
+    samples?: number | null,
   ): CustomSelectorCandidate => ({
     candidate: { id, qualityTier, costTier, applicable: true },
     estimatedCost: costTier,
     estimatedLatencyMs,
     errorRate,
+    samples,
   });
 
   describe("createErrorRateGuardSelector", () => {
@@ -718,6 +720,46 @@ describe("Built-in Policy Selectors and formatDecisionSummary", () => {
           createErrorRateGuardSelector({
             maxErrorRate: 0.5,
             fallbackSelector: "invalid" as unknown as CustomPolicySelector,
+          }),
+        ConfigurationError,
+      );
+      assert.throws(
+        () =>
+          createErrorRateGuardSelector({
+            maxErrorRate: 0.5,
+            minSamples: 0,
+          }),
+        ConfigurationError,
+      );
+      assert.throws(
+        () =>
+          createErrorRateGuardSelector({
+            maxErrorRate: 0.5,
+            minSamples: -2,
+          }),
+        ConfigurationError,
+      );
+      assert.throws(
+        () =>
+          createErrorRateGuardSelector({
+            maxErrorRate: 0.5,
+            minSamples: 1.5,
+          }),
+        ConfigurationError,
+      );
+      assert.throws(
+        () =>
+          createErrorRateGuardSelector({
+            maxErrorRate: 0.5,
+            minSamples: "5" as unknown as number,
+          }),
+        ConfigurationError,
+      );
+      assert.throws(
+        () =>
+          createErrorRateGuardSelector({
+            maxErrorRate: 0.5,
+            minSamples: Number.NaN,
           }),
         ConfigurationError,
       );
@@ -844,6 +886,74 @@ describe("Built-in Policy Selectors and formatDecisionSummary", () => {
       });
       assert.ok(typeof result === "object" && result !== null);
       assert.equal(result.strategyId, "alpha");
+    });
+
+    it("prevents premature disqualification of cold-start candidates where candidate samples < minSamples", () => {
+      const selector = createErrorRateGuardSelector({ maxErrorRate: 0.1, minSamples: 5 });
+      const cands = [
+        cand("cold-start-high", 3, 2, 0.5, null, 2), // 2 samples < 5 -> protected!
+        cand("mature-low", 1, 1, 0.05, null, 10), // mature within budget
+      ];
+      const result = selector({
+        operation: "test",
+        candidates: cands,
+        signals: {},
+        now: 1000,
+      });
+      assert.ok(typeof result === "object" && result !== null);
+      assert.equal(result.strategyId, "cold-start-high");
+      assert.equal(
+        result.reason,
+        'error-rate-guard: selected cold-start strategy "cold-start-high" with errorRate 0.5 (samples < minSamples 5)',
+      );
+    });
+
+    it("disqualifies candidate when samples >= minSamples and errorRate > maxErrorRate", () => {
+      const selector = createErrorRateGuardSelector({ maxErrorRate: 0.1, minSamples: 5 });
+      const cands = [
+        cand("mature-failing", 3, 2, 0.5, null, 6), // 6 samples >= 5 -> disqualified!
+        cand("mature-ok", 2, 2, 0.05, null, 10), // mature within budget
+      ];
+      const result = selector({
+        operation: "test",
+        candidates: cands,
+        signals: {},
+        now: 1000,
+      });
+      assert.ok(typeof result === "object" && result !== null);
+      assert.equal(result.strategyId, "mature-ok");
+      assert.equal(
+        result.reason,
+        'error-rate-guard: selected strategy "mature-ok" with errorRate 0.05 <= 0.1',
+      );
+    });
+
+    it("resolves sample count from sampleCount or runs property when samples is absent", () => {
+      const selector = createErrorRateGuardSelector({ maxErrorRate: 0.1, minSamples: 10 });
+      const candSampleCount = {
+        candidate: { id: "via-sampleCount", qualityTier: 3, costTier: 1, applicable: true },
+        estimatedCost: 1,
+        estimatedLatencyMs: null,
+        errorRate: 0.8,
+        sampleCount: 3,
+      } as unknown as CustomSelectorCandidate;
+      const candRuns = {
+        candidate: { id: "via-runs", qualityTier: 2, costTier: 1, applicable: true },
+        estimatedCost: 1,
+        estimatedLatencyMs: null,
+        errorRate: 0.8,
+        runs: 2,
+      } as unknown as CustomSelectorCandidate;
+
+      const result = selector({
+        operation: "test",
+        candidates: [candSampleCount, candRuns],
+        signals: {},
+        now: 1000,
+      });
+      assert.ok(typeof result === "object" && result !== null);
+      assert.equal(result.strategyId, "via-sampleCount");
+      assert.match(result.reason ?? "", /samples < minSamples 10/);
     });
   });
 

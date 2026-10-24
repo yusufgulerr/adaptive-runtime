@@ -2,9 +2,17 @@ import { ConfigurationError } from "../errors/index.js";
 import type { StrategyDecision } from "../types/decision.js";
 import type { CustomPolicySelector, CustomSelectorCandidate } from "../types/policy.js";
 
+declare module "../types/policy.js" {
+  interface CustomSelectorCandidate {
+    /** Number of execution samples observed for this candidate, or null/undefined if untracked. */
+    readonly samples?: number | null;
+  }
+}
+
 export interface ErrorRateGuardSelectorOptions {
   readonly maxErrorRate: number;
   readonly fallbackSelector?: CustomPolicySelector;
+  readonly minSamples?: number;
 }
 
 export interface LatencyBudgetSelectorOptions {
@@ -42,6 +50,14 @@ function compareCandidatesCostFirst(
   return a.candidate.id < b.candidate.id ? -1 : a.candidate.id > b.candidate.id ? 1 : 0;
 }
 
+function getCandidateSamples(c: CustomSelectorCandidate): number | null {
+  const raw =
+    (c as { samples?: number | null; sampleCount?: number | null; runs?: number | null }).samples ??
+    (c as { sampleCount?: number | null }).sampleCount ??
+    (c as { runs?: number | null }).runs;
+  return typeof raw === "number" && Number.isFinite(raw) && raw >= 0 ? raw : null;
+}
+
 /**
  * Creates a pure custom selector that filters out strategy candidates whose
  * observed error rate exceeds `maxErrorRate`.
@@ -58,7 +74,7 @@ export function createErrorRateGuardSelector(
   if (options === null || typeof options !== "object") {
     throw new ConfigurationError("options must be an object.");
   }
-  const { maxErrorRate, fallbackSelector } = options;
+  const { maxErrorRate, fallbackSelector, minSamples = 1 } = options;
   if (
     typeof maxErrorRate !== "number" ||
     !Number.isFinite(maxErrorRate) ||
@@ -70,6 +86,13 @@ export function createErrorRateGuardSelector(
   if (fallbackSelector !== undefined && typeof fallbackSelector !== "function") {
     throw new ConfigurationError("fallbackSelector must be a function.");
   }
+  if (
+    typeof minSamples !== "number" ||
+    !Number.isSafeInteger(minSamples) ||
+    minSamples < 1
+  ) {
+    throw new ConfigurationError("minSamples must be a positive integer.");
+  }
 
   return (context) => {
     if (context.candidates.length === 0) {
@@ -77,6 +100,10 @@ export function createErrorRateGuardSelector(
     }
 
     const eligible = context.candidates.filter((c) => {
+      const samples = getCandidateSamples(c);
+      if (samples !== null && samples < minSamples) {
+        return true;
+      }
       const rate = c.errorRate;
       return rate === null || rate === undefined || rate <= maxErrorRate;
     });
@@ -90,9 +117,21 @@ export function createErrorRateGuardSelector(
       }
       const sorted = [...eligible].sort(compareCandidatesQualityFirst);
       const chosen = sorted[0] as CustomSelectorCandidate;
+      const chosenSamples = getCandidateSamples(chosen);
+      const isColdStart =
+        chosen.errorRate !== null &&
+        chosen.errorRate !== undefined &&
+        chosen.errorRate > maxErrorRate &&
+        chosenSamples !== null &&
+        chosenSamples < minSamples;
+
+      const reason = isColdStart
+        ? `error-rate-guard: selected cold-start strategy "${chosen.candidate.id}" with errorRate ${chosen.errorRate} (samples < minSamples ${minSamples})`
+        : `error-rate-guard: selected strategy "${chosen.candidate.id}" with errorRate ${chosen.errorRate ?? 0} <= ${maxErrorRate}`;
+
       return {
         strategyId: chosen.candidate.id,
-        reason: `error-rate-guard: selected strategy "${chosen.candidate.id}" with errorRate ${chosen.errorRate ?? 0} <= ${maxErrorRate}`,
+        reason,
       };
     }
 
