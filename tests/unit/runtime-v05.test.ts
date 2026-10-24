@@ -343,4 +343,66 @@ describe("AdaptiveRuntime v0.5 surfaces", () => {
 
     await runtime.close();
   });
+
+  it("tracks operations in LRU order, provides frozen views, and retains inspection after close", async () => {
+    const clock = new FakeClock();
+    const runtime = createAdaptiveRuntime({
+      clock,
+      policy: {
+        evaluationIntervalMs: 0,
+        maxTrackedOperations: 3,
+      },
+    });
+
+    assert.deepEqual(runtime.getTrackedOperations(), []);
+    assert.ok(Object.isFrozen(runtime.getTrackedOperations()));
+    assert.deepEqual(runtime.getAllStats(), {});
+    assert.ok(Object.isFrozen(runtime.getAllStats()));
+
+    const s = (name: string): Strategy<number, string> => ({
+      id: "main",
+      qualityTier: 1,
+      run: () => name,
+    });
+
+    await runtime.run({ operationId: "op1", input: 1, strategies: [s("op1")] });
+    await runtime.run({ operationId: "op2", input: 2, strategies: [s("op2")] });
+    await runtime.run({ operationId: "op3", input: 3, strategies: [s("op3")] });
+
+    assert.deepEqual(runtime.getTrackedOperations(), ["op1", "op2", "op3"]);
+    const statsAll = runtime.getAllStats();
+    assert.ok(Object.isFrozen(statsAll));
+    assert.equal(statsAll.op1?.runs, 1);
+    assert.equal(statsAll.op2?.runs, 1);
+    assert.equal(statsAll.op3?.runs, 1);
+
+    // Inspection calls MUST NOT refresh LRU order
+    assert.deepEqual(runtime.getTrackedOperations(), ["op1", "op2", "op3"]);
+    runtime.getAllStats();
+    assert.deepEqual(runtime.getTrackedOperations(), ["op1", "op2", "op3"]);
+
+    // Accessing single operation via getDecision/getStats DOES refresh LRU order
+    runtime.getStats("op1");
+    assert.deepEqual(runtime.getTrackedOperations(), ["op2", "op3", "op1"]);
+
+    // Exceed maxTrackedOperations (limit = 3): running op4 evicts op2 (oldest)
+    await runtime.run({ operationId: "op4", input: 4, strategies: [s("op4")] });
+    assert.deepEqual(runtime.getTrackedOperations(), ["op3", "op1", "op4"]);
+    const statsAfterEviction = runtime.getAllStats();
+    assert.equal(statsAfterEviction.op2, undefined);
+    assert.equal(statsAfterEviction.op4?.runs, 1);
+
+    // removeOperation removes from tracked operations and stats
+    const removed = runtime.removeOperation("op1");
+    assert.equal(removed, true);
+    assert.deepEqual(runtime.getTrackedOperations(), ["op3", "op4"]);
+    assert.equal(runtime.getAllStats().op1, undefined);
+
+    // After close(), getTrackedOperations() and getAllStats() remain readable
+    await runtime.close();
+    assert.deepEqual(runtime.getTrackedOperations(), ["op3", "op4"]);
+    const statsClosed = runtime.getAllStats();
+    assert.equal(statsClosed.op3?.runs, 1);
+    assert.equal(statsClosed.op4?.runs, 1);
+  });
 });

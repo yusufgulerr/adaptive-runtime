@@ -69,6 +69,16 @@ export interface AdaptiveRuntime {
   getDecision(operationId: string): StrategyDecision | null;
   getStats(operationId: string): RuntimeStats;
   /**
+   * Returns a frozen array of all currently tracked operation ids in LRU order
+   * (oldest to newest). Does not refresh or alter the LRU order.
+   */
+  getTrackedOperations(): readonly string[];
+  /**
+   * Returns a frozen dictionary mapping each tracked operation id to its
+   * current RuntimeStats. Does not refresh or alter the LRU order.
+   */
+  getAllStats(): Readonly<Record<string, RuntimeStats>>;
+  /**
    * Removes all retained state and stats for one operation. Returns false when
    * a selection or run is in flight for that operation; the active work is not
    * disturbed. Returns true when at least one record was removed.
