@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { ConfigurationError, OperationAbortedError } from "../../src/errors/index.js";
+import {
+  ConfigurationError,
+  OperationAbortedError,
+  QualityCheckError,
+} from "../../src/errors/index.js";
 import { createAdaptiveRuntime } from "../../src/runtime/runtime.js";
 import type { CustomSelectorCandidate } from "../../src/types/policy.js";
 import type { RuntimeStateSnapshot } from "../../src/types/state.js";
@@ -404,5 +408,115 @@ describe("AdaptiveRuntime v0.5 surfaces", () => {
     const statsClosed = runtime.getAllStats();
     assert.equal(statsClosed.op3?.runs, 1);
     assert.equal(statsClosed.op4?.runs, 1);
+  });
+
+  it("bounds quality check detail length to 1001 characters in both report and error modes", async () => {
+    const hugeDetail = "X".repeat(50000);
+
+    // 1. Report mode
+    const runtimeReport = createAdaptiveRuntime({
+      policy: { qualityCheck: "report" },
+    });
+    const stratReport: Strategy<number, string> = {
+      id: "strat",
+      qualityTier: 1,
+      run: () => "result",
+      checkQuality: () => ({ ok: false, detail: hugeDetail }),
+    };
+
+    const runResult = await runtimeReport.run({
+      operationId: "op-report",
+      input: 1,
+      strategies: [stratReport],
+    });
+    assert.ok(runResult.metadata.quality);
+    assert.equal(runResult.metadata.quality.status, "failed");
+    assert.equal(runResult.metadata.quality.detail?.length, 1001);
+    assert.ok(runResult.metadata.quality.detail?.endsWith("…"));
+
+    await runtimeReport.close();
+
+    // 2. Error mode
+    const runtimeError = createAdaptiveRuntime({
+      policy: { qualityCheck: "error" },
+    });
+    const stratError: Strategy<number, string> = {
+      id: "strat",
+      qualityTier: 1,
+      run: () => "result",
+      checkQuality: () => ({ ok: false, detail: hugeDetail }),
+    };
+
+    await assert.rejects(
+      async () =>
+        runtimeError.run({
+          operationId: "op-error",
+          input: 1,
+          strategies: [stratError],
+        }),
+      (err: unknown) => {
+        assert.ok(err instanceof QualityCheckError);
+        assert.ok(err.message.endsWith("…"));
+        assert.ok(err.message.length <= 1200);
+        return true;
+      },
+    );
+
+    await runtimeError.close();
+  });
+
+  it("exposes operation policy overrides, returns frozen policies, and updates LRU order", async () => {
+    const clock = new FakeClock();
+    const runtime = createAdaptiveRuntime({
+      clock,
+      policy: {
+        evaluationIntervalMs: 0,
+        maxTrackedOperations: 3,
+      },
+    });
+
+    // 1. Returns null when no override exists
+    assert.equal(runtime.getOperationPolicy("tenant-a"), null);
+
+    // 2. Returns frozen ResolvedPolicy when set
+    runtime.setOperationPolicy("tenant-a", {
+      minQualityTier: 2,
+      budgets: [
+        {
+          id: "heap-budget",
+          signal: "node.heap.used",
+          limit: 100,
+        },
+      ],
+    });
+
+    const policy = runtime.getOperationPolicy("tenant-a");
+    assert.ok(policy !== null);
+    assert.equal(policy.minQualityTier, 2);
+    assert.ok(Object.isFrozen(policy));
+    assert.ok(Object.isFrozen(policy.budgets));
+    assert.equal(policy.budgets.length, 1);
+    assert.ok(Object.isFrozen(policy.budgets[0]));
+
+    // 3. getOperationPolicy refreshes LRU tracking
+    runtime.setOperationPolicy("tenant-b", { minQualityTier: 1 });
+    runtime.setOperationPolicy("tenant-c", { minQualityTier: 1 });
+    assert.deepEqual(runtime.getTrackedOperations(), ["tenant-a", "tenant-b", "tenant-c"]);
+
+    // Accessing tenant-a moves it to the newest position
+    runtime.getOperationPolicy("tenant-a");
+    assert.deepEqual(runtime.getTrackedOperations(), ["tenant-b", "tenant-c", "tenant-a"]);
+
+    // 4. Returns null after setOperationPolicy(id, null)
+    runtime.setOperationPolicy("tenant-a", null);
+    assert.equal(runtime.getOperationPolicy("tenant-a"), null);
+
+    // 5. Returns null after removeOperation
+    runtime.setOperationPolicy("tenant-b", { maxQualityTier: 3 });
+    assert.ok(runtime.getOperationPolicy("tenant-b") !== null);
+    runtime.removeOperation("tenant-b");
+    assert.equal(runtime.getOperationPolicy("tenant-b"), null);
+
+    await runtime.close();
   });
 });

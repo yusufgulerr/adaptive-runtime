@@ -1,7 +1,7 @@
 import type { Clock } from "./clock.js";
 import type { StrategyDecision } from "./decision.js";
 import type { RuntimeEventListener, RuntimeEventName } from "./events.js";
-import type { Policy } from "./policy.js";
+import type { Policy, ResolvedPolicy } from "./policy.js";
 import type { Operation, RunResult, RuntimeStats } from "./run.js";
 import type { SignalProvider } from "./signals.js";
 import type { RuntimeStateSnapshot } from "./state.js";
@@ -66,6 +66,12 @@ export interface AdaptiveRuntime {
    * Pass null to remove the operation's policy override.
    */
   setOperationPolicy(operationId: string, policy: Partial<Policy> | null): void;
+  /**
+   * Returns the resolved policy override for one specific operation, or null
+   * if no override has been set. Refreshes LRU tracking when an operation record
+   * exists.
+   */
+  getOperationPolicy(operationId: string): ResolvedPolicy | null;
   getDecision(operationId: string): StrategyDecision | null;
   getStats(operationId: string): RuntimeStats;
   /**
