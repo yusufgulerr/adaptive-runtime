@@ -379,6 +379,18 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
     return stats;
   }
 
+  getTrackedOperations(): readonly string[] {
+    return Object.freeze([...this.#tracked.keys()]);
+  }
+
+  getAllStats(): Readonly<Record<string, RuntimeStats>> {
+    const result: Record<string, RuntimeStats> = {};
+    for (const id of this.#tracked.keys()) {
+      result[id] = this.#stats.get(id);
+    }
+    return Object.freeze(result);
+  }
+
   removeOperation(operationId: string): boolean {
     this.#ensureOpen();
     const id = validateOperationId(operationId);
