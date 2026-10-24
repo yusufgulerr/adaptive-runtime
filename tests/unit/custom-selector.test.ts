@@ -709,6 +709,10 @@ describe("Built-in Policy Selectors and formatDecisionSummary", () => {
         ConfigurationError,
       );
       assert.throws(
+        () => createErrorRateGuardSelector("invalid" as unknown as ErrorRateGuardSelectorOptions),
+        ConfigurationError,
+      );
+      assert.throws(
         () => createErrorRateGuardSelector({ maxErrorRate: "0.1" as unknown as number }),
         ConfigurationError,
       );
@@ -849,19 +853,31 @@ describe("Built-in Policy Selectors and formatDecisionSummary", () => {
     });
 
     it("falls back to default sorting if fallbackSelector returns null or undefined", () => {
-      const selector = createErrorRateGuardSelector({
+      const selectorNull = createErrorRateGuardSelector({
         maxErrorRate: 0.2,
         fallbackSelector: () => null,
       });
+      const selectorUndef = createErrorRateGuardSelector({
+        maxErrorRate: 0.2,
+        fallbackSelector: () => undefined,
+      });
       const cands = [cand("strat-low", 1, 1, 0.1), cand("strat-high", 2, 1, 0.1)];
-      const result = selector({
+      const resNull = selectorNull({
         operation: "test",
         candidates: cands,
         signals: {},
         now: 1000,
       });
-      assert.ok(typeof result === "object" && result !== null);
-      assert.equal(result.strategyId, "strat-high");
+      const resUndef = selectorUndef({
+        operation: "test",
+        candidates: cands,
+        signals: {},
+        now: 1000,
+      });
+      assert.ok(typeof resNull === "object" && resNull !== null);
+      assert.equal(resNull.strategyId, "strat-high");
+      assert.ok(typeof resUndef === "object" && resUndef !== null);
+      assert.equal(resUndef.strategyId, "strat-high");
     });
 
     it("selects lowest errorRate candidate when all candidates exceed maxErrorRate", () => {
@@ -958,12 +974,56 @@ describe("Built-in Policy Selectors and formatDecisionSummary", () => {
       assert.equal(result.strategyId, "via-sampleCount");
       assert.match(result.reason ?? "", /samples < minSamples 10/);
     });
+
+    it("breaks ties by quality and cost when all candidates exceed maxErrorRate with identical error rates", () => {
+      const selector = createErrorRateGuardSelector({ maxErrorRate: 0.1 });
+      const cands = [cand("tie-low", 1, 1, 0.5), cand("tie-high", 3, 2, 0.5)];
+      const result = selector({ operation: "test", candidates: cands, signals: {}, now: 1000 });
+      assert.ok(typeof result === "object" && result !== null);
+      assert.equal(result.strategyId, "tie-high");
+    });
+
+    it("treats negative samples or non-finite runs as null (unmeasured)", () => {
+      const selector = createErrorRateGuardSelector({ maxErrorRate: 0.1, minSamples: 3 });
+      const cands = [cand("cand-neg", 2, 1, 0.05, null, -5)];
+      const result = selector({ operation: "test", candidates: cands, signals: {}, now: 1000 });
+      assert.ok(typeof result === "object" && result !== null);
+      assert.equal(result.strategyId, "cand-neg");
+    });
+
+    it("treats non-finite runs or sampleCount as null (unmeasured)", () => {
+      const selector = createErrorRateGuardSelector({ maxErrorRate: 0.1, minSamples: 3 });
+      const cands = [
+        {
+          candidate: { id: "inf-runs", qualityTier: 2, costTier: 1, applicable: true },
+          estimatedCost: 1,
+          estimatedLatencyMs: null,
+          errorRate: 0.05,
+          runs: Number.POSITIVE_INFINITY,
+        } as unknown as CustomSelectorCandidate,
+      ];
+      const result = selector({ operation: "test", candidates: cands, signals: {}, now: 1000 });
+      assert.ok(typeof result === "object" && result !== null);
+      assert.equal(result.strategyId, "inf-runs");
+    });
+
+    it("treats undefined errorRate as eligible in error-rate-guard", () => {
+      const selector = createErrorRateGuardSelector({ maxErrorRate: 0.1 });
+      const cands = [cand("cand-undef-rate", 2, 1, undefined as unknown as null)];
+      const result = selector({ operation: "test", candidates: cands, signals: {}, now: 1000 });
+      assert.ok(typeof result === "object" && result !== null);
+      assert.equal(result.strategyId, "cand-undef-rate");
+    });
   });
 
   describe("createLatencyBudgetSelector", () => {
     it("validates input options", () => {
       assert.throws(
         () => createLatencyBudgetSelector(null as unknown as LatencyBudgetSelectorOptions),
+        ConfigurationError,
+      );
+      assert.throws(
+        () => createLatencyBudgetSelector("invalid" as unknown as LatencyBudgetSelectorOptions),
         ConfigurationError,
       );
       assert.throws(
@@ -1099,15 +1159,32 @@ describe("Built-in Policy Selectors and formatDecisionSummary", () => {
     });
 
     it("falls back to default latency sorting if fallbackSelector returns null or undefined", () => {
-      const selector = createLatencyBudgetSelector({
+      const selectorNull = createLatencyBudgetSelector({
         maxLatencyMs: 50,
         fallbackSelector: () => null,
       });
+      const selectorUndef = createLatencyBudgetSelector({
+        maxLatencyMs: 50,
+        fallbackSelector: () => undefined,
+      });
 
       const cands = [cand("fast", 1, 1, null, 20), cand("high-quality", 3, 2, null, 30)];
-      const res = selector({ operation: "test", candidates: cands, signals: {}, now: 1000 });
-      assert.ok(typeof res === "object" && res !== null);
-      assert.equal(res.strategyId, "high-quality");
+      const resNull = selectorNull({
+        operation: "test",
+        candidates: cands,
+        signals: {},
+        now: 1000,
+      });
+      const resUndef = selectorUndef({
+        operation: "test",
+        candidates: cands,
+        signals: {},
+        now: 1000,
+      });
+      assert.ok(typeof resNull === "object" && resNull !== null);
+      assert.equal(resNull.strategyId, "high-quality");
+      assert.ok(typeof resUndef === "object" && resUndef !== null);
+      assert.equal(resUndef.strategyId, "high-quality");
     });
 
     it("does not invoke fallbackSelector when all candidates exceed budget", () => {
@@ -1172,6 +1249,44 @@ describe("Built-in Policy Selectors and formatDecisionSummary", () => {
         res.reason,
         'latency-budget: all candidates exceeded budget 50ms; selected candidate "moderate-ewma" with lowest latency 70ms',
       );
+    });
+
+    it("handles identical id, quality, and cost tiers returning 0 in comparator", () => {
+      const selector = createLatencyBudgetSelector({ maxLatencyMs: 50, preferLowestCost: true });
+      const cands = [cand("same-id", 2, 1, null, 20), cand("same-id", 2, 1, null, 20)];
+      const result = selector({ operation: "test", candidates: cands, signals: {}, now: 1000 });
+      assert.ok(typeof result === "object" && result !== null);
+      assert.equal(result.strategyId, "same-id");
+    });
+
+    it("breaks ties by cost when preferLowestCost is true and all exceed budget", () => {
+      const selector = createLatencyBudgetSelector({ maxLatencyMs: 50, preferLowestCost: true });
+      const cands = [cand("over-expensive", 3, 3, null, 100), cand("over-cheap", 2, 1, null, 100)];
+      const result = selector({ operation: "test", candidates: cands, signals: {}, now: 1000 });
+      assert.ok(typeof result === "object" && result !== null);
+      assert.equal(result.strategyId, "over-cheap");
+    });
+
+    it("treats non-finite estimatedLatencyMs or ewmaLatencyMs as null (unmeasured)", () => {
+      const selector = createLatencyBudgetSelector({ maxLatencyMs: 50 });
+      const cands = [
+        cand("nan-latency", 2, 1, null, Number.NaN),
+        cand("valid-latency", 1, 1, null, 40),
+      ];
+      const result = selector({ operation: "test", candidates: cands, signals: {}, now: 1000 });
+      assert.ok(typeof result === "object" && result !== null);
+      assert.equal(result.strategyId, "nan-latency"); // unmeasured gets selected due to higher quality
+    });
+
+    it("treats non-finite ewmaLatencyMs as unmeasured when useEwma is true", () => {
+      const selector = createLatencyBudgetSelector({ maxLatencyMs: 50, useEwma: true });
+      const cands = [
+        cand("inf-ewma", 2, 1, null, 10, null, Number.POSITIVE_INFINITY),
+        cand("normal", 1, 1, null, 10, null, 30),
+      ];
+      const result = selector({ operation: "test", candidates: cands, signals: {}, now: 1000 });
+      assert.ok(typeof result === "object" && result !== null);
+      assert.equal(result.strategyId, "inf-ewma"); // inf is treated as null (unmeasured), higher quality wins
     });
   });
 
@@ -1354,6 +1469,42 @@ describe("Built-in Policy Selectors and formatDecisionSummary", () => {
       assert.equal(
         summary,
         '[static-op] strategy="baseline" tier=2/2 kind=initial changed=false budgets=none reasons=none',
+      );
+    });
+
+    it("formats unengaged budget using its status string", () => {
+      const decision: StrategyDecision = {
+        operationId: "unengaged-op",
+        strategyId: "fast",
+        qualityTier: 1,
+        previousStrategyId: null,
+        changed: false,
+        kind: "initial",
+        decidedAt: 1000,
+        modeSince: 1000,
+        baseQualityTier: 1,
+        targetQualityTier: 1,
+        signals: [],
+        budgets: [
+          {
+            id: "cpu",
+            signal: "cpu.utilization",
+            engaged: false,
+            status: "ok",
+            limit: 0.8,
+            recoverBelow: 0.6,
+            tierReduction: 1,
+          },
+        ],
+        reasons: [{ code: "initial-selection", message: "ok" }],
+        sampleSequence: 1,
+        signalsCached: false,
+      };
+
+      const summary = formatDecisionSummary(decision);
+      assert.equal(
+        summary,
+        '[unengaged-op] strategy="fast" tier=1/1 kind=initial changed=false budgets=cpu(ok) reasons=initial-selection',
       );
     });
   });

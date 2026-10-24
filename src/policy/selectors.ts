@@ -97,11 +97,7 @@ export function createErrorRateGuardSelector(
   if (fallbackSelector !== undefined && typeof fallbackSelector !== "function") {
     throw new ConfigurationError("fallbackSelector must be a function.");
   }
-  if (
-    typeof minSamples !== "number" ||
-    !Number.isSafeInteger(minSamples) ||
-    minSamples < 1
-  ) {
+  if (typeof minSamples !== "number" || !Number.isSafeInteger(minSamples) || minSamples < 1) {
     throw new ConfigurationError("minSamples must be a positive integer.");
   }
 
@@ -128,13 +124,7 @@ export function createErrorRateGuardSelector(
       }
       const sorted = [...eligible].sort(compareCandidatesQualityFirst);
       const chosen = sorted[0] as CustomSelectorCandidate;
-      const chosenSamples = getCandidateSamples(chosen);
-      const isColdStart =
-        chosen.errorRate !== null &&
-        chosen.errorRate !== undefined &&
-        chosen.errorRate > maxErrorRate &&
-        chosenSamples !== null &&
-        chosenSamples < minSamples;
+      const isColdStart = typeof chosen.errorRate === "number" && chosen.errorRate > maxErrorRate;
 
       const reason = isColdStart
         ? `error-rate-guard: selected cold-start strategy "${chosen.candidate.id}" with errorRate ${chosen.errorRate} (samples < minSamples ${minSamples})`
@@ -242,9 +232,7 @@ export function createLatencyBudgetSelector(
  *
  * If `context.candidates` is empty, evaluation short-circuits to null.
  */
-export function composeSelectors(
-  selectors: readonly CustomPolicySelector[],
-): CustomPolicySelector {
+export function composeSelectors(selectors: readonly CustomPolicySelector[]): CustomPolicySelector {
   if (!Array.isArray(selectors)) {
     throw new ConfigurationError("selectors must be an array.");
   }
