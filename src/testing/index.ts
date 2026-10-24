@@ -693,6 +693,12 @@ export interface SimulatedStrategy {
   readonly costTier?: number;
   /** Defaults to true. */
   readonly applicable?: boolean;
+  /** Arithmetic mean of historical durations, or null when untracked. */
+  readonly estimatedLatencyMs?: number | null;
+  /** Exponentially weighted recent latency, or null when untracked. */
+  readonly ewmaLatencyMs?: number | null;
+  /** Observed failure ratio in the range 0..1; 0 when no runs exist, or null when untracked. */
+  readonly errorRate?: number | null;
 }
 
 /** One clock-and-signal snapshot supplied to the simulator. */
@@ -767,6 +773,9 @@ function normalizeSimulatedStrategies(
     const qualityTier = strategy.qualityTier;
     const costTier = strategy.costTier;
     const applicable = strategy.applicable;
+    const estimatedLatencyMs = strategy.estimatedLatencyMs;
+    const ewmaLatencyMs = strategy.ewmaLatencyMs;
+    const errorRate = strategy.errorRate;
     if (!isCanonicalIdentifier(id)) {
       throw new ConfigurationError(`${label}[${index}].id must be a non-empty trimmed string.`);
     }
@@ -785,11 +794,46 @@ function normalizeSimulatedStrategies(
     if (applicable !== undefined && typeof applicable !== "boolean") {
       throw new ConfigurationError(`${label}[${index}].applicable must be a boolean when present.`);
     }
+    if (
+      estimatedLatencyMs !== undefined &&
+      estimatedLatencyMs !== null &&
+      (typeof estimatedLatencyMs !== "number" ||
+        !Number.isFinite(estimatedLatencyMs) ||
+        estimatedLatencyMs < 0)
+    ) {
+      throw new ConfigurationError(
+        `${label}[${index}].estimatedLatencyMs must be a non-negative finite number or null when present.`,
+      );
+    }
+    if (
+      ewmaLatencyMs !== undefined &&
+      ewmaLatencyMs !== null &&
+      (typeof ewmaLatencyMs !== "number" || !Number.isFinite(ewmaLatencyMs) || ewmaLatencyMs < 0)
+    ) {
+      throw new ConfigurationError(
+        `${label}[${index}].ewmaLatencyMs must be a non-negative finite number or null when present.`,
+      );
+    }
+    if (
+      errorRate !== undefined &&
+      errorRate !== null &&
+      (typeof errorRate !== "number" ||
+        !Number.isFinite(errorRate) ||
+        errorRate < 0 ||
+        errorRate > 1)
+    ) {
+      throw new ConfigurationError(
+        `${label}[${index}].errorRate must be a finite number between 0 and 1 or null when present.`,
+      );
+    }
     return {
       id,
       qualityTier,
       ...(costTier === undefined ? {} : { costTier }),
       applicable: applicable ?? true,
+      ...(estimatedLatencyMs !== undefined ? { estimatedLatencyMs } : {}),
+      ...(ewmaLatencyMs !== undefined ? { ewmaLatencyMs } : {}),
+      ...(errorRate !== undefined ? { errorRate } : {}),
     };
   });
 }

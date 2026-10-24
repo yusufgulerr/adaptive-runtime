@@ -120,6 +120,17 @@ export interface RuntimeMetricsCollector {
 }
 
 /**
+ * Handle returned by attachOpenTelemetryMeter allowing detachment and explicit series purging.
+ */
+export interface OpenTelemetryMeterSubscription {
+  (): void;
+  /** Removes all series associated with the specified operation id from UpDownCounter tracking maps. */
+  purgeOperation(operationId: string): void;
+  /** Alias for purgeOperation to match RuntimeMetricsCollector.removeOperation. */
+  removeOperation(operationId: string): void;
+}
+
+/**
  * Standard Prometheus latency histogram buckets in seconds.
  */
 const DEFAULT_HISTOGRAM_BUCKETS: readonly number[] = [
@@ -321,6 +332,51 @@ interface InternalHistogramSeries {
   readonly bucketCounts: number[];
 }
 
+function safeRecord(action: () => void): void {
+  try {
+    action();
+  } catch {
+    // Isolated: single instrument failure must not drop other telemetry or throw
+  }
+}
+
+const REMOVAL_HOOKS = Symbol.for("adaptive-runtime.observability.removeOperationHooks");
+
+type RuntimeWithHooks = AdaptiveRuntime & {
+  [REMOVAL_HOOKS]?: Set<(operationId: string) => void>;
+};
+
+function registerOperationRemovalHook(
+  runtime: AdaptiveRuntime,
+  hook: (operationId: string) => void,
+): () => void {
+  const target = runtime as RuntimeWithHooks;
+  let hooks = target[REMOVAL_HOOKS];
+  if (hooks === undefined) {
+    hooks = new Set();
+    target[REMOVAL_HOOKS] = hooks;
+    const original = runtime.removeOperation?.bind(runtime);
+    if (typeof original === "function") {
+      runtime.removeOperation = (operationId: string): boolean => {
+        const removed = original(operationId);
+        if (removed) {
+          const currentHooks = target[REMOVAL_HOOKS];
+          if (currentHooks !== undefined) {
+            for (const h of currentHooks) {
+              safeRecord(() => h(operationId));
+            }
+          }
+        }
+        return removed;
+      };
+    }
+  }
+  hooks.add(hook);
+  return () => {
+    hooks?.delete(hook);
+  };
+}
+
 /**
  * In-memory metrics sink and Prometheus exposition generator.
  * Maintains real series state without third-party dependencies.
@@ -461,6 +517,10 @@ export class MetricsCollector implements RuntimeMetricsCollector {
       throw new TypeError("attach requires an AdaptiveRuntime instance with an 'on' method.");
     }
 
+    const unhookRemoval = registerOperationRemovalHook(runtime, (opId) => {
+      this.removeOperation(opId);
+    });
+
     const unsubs: Array<() => void> = [
       runtime.on("run:start", ({ operationId, strategyId }) => {
         this.increment(`${this.#prefix}_strategy_selections_total`, {
@@ -554,6 +614,7 @@ export class MetricsCollector implements RuntimeMetricsCollector {
     ];
 
     return () => {
+      unhookRemoval();
       for (const unsub of unsubs) {
         unsub();
       }
@@ -687,14 +748,6 @@ export function createMetricsCollector(options?: ObservabilityOptions): RuntimeM
   return new MetricsCollector(options);
 }
 
-function safeRecord(action: () => void): void {
-  try {
-    action();
-  } catch {
-    // Isolated: single instrument failure must not drop other telemetry or throw
-  }
-}
-
 function tryCreateGauge(
   meter: OpenTelemetryMeterLike,
   name: string,
@@ -793,7 +846,7 @@ export function attachOpenTelemetryMeter(
   runtime: AdaptiveRuntime,
   meter: OpenTelemetryMeterLike,
   options?: ObservabilityOptions,
-): () => void {
+): OpenTelemetryMeterSubscription {
   if (
     meter === null ||
     typeof meter !== "object" ||
@@ -1037,9 +1090,42 @@ export function attachOpenTelemetryMeter(
     }),
   ];
 
-  return () => {
-    for (const unsub of unsubs) {
-      unsub();
+  function purgeOperation(operationId: string): void {
+    if (typeof operationId !== "string" || operationId.trim().length === 0) {
+      throw new ConfigurationError("operationId must be a non-empty string.");
     }
-  };
+    const normalized = operationId.trim();
+    const targetSegment = `;12:operation_id=${normalized.length}:${normalized}`;
+
+    for (const key of signalReadingLastValues.keys()) {
+      if (key.includes(targetSegment)) {
+        signalReadingLastValues.delete(key);
+      }
+    }
+
+    for (const key of budgetEngagedLastValues.keys()) {
+      if (key.includes(targetSegment)) {
+        budgetEngagedLastValues.delete(key);
+      }
+    }
+  }
+
+  const unhookRemoval = registerOperationRemovalHook(runtime, purgeOperation);
+
+  const subscription: OpenTelemetryMeterSubscription = Object.assign(
+    () => {
+      unhookRemoval();
+      for (const unsub of unsubs) {
+        unsub();
+      }
+      signalReadingLastValues.clear();
+      budgetEngagedLastValues.clear();
+    },
+    {
+      purgeOperation,
+      removeOperation: purgeOperation,
+    },
+  );
+
+  return subscription;
 }

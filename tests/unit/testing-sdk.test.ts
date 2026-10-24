@@ -632,7 +632,7 @@ describe("runProviderConformanceCheck", () => {
     const report = await runProviderConformanceCheck({
       id: "readings",
       signals: [
-        { name: "ok", unit: "count" },
+        { name: "ok", unit: "count", description: "valid description" },
         { name: "duplicate", unit: "count" },
         { name: "bad-unit", unit: "count" },
         { name: "bad-time", unit: "count" },
@@ -646,7 +646,14 @@ describe("runProviderConformanceCheck", () => {
           null,
           { name: "", unit: "count", status: "ok", value: 1, observedAt: context.now },
           { name: "undeclared", unit: "count", status: "ok", value: 1, observedAt: context.now },
-          { name: "ok", unit: "count", status: "ok", value: 1, observedAt: context.now },
+          {
+            name: "ok",
+            unit: "count",
+            status: "ok",
+            value: 1,
+            observedAt: context.now,
+            confidence: 0.8,
+          },
           {
             name: "ok",
             unit: "count",
@@ -970,5 +977,219 @@ describe("simulatePolicyTimeline", () => {
         ConfigurationError,
       );
     }
+  });
+
+  it("propagates estimatedLatencyMs, ewmaLatencyMs, and errorRate to custom policy selectors", () => {
+    interface InspectedCandidate {
+      readonly id: string;
+      readonly estimatedLatencyMs?: number | null;
+      readonly ewmaLatencyMs?: number | null;
+      readonly errorRate?: number | null;
+    }
+    const inspected: InspectedCandidate[][] = [];
+    const result = simulatePolicyTimeline({
+      policy: {
+        customSelector: (ctx) => {
+          inspected.push(
+            ctx.candidates.map((c) => ({
+              id: c.candidate.id,
+              estimatedLatencyMs: c.estimatedLatencyMs,
+              ewmaLatencyMs: c.ewmaLatencyMs,
+              errorRate: c.errorRate,
+            })),
+          );
+          const eligible = [...ctx.candidates].sort(
+            (a, b) => (a.errorRate ?? 1) - (b.errorRate ?? 1),
+          );
+          return eligible[0]?.candidate.id ?? null;
+        },
+      },
+      strategies: [
+        { id: "fast", qualityTier: 2, estimatedLatencyMs: 45, ewmaLatencyMs: 50, errorRate: 0.1 },
+        {
+          id: "safe",
+          qualityTier: 1,
+          estimatedLatencyMs: 120,
+          ewmaLatencyMs: 110,
+          errorRate: 0.01,
+        },
+        {
+          id: "cold",
+          qualityTier: 3,
+          estimatedLatencyMs: null,
+          ewmaLatencyMs: null,
+          errorRate: null,
+        },
+      ],
+      steps: [
+        { signals: [] },
+        {
+          signals: [],
+          strategies: [
+            {
+              id: "fast",
+              qualityTier: 2,
+              estimatedLatencyMs: 80,
+              ewmaLatencyMs: 75,
+              errorRate: 0.25,
+            },
+            {
+              id: "safe",
+              qualityTier: 1,
+              estimatedLatencyMs: 100,
+              ewmaLatencyMs: 95,
+              errorRate: 0.02,
+            },
+          ],
+        },
+      ],
+    });
+
+    assert.equal(result.decisions[0]?.strategyId, "safe");
+    assert.equal(result.decisions[1]?.strategyId, "safe");
+    assert.deepEqual(inspected[0], [
+      { id: "fast", estimatedLatencyMs: 45, ewmaLatencyMs: 50, errorRate: 0.1 },
+      { id: "safe", estimatedLatencyMs: 120, ewmaLatencyMs: 110, errorRate: 0.01 },
+      { id: "cold", estimatedLatencyMs: null, ewmaLatencyMs: null, errorRate: null },
+    ]);
+    assert.deepEqual(inspected[1], [
+      { id: "fast", estimatedLatencyMs: 80, ewmaLatencyMs: 75, errorRate: 0.25 },
+      { id: "safe", estimatedLatencyMs: 100, ewmaLatencyMs: 95, errorRate: 0.02 },
+    ]);
+  });
+
+  it("validates simulation parameters: estimatedLatencyMs, ewmaLatencyMs, and errorRate", () => {
+    assert.throws(
+      () =>
+        simulatePolicyTimeline({
+          strategies: [{ id: "s1", qualityTier: 1, estimatedLatencyMs: -1 }],
+          steps: [{ signals: [] }],
+        }),
+      (err: unknown) =>
+        err instanceof ConfigurationError &&
+        err.message.includes(
+          "strategies[0].estimatedLatencyMs must be a non-negative finite number or null when present.",
+        ),
+    );
+
+    assert.throws(
+      () =>
+        simulatePolicyTimeline({
+          strategies: [{ id: "s1", qualityTier: 1, estimatedLatencyMs: Number.NaN }],
+          steps: [{ signals: [] }],
+        }),
+      ConfigurationError,
+    );
+
+    assert.throws(
+      () =>
+        simulatePolicyTimeline({
+          strategies: [{ id: "s1", qualityTier: 1, estimatedLatencyMs: Number.POSITIVE_INFINITY }],
+          steps: [{ signals: [] }],
+        }),
+      ConfigurationError,
+    );
+
+    assert.throws(
+      () =>
+        simulatePolicyTimeline({
+          strategies: [{ id: "s1", qualityTier: 1, estimatedLatencyMs: "100" as never }],
+          steps: [{ signals: [] }],
+        }),
+      ConfigurationError,
+    );
+
+    assert.throws(
+      () =>
+        simulatePolicyTimeline({
+          strategies: [{ id: "s1", qualityTier: 1, ewmaLatencyMs: -0.5 }],
+          steps: [{ signals: [] }],
+        }),
+      (err: unknown) =>
+        err instanceof ConfigurationError &&
+        err.message.includes(
+          "strategies[0].ewmaLatencyMs must be a non-negative finite number or null when present.",
+        ),
+    );
+
+    assert.throws(
+      () =>
+        simulatePolicyTimeline({
+          strategies: [{ id: "s1", qualityTier: 1, ewmaLatencyMs: Number.NaN }],
+          steps: [{ signals: [] }],
+        }),
+      ConfigurationError,
+    );
+
+    assert.throws(
+      () =>
+        simulatePolicyTimeline({
+          strategies: [{ id: "s1", qualityTier: 1, ewmaLatencyMs: "invalid" as never }],
+          steps: [{ signals: [] }],
+        }),
+      ConfigurationError,
+    );
+
+    assert.throws(
+      () =>
+        simulatePolicyTimeline({
+          strategies: [{ id: "s1", qualityTier: 1, errorRate: -0.01 }],
+          steps: [{ signals: [] }],
+        }),
+      (err: unknown) =>
+        err instanceof ConfigurationError &&
+        err.message.includes(
+          "strategies[0].errorRate must be a finite number between 0 and 1 or null when present.",
+        ),
+    );
+
+    assert.throws(
+      () =>
+        simulatePolicyTimeline({
+          strategies: [{ id: "s1", qualityTier: 1, errorRate: 1.01 }],
+          steps: [{ signals: [] }],
+        }),
+      (err: unknown) =>
+        err instanceof ConfigurationError &&
+        err.message.includes(
+          "strategies[0].errorRate must be a finite number between 0 and 1 or null when present.",
+        ),
+    );
+
+    assert.throws(
+      () =>
+        simulatePolicyTimeline({
+          strategies: [{ id: "s1", qualityTier: 1, errorRate: Number.NaN }],
+          steps: [{ signals: [] }],
+        }),
+      ConfigurationError,
+    );
+
+    assert.throws(
+      () =>
+        simulatePolicyTimeline({
+          strategies: [{ id: "s1", qualityTier: 1, errorRate: "0.5" as never }],
+          steps: [{ signals: [] }],
+        }),
+      ConfigurationError,
+    );
+
+    assert.throws(
+      () =>
+        simulatePolicyTimeline({
+          strategies: [{ id: "s1", qualityTier: 1 }],
+          steps: [
+            {
+              signals: [],
+              strategies: [{ id: "s1", qualityTier: 1, errorRate: 2 }],
+            },
+          ],
+        }),
+      (err: unknown) =>
+        err instanceof ConfigurationError &&
+        err.message.includes(
+          "steps[0].strategies[0].errorRate must be a finite number between 0 and 1 or null when present.",
+        ),
+    );
   });
 });
