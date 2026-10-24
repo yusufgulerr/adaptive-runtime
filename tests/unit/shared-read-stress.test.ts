@@ -111,13 +111,15 @@ describe("SignalCollector shared read stress", () => {
     const firstSnapshot = snapshots[0];
     assert.ok(firstSnapshot !== undefined);
     assert.equal(firstSnapshot.cached, false);
+    assert.equal(firstSnapshot.coalesced, false);
     assert.equal(firstSnapshot.sequence, 1);
     assert.deepEqual(firstSnapshot.readings, [okReading(42, NOW)]);
 
     survivors.forEach((caller, position) => {
       const snapshot = snapshots[position];
       assert.ok(snapshot !== undefined);
-      assert.equal(snapshot.cached, caller.index !== 0);
+      assert.equal(snapshot.cached, false);
+      assert.equal(snapshot.coalesced, caller.index !== 0);
       assert.equal(snapshot.sequence, firstSnapshot.sequence);
       assert.equal(snapshot.collectedAt, firstSnapshot.collectedAt);
       assert.deepEqual(snapshot.readings, firstSnapshot.readings);
@@ -176,6 +178,7 @@ describe("SignalCollector shared read stress", () => {
 
     const fresh = await collector.collect(NOW, new AbortController().signal);
     assert.equal(fresh.cached, false);
+    assert.equal(fresh.coalesced, false);
     assert.deepEqual(fresh.readings, [okReading(7, NOW)]);
     assert.equal(reads, 2);
     assert.equal(errors.length, 0);

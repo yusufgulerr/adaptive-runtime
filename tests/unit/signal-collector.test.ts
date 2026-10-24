@@ -45,16 +45,19 @@ describe("SignalCollector", () => {
 
     const first = await collector.collect(clock.now(), new AbortController().signal);
     assert.equal(first.cached, false);
+    assert.equal(first.coalesced, false);
     assert.equal(requireOk(first.readings[0]).value, 10);
 
     const second = await collector.collect(clock.now(), new AbortController().signal);
     assert.equal(second.cached, true);
+    assert.equal(second.coalesced, false);
     assert.equal(second.sequence, first.sequence);
     assert.equal(requireOk(second.readings[0]).value, 10);
 
     clock.advance(1000);
     const third = await collector.collect(clock.now(), new AbortController().signal);
     assert.equal(third.cached, false);
+    assert.equal(third.coalesced, false);
     assert.notEqual(third.sequence, first.sequence);
     assert.equal(requireOk(third.readings[0]).value, 20);
   });
@@ -208,6 +211,7 @@ describe("SignalCollector", () => {
     release?.([okSignal(PROVIDER_SIGNAL, 1, clock.now())]);
     const first = await firstPromise;
     assert.equal(first.cached, false);
+    assert.equal(first.coalesced, false);
     assert.equal(requireOk(first.readings[0]).value, 1);
   });
 
@@ -233,17 +237,19 @@ describe("SignalCollector", () => {
 
     release?.([okSignal(PROVIDER_SIGNAL, 2, clock.now())]);
     const second = await secondPromise;
-    assert.equal(second.cached, true);
+    assert.equal(second.cached, false);
+    assert.equal(second.coalesced, true);
     assert.equal(requireOk(second.readings[0]).value, 2);
     assert.equal(reads, 1);
 
     const third = await collector.collect(clock.now(), new AbortController().signal);
     assert.equal(third.cached, true);
+    assert.equal(third.coalesced, false);
     assert.equal(requireOk(third.readings[0]).value, 2);
     assert.equal(reads, 1);
   });
 
-  it("shares an in-flight read and marks the second caller as cached", async () => {
+  it("shares an in-flight read and marks the second caller as coalesced", async () => {
     let releases: (() => void) | undefined;
     const provider = new FunctionSignalProvider({
       read: () =>
@@ -267,7 +273,9 @@ describe("SignalCollector", () => {
     releases?.();
     const [first, second] = await Promise.all([firstPromise, secondPromise]);
     assert.equal(first.cached, false);
-    assert.equal(second.cached, true);
+    assert.equal(first.coalesced, false);
+    assert.equal(second.cached, false);
+    assert.equal(second.coalesced, true);
     assert.equal(second.sequence, first.sequence);
   });
 

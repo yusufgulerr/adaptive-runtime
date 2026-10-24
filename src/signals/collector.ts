@@ -15,6 +15,7 @@ export interface SignalSnapshot {
   readonly collectedAt: number;
   readonly sequence: number;
   readonly cached: boolean;
+  readonly coalesced: boolean;
 }
 
 export interface SignalCollectorOptions {
@@ -167,12 +168,12 @@ export class SignalCollector {
     if (cached !== null) {
       const age = now - cached.collectedAt;
       if (age >= 0 && age < effectiveIntervalMs) {
-        return { ...cached, cached: true };
+        return { ...cached, cached: true, coalesced: false };
       }
     }
     if (this.#inflight !== null && !this.#inflight.controller.signal.aborted) {
       const snapshot = await this.#joinSharedRead(this.#inflight, signal);
-      return { ...snapshot, cached: true };
+      return { ...snapshot, cached: false, coalesced: true };
     }
 
     if (this.#entries.length === 0) {
@@ -182,6 +183,7 @@ export class SignalCollector {
         collectedAt: now,
         sequence: this.#sequence,
         cached: false,
+        coalesced: false,
       };
       this.#snapshot = snapshot;
       return snapshot;
@@ -190,7 +192,7 @@ export class SignalCollector {
     const entry = this.#startSharedRead(now);
     this.#inflight = entry;
     const snapshot = await this.#joinSharedRead(entry, signal);
-    return { ...snapshot, cached: false };
+    return { ...snapshot, cached: false, coalesced: false };
   }
 
   async close(): Promise<void> {
@@ -309,6 +311,7 @@ export class SignalCollector {
       collectedAt: now,
       sequence: this.#sequence,
       cached: false,
+      coalesced: false,
     };
   }
 
