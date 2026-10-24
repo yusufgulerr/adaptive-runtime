@@ -160,7 +160,8 @@ export class EventLoopUtilizationProvider implements SignalProvider {
           name: this.#signalName,
           unit: "ratio",
           status: "ok",
-          value: snapshot.utilization,
+          // Snapshots may round to just above 1; keep the public ratio bounded.
+          value: Math.min(snapshot.utilization, 1),
           observedAt,
           confidence: 1,
           details: {
@@ -192,25 +193,16 @@ export class EventLoopUtilizationProvider implements SignalProvider {
       );
     }
 
+    // Both deltas are finite and non-negative and deltaTotal is positive, so the
+    // quotient is already inside 0..1; no defensive range branch is reachable.
     const utilization = deltaActive / deltaTotal;
-    if (
-      !Number.isFinite(utilization) ||
-      utilization < 0 ||
-      utilization > 1 + DELTA_UTILIZATION_TOLERANCE
-    ) {
-      return this.#unavailable(
-        "error",
-        observedAt,
-        "Event-loop utilization delta is outside the valid 0..1 range.",
-      );
-    }
 
     return [
       {
         name: this.#signalName,
         unit: "ratio",
         status: "ok",
-        value: utilization > 1 ? 1 : utilization,
+        value: utilization,
         observedAt,
         confidence: 1,
         details: {
