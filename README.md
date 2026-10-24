@@ -269,10 +269,12 @@ bundler never pulls Node.js built-ins into a browser or worker build.
 | `ProcessMemoryProvider` | root, `/node` | `process.memory.heapUsed`, `process.memory.rss` | This process only |
 | `CpuUtilizationProvider` | root, `/node` | `process.cpu.utilization` | Ratio relative to one core; can exceed 1; first read is `unknown` |
 | `EventLoopDelayProvider` | root, `/node` | `eventLoop.delay.p95` (configurable) | Scheduling delay, not CPU percentage |
+| `EventLoopUtilizationProvider` | root, `/node` | `eventLoop.utilization` | First read is cumulative; later reads report utilization since the previous read |
 | `NetworkLatencyProvider` | root, `/core`, `/node` | `network.latency` | Requires an application-supplied probe; the library creates no traffic |
 | `DeviceMemoryProvider` | `/web` | `web.device.memoryGib`, `web.jsHeap.usedRatio` | Reads structural `navigator`/`performance` globals; unavailable fields stay explicit |
 | `NetworkInformationProvider` | `/web` | `web.network.rttMs`, `web.network.downlinkMbps`, `web.network.saveData` | W3C Network Information API; `saveData` is `1`/`0` |
 | `FrameTimingProvider` | `/web` | `web.frame.durationP95Ms`, `web.frame.droppedRatio` | Sliding frame window; call `recordFrameDuration()` from your render loop |
+| `ComputePressureProvider` | `/web` | `web.computePressure` | W3C Compute Pressure; maps `nominal`/`fair`/`serious`/`critical` to `0.25`/`0.5`/`0.75`/`1`; `unknown` until the first record |
 | `ExecutionBudgetProvider` | `/edge` | `edge.execution.remainingMs`, `edge.execution.usedRatio`, `edge.concurrency.saturation` | App-supplied wall-clock and concurrency snapshot; ideal for serverless deadlines |
 | `CompositeSignalProvider` | root, `/core`, `/edge` | Derived names and units from rules | Combines child provider readings; propagates `error` > `stale` > `unsupported` > `unknown` and never coerces unavailable inputs |
 
@@ -296,11 +298,15 @@ const runtime = createAdaptiveRuntime({ providers, policy, clock, providerTimeou
 | Method | Purpose |
 | --- | --- |
 | `run(operation)` | Select and execute one strategy; returns `{ value, metadata }` |
+| `evaluate(operation)` | Compute one policy decision without executing a strategy; `dryRun: true` persists no state and emits no event |
 | `pinStrategy(operationId, strategyId)` | Manual override; bypasses pressure, quality floor/ceiling, and minimum mode duration, not applicability |
 | `unpinStrategy(operationId)` | Return to automatic selection |
 | `setAdaptationEnabled(operationId, enabled)` | Per-operation static/adaptive override; a pin takes precedence |
+| `setOperationPolicy(operationId, policy)` | Per-operation policy override; precedence is pin, adaptation override, operation policy, global policy |
 | `getDecision(operationId)` | Last decision, or `null` |
-| `getStats(operationId)` | Run/success/failure counts, latency, strategy counts |
+| `getStats(operationId)` | Run/success/failure counts, latency, strategy counts, EWMA latency, and error rate |
+| `exportState(operationId?)` | Versioned, deeply frozen JSON snapshot of policy state, decisions, pins, overrides, and stats |
+| `importState(snapshot)` | Validate and atomically restore a snapshot; rejected while an operation has in-flight work |
 | `removeOperation(operationId)` | Remove retained state, pins, overrides, and stats; returns `false` while a selection/run is active |
 | `resetStats(operationId?)` | Reset counters for one operation, or all operations when no id is given |
 | `on(event, listener)` | Subscribe; returns an unsubscribe function |
@@ -326,7 +332,7 @@ import { ProcessMemoryProvider, EventLoopDelayProvider } from "adaptive-runtime/
 import { DeviceMemoryProvider, FrameTimingProvider } from "adaptive-runtime/web";
 import { ExecutionBudgetProvider } from "adaptive-runtime/edge";
 import { createMetricsCollector } from "adaptive-runtime/observability";
-import { createFakeClock, ScriptedSignalProvider } from "adaptive-runtime/testing";
+import { createFakeClock, ScriptedSignalProvider, simulatePolicyTimeline } from "adaptive-runtime/testing";
 ```
 
 | Subpath | Contents | Portable? |
@@ -336,10 +342,10 @@ import { createFakeClock, ScriptedSignalProvider } from "adaptive-runtime/testin
 | `adaptive-runtime/node` | Core plus process, CPU, and event-loop providers | No (Node.js) |
 | `adaptive-runtime/web` | Core plus browser providers | Yes |
 | `adaptive-runtime/edge` | Core plus execution-budget provider | Yes |
-| `adaptive-runtime/policy` | Pure policy types, resolution, and evaluation | Yes |
+| `adaptive-runtime/policy` | Pure policy types, resolution, evaluation, and `definePolicy` | Yes |
 | `adaptive-runtime/providers` | Every built-in provider, including Node.js | No (mixed) |
 | `adaptive-runtime/observability` | In-memory metrics collector, Prometheus text, OpenTelemetry meter bridge | Yes |
-| `adaptive-runtime/testing` | Fake clock, scripted provider, conformance runner | Yes |
+| `adaptive-runtime/testing` | Fake clock, scripted provider, conformance runner, policy timeline simulator | Yes |
 | `adaptive-runtime/package.json` | Package metadata | n/a |
 
 The `/core`, `/web`, `/edge`, `/policy`, `/observability`, and `/testing`
@@ -511,9 +517,9 @@ responsible for:
 - Timeouts cannot preempt synchronous or uncooperative code.
 - `isApplicable` and `checkQuality` run on the runtime path without independent
   timeouts; keep them fast and non-blocking.
-- A run queued behind another selection for the same operation id waits for that
-  selection even if the queued caller aborts; cancellation is observed when the
-  lock is released.
+- Queued selections are abort-aware: if a queued caller aborts while waiting for
+  an in-flight selection on the same `operationId`, the queued call rejects
+  immediately with `OperationAbortedError` without waiting for the lock.
 - Decision state is per process and in memory by default. `exportState()` creates a
   versioned JSON snapshot and `importState()` restores it; snapshots omit functions
   and custom selectors and do not coordinate multiple processes. Bound live state

@@ -1,158 +1,195 @@
-# Project: Adaptive Runtime — Phase 3 (v0.3.0)
+# Project: Adaptive Runtime — Phase 5 (v0.5.0, 0.6.0 hardening)
 
 ## Architecture
-Phase 3 expands Adaptive Runtime into a universal, multi-runtime adaptive control plane across Node.js, WinterCG (Cloudflare Workers, Deno, Bun), and modern Web Browsers.
-Core architecture principles:
-1. **Zero Runtime Dependencies**: Pure TypeScript, structural interfaces (`*Like`), zero external npm dependencies.
-2. **Zero-Node Isolation**: Platform-neutral core (`src/core.ts`), web (`src/web.ts`), edge (`src/edge.ts`), policy (`src/policy/*`), runtime (`src/runtime/*`), signals (`src/signals/*`), observability (`src/observability/*`), and testing (`src/testing/*`). Node-dependent code is isolated strictly to Node providers and `src/node.ts`.
-3. **No Zero-Coercion**: Non-ok signal statuses (`unsupported`, `stale`, `unknown`, `error`) are never coerced to `0`.
-4. **Deterministic Tie-Breaking**: Canonical code-unit string comparisons; deterministic policy evaluation.
-5. **Full Test & Branch Coverage**: All files strictly maintain >= 80% branch coverage with native Node test runner.
 
-## Feature Inventory
-| # | Feature | Description | Milestone | Source |
-|---|---------|-------------|-----------|--------|
-| 1 | DeviceMemoryProvider | Web provider for `deviceMemory` and `usedJSHeapSize/jsHeapSizeLimit` ratio | M1 | ORIGINAL_REQUEST §1.1 |
-| 2 | NetworkInformationProvider | Web provider for RTT (ms), downlink (Mbps), and saveData | M1 | ORIGINAL_REQUEST §1.2 |
-| 3 | FrameTimingProvider | Web provider with frame sample recording, P95 duration, and dropped frame ratio | M1 | ORIGINAL_REQUEST §1.3 |
-| 4 | ExecutionBudgetProvider | Edge provider for remaining execution time, elapsed ratio, and concurrency saturation | M1 | ORIGINAL_REQUEST §1.4 |
-| 5 | CompositeSignalProvider | Multi-provider signal aggregator with priority status resolution and custom compute rules | M2 | ORIGINAL_REQUEST §2 |
-| 6 | CustomPolicySelector Types & Validation | `DecisionReasonCode` `"custom-selector"` and policy resolution validation | M3 | ORIGINAL_REQUEST §3 |
-| 7 | CustomPolicySelector Execution | Dynamic candidate selection hook evaluated before stability/hysteresis gating | M3 | ORIGINAL_REQUEST §3 |
-| 8 | OpenTelemetry Meter Bridge | Zero-dependency structural attachment to any OpenTelemetry Meter | M4 | ORIGINAL_REQUEST §4 |
-| 9 | Prometheus Metrics Collector | Standalone collector with non-zero-coercion status tracking and Prometheus text generation | M4 | ORIGINAL_REQUEST §4 |
-| 10 | Testing FakeClock | Virtual time control (`now`, `advance`, `set`, `setTimeout`) | M5 | ORIGINAL_REQUEST §5 |
-| 11 | ScriptedSignalProvider | Deterministic scripted signal sequences for reproducible scenario testing | M5 | ORIGINAL_REQUEST §5 |
-| 12 | Provider Conformance Check | Comprehensive lifecycle and descriptor validation suite for all providers | M5 | ORIGINAL_REQUEST §5 |
-| 13 | Multi-Runtime Entrypoints | `src/core.ts`, `src/web.ts`, `src/edge.ts`, `src/node.ts`, `src/index.ts` exports | M6 | ORIGINAL_REQUEST §6 |
-| 14 | Automated Zero-Node Test | Cross-platform AST/regex isolation test ensuring zero node:* in universal files | M6 | ORIGINAL_REQUEST §6 |
-| 15 | Edge Gateway Example | Complete example in `examples/multi-runtime-edge` and `npm run example:edge` | M6 | ORIGINAL_REQUEST §6 |
-| 16 | ADRs & Documentation Updates | ADR 0007, ADR 0008, and comprehensive documentation updates | M6 | ORIGINAL_REQUEST §6 |
-| 17 | Clean Consumer Verification | Independent packaging and multi-subpath import test in temporary project | M6 | ORIGINAL_REQUEST §6 |
+Adaptive Runtime is a deterministic, resource-aware execution runtime for
+Node.js `>=22`, modern browsers, and WinterCG-compatible edge runtimes. The
+0.5.0 line adds shadow evaluation, versioned state hydration, and provider
+expansion on top of the multi-runtime 0.x core. The unreleased 0.6.0 hardening
+work bounds telemetry cardinality and tightens the provider, conformance, and
+benchmark verification contracts.
+
+Core principles:
+
+1. **Zero Runtime Dependencies.** Pure TypeScript, structural `*Like`
+   interfaces, and no runtime npm dependencies.
+2. **Portable Core.** `src/core.ts`, `src/web.ts`, `src/edge.ts`, `src/policy`,
+   `src/runtime`, `src/signals`, `src/types`, `src/errors`,
+   `src/observability`, `src/testing`, `src/providers/web`,
+   `src/providers/edge`, and `src/providers/composite.ts` import no Node.js
+   built-ins and never read the Node.js `process` object.
+3. **No Zero-Coercion.** Non-ok statuses (`unknown`, `unsupported`, `stale`,
+   `error`) remain explicit and are never coerced to `0`.
+4. **Deterministic Tie-Breaking.** Code-unit identifier comparison and pure
+   policy evaluation; identical inputs and clock values produce identical
+   decisions.
+5. **Exactly One Execution.** Each `run()` selects and invokes exactly one
+   strategy. There are no automatic retries, hedges, fallbacks on strategy
+   failure, or mid-run switches.
+6. **Bounded State.** `maxTrackedOperations` bounds runtime state,
+   `maxSeries` bounds metric families and OpenTelemetry delta maps, and
+   `removeOperation`/`resetStats` release state without disturbing active work.
+7. **Evidence-First Verification.** Source and compiled package surfaces,
+   conformance checks, coverage gates, and benchmarks are verified with real
+   command output; release and npm claims require completed owner-approved
+   commands.
+
+## Public Surfaces
+
+| Subpath | Contents | Portable? |
+| --- | --- | --- |
+| `adaptive-runtime` | Core plus Node.js providers | No (Node.js) |
+| `adaptive-runtime/core` | Runtime, errors, types, policy helper, network latency, composite signals | Yes |
+| `adaptive-runtime/node` | Core plus process, CPU, event-loop delay, and event-loop utilization providers | No (Node.js) |
+| `adaptive-runtime/web` | Core plus device-memory, network-information, frame-timing, and compute-pressure providers | Yes |
+| `adaptive-runtime/edge` | Core plus execution-budget provider | Yes |
+| `adaptive-runtime/policy` | Pure policy types, resolution, evaluation, and `definePolicy` | Yes |
+| `adaptive-runtime/providers` | Every built-in provider, including Node.js | No (mixed) |
+| `adaptive-runtime/observability` | Metrics collector, Prometheus text, OpenTelemetry meter bridge | Yes |
+| `adaptive-runtime/testing` | Fake clock, scripted provider, conformance runner, policy timeline simulator | Yes |
+| `adaptive-runtime/package.json` | Package metadata | n/a |
+
+## Feature Inventory (v0.5.0 / 0.6.0)
+
+| # | Feature | Description | Contract |
+| --- | --- | --- | --- |
+| 1 | Deterministic tier policy | Quality/cost tier selection with quality bounds and stable hysteresis | ADR 0002 |
+| 2 | Budget hysteresis | Per-budget engage/recover thresholds and consecutive-sample gates | ADR 0002 |
+| 3 | Custom policy selector | Application hook that refines eligible candidates before stability gates | ADR 0008 |
+| 4 | Per-operation policy overrides | `setOperationPolicy` with pin > adaptation > operation > global precedence | ADR 0015 |
+| 5 | Abort-aware selection queue | Queued callers reject immediately with `OperationAbortedError` on abort | ADR 0012 |
+| 6 | Strategy-level statistics | Per-strategy runs, successes, failures, durations, EWMA latency, and error rate | ADR 0013 |
+| 7 | Shadow evaluation | `evaluate()` computes a decision without executing; `dryRun` skips persistence and events | ADR 0016 |
+| 8 | Versioned state hydration | `exportState()`/`importState()` move validated, deeply frozen, JSON-only snapshots | ADR 0016 |
+| 9 | Node.js providers | Process memory, CPU utilization, event-loop delay, event-loop utilization, network latency | ADR 0004, 0016 |
+| 10 | Browser providers | Device memory, network information, frame timing, W3C compute pressure | ADR 0007, 0016 |
+| 11 | Edge provider | Execution deadline remaining/used ratios and concurrency saturation | ADR 0007 |
+| 12 | Composite signals | Priority status propagation (`error` > `stale` > `unsupported` > `unknown`) and compute rules | ADR 0007 |
+| 13 | OpenTelemetry bridge | Duck-typed counters, histograms, preferred gauges, delta UpDownCounters, bounded `maxSeries` LRU maps | ADR 0011 |
+| 14 | Prometheus metrics collector | In-memory series, `maxSeries` LRU eviction, label normalization, and text exposition | ADR 0011 |
+| 15 | Provider lifecycle resilience | Start context forwarding, transient start recovery, post-close `unsupported`, and error draining | ADR 0014 |
+| 16 | Fake clock | Virtual `now`, `advance`, `set`, deterministic timer ordering, and pending-timer accounting | ADR 0008 |
+| 17 | Scripted signal provider | Repeat-last or exhaust-to-`unknown` scripted readings for reproducible tests | ADR 0008 |
+| 18 | Provider conformance check | Validates descriptors, readings, lifecycle, post-close unsupported state, and `drainProviderErrors` | ADR 0008 |
+| 19 | Policy timeline simulator | Replays decisions, budget transitions, switches, and reversals without providers or timers | ADR 0016 |
+| 20 | Source and dist benchmarks | JSON schema v1 identifies `source` or `--dist` entry points for consumer-facing measurements | ADR 0009 |
+| 21 | Release and supply-chain automation | Version sync, package export verification, provenance release workflow, CodeQL, Scorecard | ADR 0009, 0010 |
 
 ## Milestones
-| # | Name | Scope | Dependencies | Status |
-|---|------|-------|-------------|--------|
-| M1 | Multi-Runtime Web & Edge Providers | `src/providers/web/*`, `src/providers/edge/*`, unit tests | none | DONE |
-| M2 | Composite Signal Provider | `src/providers/composite.ts`, unit tests | M1 | DONE |
-| M3 | Custom Policy Selector Hook | `src/types/decision.ts`, `src/types/policy.ts`, `src/policy/resolve.ts`, `src/policy/engine.ts`, unit tests | none | DONE |
-| M4 | Zero-Dependency Observability Bridge | `src/observability/*`, Prometheus text exporter, unit tests | none | DONE |
-| M5 | Conformance Testing SDK | `src/testing/*`, FakeClock, ScriptedSignalProvider, conformance runner, unit tests | M1, M2 | DONE |
-| M6 | Packaging, Entrypoints, Examples, ADRs & Clean Consumer | `src/core.ts`, `src/web.ts`, `src/edge.ts`, `src/node.ts`, `package.json`, docs, ADRs, edge example, isolation test, clean consumer | M1, M2, M3, M4, M5 | DONE |
-| M7 | E2E Testing & Final Verification | Full opaque-box E2E test suite (Tiers 1-4) & adversarial coverage hardening (Tier 5) | M6 | DONE |
+
+| # | Name | Scope | Status |
+| --- | --- | --- | --- |
+| M1 | Multi-runtime web and edge providers | `src/providers/web`, `src/providers/edge`, unit tests | DONE |
+| M2 | Composite signal provider | `src/providers/composite.ts`, unit tests | DONE |
+| M3 | Custom policy selector | Policy types, resolution, engine, unit tests | DONE |
+| M4 | Zero-dependency observability | Metrics collector, Prometheus text, OpenTelemetry bridge | DONE |
+| M5 | Conformance testing SDK | Fake clock, scripted provider, conformance runner | DONE |
+| M6 | Packaging, entry points, examples, ADRs | All subpaths, isolation test, edge example, clean consumer | DONE |
+| M7 | Opaque-box E2E suite | Tiers 1-5 lifecycle, concurrency, telemetry, multi-runtime, adversarial soak | DONE |
+| M8 | 0.4.0 operational control | Abort-aware queue, strategy stats, per-operation policy, provider recovery | DONE (included in 0.5.0) |
+| M9 | 0.5.0 shadow evaluation and state hydration | `evaluate`, `exportState`/`importState`, latency/error stats, provider expansion, timeline simulator | DONE (released) |
+| M10 | 0.6.0 hardening | Bounded OTel delta maps, provider branch coverage, post-close conformance, dist benchmark verification, documentation synchronization | DONE locally; unreleased |
 
 ## Interface Contracts
 
-### M1: Web & Edge Providers
-- `WEB_DEVICE_MEMORY_GIB = "web.device.memoryGib"` (unit: "custom")
-- `WEB_JS_HEAP_USED_RATIO = "web.jsHeap.usedRatio"` (unit: "ratio")
-- `WEB_NETWORK_RTT_MS = "web.network.rttMs"` (unit: "milliseconds")
-- `WEB_NETWORK_DOWNLINK_MBPS = "web.network.downlinkMbps"` (unit: "custom")
-- `WEB_NETWORK_SAVE_DATA = "web.network.saveData"` (unit: "count")
-- `WEB_FRAME_DURATION_P95_MS = "web.frame.durationP95Ms"` (unit: "milliseconds")
-- `WEB_FRAME_DROPPED_RATIO = "web.frame.droppedRatio"` (unit: "ratio")
-- `EDGE_EXECUTION_REMAINING_MS = "edge.execution.remainingMs"` (unit: "milliseconds")
-- `EDGE_EXECUTION_USED_RATIO = "edge.execution.usedRatio"` (unit: "ratio")
-- `EDGE_CONCURRENCY_SATURATION = "edge.concurrency.saturation"` (unit: "ratio")
+### Runtime
 
-### M2: CompositeSignalProvider
-- `CompositeSignalRule`: `{ name: string, unit: SignalUnit, description?: string, inputs: readonly string[], compute: (values: Readonly<Record<string, number>>) => number }`
-- Priority status resolution: `error` > `stale` > `unsupported` > `unknown`. Compute only runs if all inputs are `ok`.
+- `createAdaptiveRuntime(options): AdaptiveRuntime`
+- `run(operation): Promise<RunResult>`
+- `evaluate(operation): Promise<StrategyDecision>` with optional `dryRun`
+- `pinStrategy`/`unpinStrategy`, `setAdaptationEnabled`, `setOperationPolicy`
+- `getDecision`, `getStats`, `exportState`, `importState`
+- `removeOperation` returns `false` while an operation is selecting or executing
+- `resetStats` clears counters without discarding decisions, pins, or policy state
+- `on(event, listener)` and `close()`
 
-### M3: CustomPolicySelector
-- `DecisionReasonCode`: includes `"custom-selector"`
-- `CustomPolicySelector`: `(context: CustomPolicySelectorContext) => CustomPolicySelection | string | null | undefined`
-- Candidates expose `{ candidate, estimatedCost, estimatedLatencyMs, id?, qualityTier?, costTier?, applicable? }`; `estimatedLatencyMs` is currently `null`.
-- Evaluated after budget checks and automatic candidate filtering, strictly before anti-flapping stability/hysteresis.
+### Policy
 
-### M4: Observability Bridge
-- `attachOpenTelemetryMeter(runtime: AdaptiveRuntime, meter: OpenTelemetryMeterLike, options?: ObservabilityOptions): () => void`
-- `createMetricsCollector(options?: ObservabilityOptions): RuntimeMetricsCollector`
-- Status !== "ok" signals increment status counter with `{ signal, status }`, never emitting 0 gauge values.
+- `definePolicy(policy)` is an identity helper with no validation or cloning.
+- `resolvePolicy`, `evaluatePolicy`, and `createInitialPolicyState` are pure.
+- `PolicyState` tracks budget hysteresis, mode duration, samples, and selection
+  history for deterministic replay.
+- `Policy.customSelector` refines eligible candidates but cannot bypass
+  applicability, quality bounds, or stability gates.
 
-### M5: Testing SDK
-- `createFakeClock(initialMs?: number): FakeClock`
-- `ScriptedSignalProvider`: implements `SignalProvider` with scripted or cyclic sequences.
-- `runProviderConformanceCheck(provider: SignalProvider, options?: ConformanceOptions): Promise<ProviderConformanceReport>`
+### Providers and signals
 
-### M6: Multi-Runtime Entrypoints
-- `adaptive-runtime`: Node.js defaults (`src/index.ts` -> `src/node.ts`)
-- `adaptive-runtime/core`: Pure universal runtime core, network latency, and composite signals (`src/core.ts`)
-- `adaptive-runtime/web`: Universal core + Browser providers (`src/web.ts`)
-- `adaptive-runtime/edge`: Universal core + Edge execution-budget provider (`src/edge.ts`)
-- `adaptive-runtime/policy`: Pure policy engine and definitions
-- `adaptive-runtime/providers`: All providers barrel (Node + Web + Edge + Composite)
-- `adaptive-runtime/observability`: Pure observability bridge (`src/observability/index.ts`)
-- `adaptive-runtime/testing`: Conformance testing SDK (`src/testing/index.ts`)
+- `SignalProvider` exposes `id`, descriptors, optional `start(context)`,
+  `read(context)`, optional `close()`, and optional `drainProviderErrors()`.
+- Readings use `context.now`, preserve explicit unavailable statuses, and never
+  invent a zero value.
+- `CompositeSignalProvider` propagates the highest-priority unavailable status
+  and surfaces child failures through `drainProviderErrors`.
+- Every built-in provider reports `status: "unsupported"` after `close()`.
+
+### Observability
+
+- `createMetricsCollector(options)` / `new MetricsCollector(options)`
+- `maxSeries` is a positive integer (default `1000`); invalid values throw
+  `ConfigurationError`.
+- `attachOpenTelemetryMeter(runtime, meter, options)` prefers
+  `createGauge`, falls back to delta `UpDownCounter`, and bounds each delta map
+  with the same `maxSeries` LRU rule.
+- Non-ok signal and budget statuses increment status counters and never write
+  zero gauges.
+
+### Testing
+
+- `createFakeClock(initialMs?)`
+- `ScriptedSignalProvider({ script, repeatLast? })`
+- `runProviderConformanceCheck(provider, { now?, signal?, checkPostClose? })`
+- `simulatePolicyTimeline({ operationId?, policy?, strategies, initialState?, steps })`
 
 ## Code Layout
-```
+
+```text
 src/
-  ├── core.ts                     # Universal pure core barrel
-  ├── node.ts                     # Node-specific runtime barrel
-  ├── web.ts                      # Browser runtime barrel
-  ├── edge.ts                     # Edge runtime barrel
-  ├── index.ts                    # Root default barrel (re-exports node.ts)
-  ├── providers/
-  │   ├── web/
-  │   │   ├── device-memory.ts
-  │   │   ├── network-info.ts
-  │   │   └── frame-timing.ts
-  │   ├── edge/
-  │   │   └── execution-budget.ts
-  │   ├── composite.ts
-  │   └── index.ts
-  ├── observability/
-  │   └── index.ts
-  └── testing/
-      └── index.ts
+  core.ts, node.ts, web.ts, edge.ts, index.ts
+  errors/
+  policy/          budgets, candidates, define-policy, engine, resolve, stability
+  providers/       composite, cpu-utilization, event-loop-delay,
+                   event-loop-utilization, network-latency, process-memory
+    web/           compute-pressure, device-memory, frame-timing, network-info
+    edge/          execution-budget
+  runtime/         clock, emitter, executor, runtime, state, stats, validate
+  signals/         collector
+  types/           clock, decision, events, policy, run, runtime, signals,
+                   state, strategy
+  observability/   metrics collector and OpenTelemetry bridge
+  testing/         fake clock, scripted provider, conformance, timeline
+  utils/           error helpers
 tests/
-  ├── unit/
-  │   ├── web-providers.test.ts
-  │   ├── edge-providers.test.ts
-  │   ├── composite-provider.test.ts
-  │   ├── custom-selector.test.ts
-  │   ├── observability.test.ts
-  │   ├── testing-sdk.test.ts
-  │   └── isolation.test.ts
-  ├── integration/
-      ├── examples.test.ts
-      ├── entrypoints.test.ts
-      ├── public-api.test.ts
-      └── pr-title.test.ts
-  └── property/
-      ├── support.ts
-      ├── policy-budget-model.test.ts
-      ├── policy-selection.test.ts
-      ├── policy-evaluation.test.ts
-      └── runtime-invariants.test.ts
-scripts/
-  ├── check-markdown-links.mjs
-  ├── check-pr-title.mjs
-  ├── compare-benchmarks.mjs
-  ├── verify-package-exports.mjs
-  ├── verify-published-package.mjs
-  └── verify-zero-dependencies.mjs
-examples/
-  └── multi-runtime-edge/
-      ├── edge-gateway.ts
-      ├── index.ts
-      └── README.md
+  unit/            runtime, policy, providers, observability, testing SDK
+  integration/     entry points, public API, benchmarks, links, examples
+  property/        budget model, evaluation, selection, runtime invariants
+  e2e/             tiers 1-5 opaque-box lifecycle, concurrency, telemetry
+  helpers/         fake clock and provider helpers
+benchmarks/        runtime overhead (source or --dist) and concurrency
+scripts/           version sync, export verification, publishing, links
+examples/          basic, quick-start, search, planning, observability, edge
+docs/              API, architecture, providers, observability, benchmarks,
+                   verification, roadmap, ADRs
 ```
 
-## Verification status
+## Verification Status
 
-- 313 tests across 54 suites, 0 failures, 0 skipped.
-- 99.08% lines, 96.93% branches, 98.68% functions; every `src/**` file is above
-  80% branch coverage.
-- Full local gate passed on 2026-10-22: format, lint, typecheck, tests, coverage,
-  build, six examples, both benchmarks, JSON benchmark comparison,
-  `npm pack --dry-run`, zero-Node source scan, zero-runtime-dependency check, and
-  Markdown-link validation. The historical 0.3.0 clean-consumer install and
-  NodeNext compile remain recorded in [docs/VERIFICATION.md](docs/VERIFICATION.md).
-- The `v0.3.0` tag, GitHub release, and npm publication are separate
-  owner-approved release steps. See [docs/RELEASING.md](docs/RELEASING.md) and
-  [docs/VERIFICATION.md](docs/VERIFICATION.md).
-- The OpenSSF Best Practices passing-level self-assessment is documented in
-  [docs/OPENSSF_BEST_PRACTICES.md](docs/OPENSSF_BEST_PRACTICES.md). BadgeApp
-  registration and the two owner attestations are pending; no badge is claimed.
+- Full local gate: format/lint, typecheck, tests, coverage, build,
+  `verify:exports`, `verify:zero-deps`, `check:links`, examples, and both
+  benchmarks.
+- Node.js test suite (unit, integration, property, and E2E) passes with zero
+  failures and zero skipped tests.
+- Global coverage on 2026-10-24 (Node 24.15.0): 98.97% lines, 95.74% branches,
+  99.00% functions. The former lowest file,
+  `src/providers/event-loop-utilization.ts`, now reports 100% lines and 96.92%
+  branches; every `src/**` file remains above the 80% branch gate.
+- `npm run build` and `npm run verify:exports` verify all ten export entries,
+  27 built files, and 33 runtime symbols.
+- The benchmark JSON schema is validated against the TypeScript source and,
+  after a build, the compiled `dist/index.js` (`config.entrypoint` distinguishes
+  them).
+- The `v0.5.0` tag and GitHub release are published; npm publication is a
+  separate owner-approved dispatch and has not been performed. The 0.6.0
+  hardening work is local and unreleased.
+- Remote CI/CodeQL/Scorecard status and release evidence are recorded in
+  [docs/VERIFICATION.md](docs/VERIFICATION.md). Release steps are in
+  [docs/RELEASING.md](docs/RELEASING.md).
