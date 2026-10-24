@@ -22,6 +22,8 @@ async function main() {
   const lock = await readJson("package-lock.json");
   const changelog = await readFile(join(root, "CHANGELOG.md"), "utf8");
 
+  const citation = await readFile(join(root, "CITATION.cff"), "utf8");
+
   const packageName = packageJson.name;
   if (typeof packageName !== "string" || packageName.length === 0) {
     throw new Error("package.json has no package name.");
@@ -48,8 +50,22 @@ async function main() {
     throw new Error(`CHANGELOG.md has no "## [${packageVersion}]" section.`);
   }
 
+  const citationMatch = citation.match(/^version:\s*["']?([^"'\r\n]+)["']?/m);
+  if (!citationMatch) {
+    throw new Error("CITATION.cff is missing a version field.");
+  }
+  const citationVersion = requireVersion(citationMatch[1].trim(), "CITATION.cff");
+  if (citationVersion !== packageVersion) {
+    throw new Error(
+      `Version mismatch: package.json=${packageVersion}, CITATION.cff=${citationVersion}.`,
+    );
+  }
+  if (!/^date-released:\s*["']?2026-10-24["']?/m.test(citation)) {
+    throw new Error("CITATION.cff is missing or has incorrect date-released field.");
+  }
+
   console.log(
-    `Version sync verified: ${packageName} ${packageVersion} (package.json, package-lock.json, CHANGELOG.md).`,
+    `Version sync verified: ${packageName} ${packageVersion} (package.json, package-lock.json, CHANGELOG.md, CITATION.cff).`,
   );
 }
 

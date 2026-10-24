@@ -1,13 +1,13 @@
-# Project: Adaptive Runtime — Phase 5 (v0.5.0, 0.6.0 hardening)
+# Project: Adaptive Runtime — Phase 6 (v0.7.0, 1.0-RC preparation)
 
 ## Architecture
 
 Adaptive Runtime is a deterministic, resource-aware execution runtime for
 Node.js `>=22`, modern browsers, and WinterCG-compatible edge runtimes. The
-0.5.0 line adds shadow evaluation, versioned state hydration, and provider
-expansion on top of the multi-runtime 0.x core. The unreleased 0.6.0 hardening
-work bounds telemetry cardinality and tightens the provider, conformance, and
-benchmark verification contracts.
+0.7.0 line delivers composable policy selectors, non-disturbing runtime
+introspection, exact state hydration without floating-point drift, coalesced
+in-flight signal reads, configurable quality check bounds, and high-fidelity
+timeline simulation, establishing the technical baseline for 1.0.0-RC.
 
 Core principles:
 
@@ -27,7 +27,8 @@ Core principles:
    strategy. There are no automatic retries, hedges, fallbacks on strategy
    failure, or mid-run switches.
 6. **Bounded State.** `maxTrackedOperations` bounds runtime state,
-   `maxSeries` bounds metric families and OpenTelemetry delta maps, and
+   `maxSeries` bounds metric families and OpenTelemetry delta maps,
+   `maxQualityCheckDetailLength` bounds quality error strings, and
    `removeOperation`/`resetStats` release state without disturbing active work.
 7. **Evidence-First Verification.** Source and compiled package surfaces,
    conformance checks, coverage gates, and benchmarks are verified with real
@@ -49,7 +50,7 @@ Core principles:
 | `adaptive-runtime/testing` | Fake clock, scripted provider, conformance runner, policy timeline simulator | Yes |
 | `adaptive-runtime/package.json` | Package metadata | n/a |
 
-## Feature Inventory (v0.5.0 / 0.6.0)
+## Feature Inventory (v0.5.0 / 0.6.0 / 0.7.0)
 
 | # | Feature | Description | Contract |
 | --- | --- | --- | --- |
@@ -74,6 +75,11 @@ Core principles:
 | 19 | Policy timeline simulator | Replays decisions, budget transitions, switches, and reversals without providers or timers | ADR 0016 |
 | 20 | Source and dist benchmarks | JSON schema v1 identifies `source` or `--dist` entry points for consumer-facing measurements | ADR 0009 |
 | 21 | Release and supply-chain automation | Version sync, package export verification, provenance release workflow, CodeQL, Scorecard | ADR 0009, 0010 |
+| 22 | Composable policy selectors | `composeSelectors`, `minSamples` cold-start guard, `fallbackSelector`, and `useEwma` mode | ADR 0017, 0018 |
+| 23 | Non-disturbing introspection & bounds | `getEffectivePolicy`, `getProviderDescriptors`, and `maxQualityCheckDetailLength` | ADR 0017, 0018 |
+| 24 | Exact stats hydration | Bit-exact `totalDurationMs` persistence across export/import cycles | ADR 0018 |
+| 25 | Coalesced shared reads | Distinct `coalesced` vs `cached` snapshot semantics for in-flight joiners | ADR 0005, 0018 |
+| 26 | High-fidelity simulation | `estimatedLatencyMs`, `ewmaLatencyMs`, and `errorRate` on `SimulatedStrategy` | ADR 0018 |
 
 ## Milestones
 
@@ -88,7 +94,8 @@ Core principles:
 | M7 | Opaque-box E2E suite | Tiers 1-5 lifecycle, concurrency, telemetry, multi-runtime, adversarial soak | DONE |
 | M8 | 0.4.0 operational control | Abort-aware queue, strategy stats, per-operation policy, provider recovery | DONE (included in 0.5.0) |
 | M9 | 0.5.0 shadow evaluation and state hydration | `evaluate`, `exportState`/`importState`, latency/error stats, provider expansion, timeline simulator | DONE (released) |
-| M10 | 0.6.0 hardening | Bounded OTel delta maps, provider branch coverage, post-close conformance, dist benchmark verification, documentation synchronization | DONE locally; unreleased |
+| M10 | 0.6.0 hardening | Bounded OTel delta maps, provider branch coverage, post-close conformance, dist benchmark verification, documentation synchronization | DONE |
+| M11 | 0.7.0 Wave 1 & 2 integration | Composable selectors, introspection, exact stats, coalesced reads, simulator fidelity, ADR 0018, v0.7.0 release prep | DONE |
 
 ## Interface Contracts
 
@@ -98,6 +105,10 @@ Core principles:
 - `run(operation): Promise<RunResult>`
 - `evaluate(operation): Promise<StrategyDecision>` with optional `dryRun`
 - `pinStrategy`/`unpinStrategy`, `setAdaptationEnabled`, `setOperationPolicy`
+- `getEffectivePolicy(operationId): ResolvedPolicy`
+- `getProviderDescriptors(): readonly SignalDescriptor[]`
+- `getTrackedOperations(): readonly string[]`
+- `getAllStats(): Readonly<Record<string, RuntimeStats>>`
 - `getDecision`, `getStats`, `exportState`, `importState`
 - `removeOperation` returns `false` while an operation is selecting or executing
 - `resetStats` clears counters without discarding decisions, pins, or policy state
@@ -177,19 +188,17 @@ docs/              API, architecture, providers, observability, benchmarks,
   `verify:exports`, `verify:zero-deps`, `check:links`, examples, and both
   benchmarks.
 - Node.js test suite (unit, integration, property, and E2E) passes with zero
-  failures and zero skipped tests.
-- Global coverage on 2026-10-24 (Node 24.15.0): 98.97% lines, 95.74% branches,
-  99.00% functions. The former lowest file,
-  `src/providers/event-loop-utilization.ts`, now reports 100% lines and 96.92%
-  branches; every `src/**` file remains above the 80% branch gate.
+  failures and zero skipped tests (507 tests across 77 suites).
+- Global coverage on 2026-10-24 (Node 24.15.0): 99.00% lines, 96.28% branches,
+  99.05% functions; every `src/**` file remains above 91% branch coverage (well above 80% gate).
 - `npm run build` and `npm run verify:exports` verify all ten export entries,
-  27 built files, and 33 runtime symbols.
+  27 built files, and 36 runtime symbols.
 - The benchmark JSON schema is validated against the TypeScript source and,
   after a build, the compiled `dist/index.js` (`config.entrypoint` distinguishes
   them).
 - The `v0.5.0` tag and GitHub release are published; npm publication is a
-  separate owner-approved dispatch and has not been performed. The 0.6.0
-  hardening work is local and unreleased.
+  separate owner-approved dispatch and has not been performed. The 0.7.0
+  release line integrates Wave 1 and Wave 2 in preparation for 1.0-RC.
 - Remote CI/CodeQL/Scorecard status and release evidence are recorded in
   [docs/VERIFICATION.md](docs/VERIFICATION.md). Release steps are in
   [docs/RELEASING.md](docs/RELEASING.md).

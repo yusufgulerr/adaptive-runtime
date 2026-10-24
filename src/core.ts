@@ -23,6 +23,7 @@ export {
 } from "./errors/index.js";
 export { definePolicy } from "./policy/define-policy.js";
 export {
+  composeSelectors,
   createErrorRateGuardSelector,
   createLatencyBudgetSelector,
   type ErrorRateGuardSelectorOptions,

@@ -12,8 +12,14 @@ const EXPECTED_EXPORTS = {
     "CompositeSignalProvider",
     "ProcessMemoryProvider",
     "EventLoopUtilizationProvider",
+    "composeSelectors",
   ],
-  "./core": ["createAdaptiveRuntime", "CompositeSignalProvider", "NetworkLatencyProvider"],
+  "./core": [
+    "createAdaptiveRuntime",
+    "CompositeSignalProvider",
+    "NetworkLatencyProvider",
+    "composeSelectors",
+  ],
   "./node": [
     "createAdaptiveRuntime",
     "ProcessMemoryProvider",
@@ -27,7 +33,7 @@ const EXPECTED_EXPORTS = {
     "ComputePressureProvider",
   ],
   "./edge": ["ExecutionBudgetProvider", "EDGE_EXECUTION_REMAINING_MS"],
-  "./policy": ["definePolicy", "resolvePolicy", "evaluatePolicy"],
+  "./policy": ["definePolicy", "resolvePolicy", "evaluatePolicy", "composeSelectors"],
   "./providers": [
     "CompositeSignalProvider",
     "ExecutionBudgetProvider",

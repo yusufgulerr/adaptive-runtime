@@ -25,17 +25,20 @@ strategies with declared quality and cost tiers. The runtime reads the signals
 you supply, applies a deterministic policy, and runs exactly one strategy with
 inspectable metadata explaining the choice.
 
-> **Status: v0.5.0 GitHub release.** The public repository is live and the
-> v0.5.0 tree passes CI on Node.js 22, 24, and 26, plus CodeQL and OpenSSF
-> Scorecard on `main`; the tag-triggered release workflow also passed. The release
-> keeps the verified multi-runtime core for Node.js, browsers, and WinterCG edge
-> runtimes with **zero runtime dependencies** and a fully typed ESM surface, and
-> adds shadow evaluation, versioned state hydration, event-loop utilization and
-> compute-pressure providers, per-operation signal-cache intervals, EWMA/error-rate
-> statistics, and a policy timeline simulator. The public API follows semantic
-> versioning; the 0.x series may still make documented breaking changes. GitHub
-> releases are tag-driven; npm publication is a separate owner-approved
-> OIDC/provenance dispatch and is pending. See
+> **Status: v0.7.0 (1.0-RC preparation).** The public repository is live and the
+> v0.7.0 tree passes CI on Node.js 22, 24, and 26, plus CodeQL and OpenSSF
+> Scorecard on `main`. The release keeps the verified multi-runtime core for
+> Node.js, browsers, and WinterCG edge runtimes with **zero runtime dependencies**
+> and a fully typed ESM surface, and adds composable policy selectors
+> (`composeSelectors`, `minSamples` cold-start guards, `fallbackSelector`
+> delegation, `useEwma` mode), non-disturbing runtime introspection
+> (`getEffectivePolicy`, `getProviderDescriptors`, `getTrackedOperations`,
+> `getAllStats`), exact stats hydration (`totalDurationMs`), coalesced in-flight
+> signal reads, configurable quality detail bounds
+> (`maxQualityCheckDetailLength`), and high-fidelity timeline simulation. The
+> public API follows semantic versioning; the 0.x series may still make
+> documented breaking changes. GitHub releases are tag-driven; npm publication
+> is a separate owner-approved OIDC/provenance dispatch and is pending. See
 > [Architectural boundaries](#architectural-boundaries-and-operational-notes).
 
 ## Why
@@ -292,7 +295,13 @@ cached.
 ## API at a glance
 
 ```ts
-const runtime = createAdaptiveRuntime({ providers, policy, clock, providerTimeoutMs });
+const runtime = createAdaptiveRuntime({
+  providers,
+  policy,
+  clock,
+  providerTimeoutMs,
+  maxQualityCheckDetailLength, // bounds quality check detail strings (default: 1000)
+});
 ```
 
 | Method | Purpose |
@@ -303,8 +312,12 @@ const runtime = createAdaptiveRuntime({ providers, policy, clock, providerTimeou
 | `unpinStrategy(operationId)` | Return to automatic selection |
 | `setAdaptationEnabled(operationId, enabled)` | Per-operation static/adaptive override; a pin takes precedence |
 | `setOperationPolicy(operationId, policy)` | Per-operation policy override; precedence is pin, adaptation override, operation policy, global policy |
+| `getEffectivePolicy(operationId)` | Resolves active policy (operation override or root default) without altering LRU order |
+| `getProviderDescriptors()` | Deeply frozen descriptors from all registered providers without altering LRU order |
+| `getTrackedOperations()` | All currently tracked operation IDs in LRU order (does not alter LRU order) |
+| `getAllStats()` | Snapshot mapping of runtime stats across all tracked operations (does not alter LRU order) |
 | `getDecision(operationId)` | Last decision, or `null` |
-| `getStats(operationId)` | Run/success/failure counts, latency, strategy counts, EWMA latency, and error rate |
+| `getStats(operationId)` | Run/success/failure counts, exact totalDurationMs, latency, strategy counts, EWMA latency, and error rate |
 | `exportState(operationId?)` | Versioned, deeply frozen JSON snapshot of policy state, decisions, pins, overrides, and stats |
 | `importState(snapshot)` | Validate and atomically restore a snapshot; rejected while an operation has in-flight work |
 | `removeOperation(operationId)` | Remove retained state, pins, overrides, and stats; returns `false` while a selection/run is active |
@@ -366,11 +379,19 @@ A custom selector can refine the automatic choice without bypassing
 applicability, quality bounds, or the stability gates:
 
 ```ts
+import {
+  composeSelectors,
+  createErrorRateGuardSelector,
+  createLatencyBudgetSelector,
+} from "adaptive-runtime";
+
 const runtime = createAdaptiveRuntime({
   policy: definePolicy({
     budgets: [/* ... */],
-    customSelector: ({ candidates }) =>
-      candidates.find((candidate) => candidate.id === "fast-vector")?.id,
+    customSelector: composeSelectors([
+      createErrorRateGuardSelector({ maxErrorRate: 0.05, minSamples: 5 }),
+      createLatencyBudgetSelector({ maxLatencyMs: 150, useEwma: true }),
+    ]),
   }),
 });
 ```

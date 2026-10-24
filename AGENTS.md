@@ -21,24 +21,26 @@
 
 ## Current position
 
-- Version 0.5.0 on the 0.x line. The public repository exists and the 0.5.0
-  release tree passes CI on Node 22/24/26 plus CodeQL, Scorecard, and the
-  tag-triggered release workflow. The tree is merged to `main` at `815c938` and
-  tagged `v0.5.0`; the GitHub release is published. npm publication is a separate
-  owner-approved dispatch and has not been performed. 0.4.0 was superseded by
-  0.5.0.
+- Version 0.7.0 on the 0.x line (1.0-RC preparation). The public repository exists.
+  Wave 1 and Wave 2 integration delivered composable policy selectors,
+  non-disturbing runtime introspection, exact stats hydration without IEEE 754 drift,
+  coalesced shared reads, and high-fidelity timeline simulation. 0.5.0 is tagged
+  and released on GitHub; npm publication is a separate owner-approved dispatch
+  and has not been performed.
 - The runtime is multi-platform: one portable core plus Node.js, browser, web, and
   WinterCG entry points. It includes shadow evaluation, versioned state
   export/import, bounded operation state (`maxTrackedOperations`,
   `removeOperation`, `resetStats`), a modular policy core
-  (`budgets`/`candidates`/`stability`/`engine`), custom policy selectors,
+  (`budgets`/`candidates`/`stability`/`engine`), composable policy selectors
+  (`composeSelectors`, `minSamples`, `fallbackSelector`, `useEwma`), non-disturbing
+  introspection (`getEffectivePolicy`, `getProviderDescriptors`),
   composite signals, web/edge providers, an observability bridge, a testing SDK,
   and release automation.
 - Positioning is production-oriented: a deterministic, resource-aware,
   low-overhead, zero-dependency runtime. Do not use diminishing language about
   the project's size, maturity, or production readiness.
 - Continue hardening: npm publication verification, benchmark trend tracking, and
-  the remaining post-0.5.0 roadmap items.
+  the remaining 1.0-RC roadmap items.
 - Node.js `>=22.0.0`; locally verified on Node 24.15.0, CI configured for
   22/24/26.
 
