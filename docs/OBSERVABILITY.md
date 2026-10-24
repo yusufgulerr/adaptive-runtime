@@ -97,6 +97,7 @@ import { attachOpenTelemetryMeter } from "adaptive-runtime/observability";
 const detachMeter = attachOpenTelemetryMeter(runtime, meter, {
   prefix: "adaptive_runtime",
   defaultAttributes: { service: "search" },
+  maxSeries: 1000,
 });
 ```
 
@@ -118,6 +119,15 @@ The UpDownCounter fallback stores the previous value per label set and adds
 `next - previous`, so the instrument represents the current reading instead of the sum of
 every decision. It cannot retract the last value when a signal later becomes unavailable;
 use a gauge-capable meter when that distinction matters.
+
+Both the fallback maps (signal readings and budget engagement) are bounded by
+`maxSeries` (default `1000`, must be a positive integer). When a new label set would
+exceed the limit, the least recently used set is evicted; if that set appears again,
+its full current value is written as a new series rather than a delta. Observed
+series are refreshed in LRU order even when the value does not change. This keeps
+high-cardinality `operation_id` workloads from growing memory without bound.
+`attachOpenTelemetryMeter` validates `maxSeries` with the same `ConfigurationError`
+rule as `MetricsCollector`.
 
 ### Per-Instrument Error Isolation
 
