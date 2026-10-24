@@ -35,14 +35,14 @@ Consumers should not import from `dist/` subpaths directly.
 | Entry point | Target | Contents | Responsibility |
 | --- | --- | --- | --- |
 | `adaptive-runtime` | Node.js | Runtime, operation, strategy, policy, decision, signal, error, and built-in provider types | Recommended application surface: lifecycle, selection, execution, events, stats |
-| `adaptive-runtime/core` | Universal | Portable core runtime (`createAdaptiveRuntime`, `CompositeSignalProvider`, `NetworkLatencyProvider`, `definePolicy`, types, errors) | Pure, portable core with zero Node.js built-ins or `process` dependencies |
-| `adaptive-runtime/node` | Node.js | Core runtime plus Node.js process-level resource providers (`ProcessMemoryProvider`, `CpuUtilizationProvider`, `EventLoopDelayProvider`) | Targeted surface for Node.js services requiring OS and process telemetry |
-| `adaptive-runtime/web` | Browser | Web-specific signal providers (`DeviceMemoryProvider`, `NetworkInformationProvider`, `FrameTimingProvider`) | Structurally typed browser telemetry with no direct DOM/window global assumptions |
+| `adaptive-runtime/core` | Universal | Portable core runtime (`createAdaptiveRuntime`, `CompositeSignalProvider`, `NetworkLatencyProvider`, `definePolicy`, `createErrorRateGuardSelector`, `createLatencyBudgetSelector`, `formatDecisionSummary`, types, errors) | Pure, portable core with zero Node.js built-ins or `process` dependencies |
+| `adaptive-runtime/node` | Node.js | Core runtime plus Node.js process-level resource providers (`ProcessMemoryProvider`, `CpuUtilizationProvider`, `EventLoopDelayProvider`, `EventLoopUtilizationProvider`) | Targeted surface for Node.js services requiring OS and process telemetry |
+| `adaptive-runtime/web` | Browser | Web-specific signal providers (`DeviceMemoryProvider`, `NetworkInformationProvider`, `FrameTimingProvider`, `ComputePressureProvider`) | Structurally typed browser telemetry with no direct DOM/window global assumptions |
 | `adaptive-runtime/edge` | WinterCG | Edge execution budget providers (`ExecutionBudgetProvider`, `EDGE_EXECUTION_REMAINING_MS`, `EDGE_EXECUTION_USED_RATIO`, `EDGE_CONCURRENCY_SATURATION`) | Edge and worker runtimes (Cloudflare Workers, Deno, Bun, Vercel Edge) |
-| `adaptive-runtime/policy` | Universal | Pure policy engine (`definePolicy`, `resolvePolicy`, `evaluatePolicy`, `createInitialPolicyState`, decision/budget types) | Platform-neutral policy evaluation and declarative rule definition with zero dependencies |
+| `adaptive-runtime/policy` | Universal | Pure policy engine (`definePolicy`, `resolvePolicy`, `evaluatePolicy`, `createInitialPolicyState`, `createErrorRateGuardSelector`, `createLatencyBudgetSelector`, `formatDecisionSummary`, decision/budget types) | Platform-neutral policy evaluation and declarative rule definition with zero dependencies |
 | `adaptive-runtime/providers` | Mixed | Comprehensive providers barrel (composite, web, edge, and Node.js process providers) | Single-import convenience barrel for all signal provider implementations |
 | `adaptive-runtime/observability` | Universal | Zero-dependency observability bridge (`createMetricsCollector`, `MetricsCollector`, `attachOpenTelemetryMeter`) | In-memory metrics collection, Prometheus text generation, and OpenTelemetry Meter bridge |
-| `adaptive-runtime/testing` | Universal | Provider conformance and test SDK (`createFakeClock`, `ScriptedSignalProvider`, `runProviderConformanceCheck`) | Deterministic simulation, fake timers, and provider contract verification |
+| `adaptive-runtime/testing` | Universal | Provider conformance and test SDK (`createFakeClock`, `ScriptedSignalProvider`, `runProviderConformanceCheck`, `simulatePolicyTimeline`) | Deterministic simulation, fake timers, and provider contract verification |
 | `adaptive-runtime/package.json` | Manifest | Package metadata and exports manifest | Package resolution and build tooling introspection |
 
 Root entry-point areas:
@@ -123,14 +123,14 @@ this own idempotency, backoff, and amplification control.
   cannot be preempted.
 - A cancelled run rejects with `OperationAbortedError`; a timed-out run rejects
   with `OperationTimeoutError`.
-- A run queued behind another selection for the same operation id observes its
-  abort when it acquires the lock, not while it is queued.
+- Queued selections are abort-aware and reject immediately with OperationAbortedError when the caller's signal aborts.
 
 Provider reads are shared across concurrent runs. The shared read has its own
 controller and a waiter count, so one caller's abort does not cancel the read for
 healthy waiters. The last waiter to leave aborts the provider signals, and a read
 aborted by every caller is not cached. See
-[ADR 0005](adr/0005-ref-counted-shared-reads.md).
+[ADR 0005](adr/0005-ref-counted-shared-reads.md) and
+[ADR 0012](adr/0012-abort-aware-selection-queue.md).
 
 ## Observability contract
 
@@ -142,6 +142,9 @@ available through events and accessors:
 | `metadata.decision` | Decision used for this run, including signals and reasons |
 | `getDecision(id)` | Most recent decision, retained after failures and close |
 | `getStats(id)` | Cumulative run, success, failure, latency, and strategy counts |
+| `getTrackedOperations()` | Frozen list of all tracked operation ids in LRU order (oldest to newest) |
+| `getAllStats()` | Frozen dictionary mapping every tracked operation to its RuntimeStats |
+| `getOperationPolicy(id)` | Resolved per-operation policy override or null if unconfigured |
 | `on(event, listener)` | Synchronous notifications; listener failures are isolated |
 | `signalsCached` / `snapshot.cached` | Whether the snapshot came from cache |
 | `sampleSequence` | Fresh-snapshot sequence used by policy stabilization |
