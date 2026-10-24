@@ -1,10 +1,11 @@
 # Roadmap
 
 This roadmap describes intent, not commitments or dates. Priorities may change
-with feedback and evidence. The 0.5.0 source line is implemented, verified
-locally and remotely, and released on GitHub. The latest GitHub release is
-v0.5.0; 0.4.0 was superseded and has no separate release. npm publication is a
-separate owner-approved workflow dispatch and remains pending.
+with feedback and evidence. The 0.7.0 source line is implemented and verified,
+advancing the runtime to 1.0-RC readiness. The latest GitHub release is v0.5.0;
+0.6.0 was delivered and integrated, and 0.7.0 completes the technical runway for
+1.0.0-RC. npm publication is a separate owner-approved workflow dispatch and remains
+pending.
 
 ## 0.1.0 — Foundation (delivered)
 
@@ -211,10 +212,44 @@ Not yet delivered:
 - npm publication and post-publish registry/provenance verification. The 0.5.0
   tag, GitHub release, remote CI, CodeQL, and Scorecard checks are complete.
 
-## 1.0.0 — Stability
+## 0.6.0 — Runtime inspection and selector foundations (delivered)
 
-A 1.0 release requires:
+Delivered:
 
+- **Batch introspection:** `getTrackedOperations()` and `getAllStats()` inspect active operations and runtime statistics in batch without altering LRU order.
+- **Configurable detail length bounds:** `maxQualityCheckDetailLength` on runtime options truncates oversized strategy detail and error strings to prevent telemetry flooding.
+- **Built-in selectors and formatting:** Standard selectors (`lowestLatencySelector`, `lowestErrorRateSelector`, `balancedLatencyAndErrorSelector`) and `formatDecisionSummary`.
+- **OpenTelemetry series bounding:** LRU eviction bounds on UpDownCounter delta maps via `maxSeries`.
+- **Enhanced provider conformance:** Validates post-close `unsupported` status and `drainProviderErrors` bridge contract.
+
+## 0.7.0 — Selector composition, runtime introspection, and simulation fidelity (delivered)
+
+Delivered:
+
+- **Composable policy selectors & cold-start guards (ADR 0018):**
+  - `composeSelectors(selectors)` combinator evaluates custom selectors sequentially with deterministic short-circuiting.
+  - `minSamples` cold-start guard on `createErrorRateGuardSelector` protects early-lifecycle candidates from premature circuit-breaking.
+  - `fallbackSelector` delegation and `useEwma` mode on `createLatencyBudgetSelector`.
+- **Runtime introspection & exact state hydration:**
+  - `getEffectivePolicy(operationId)` and `getProviderDescriptors()` allow non-disturbing introspection without altering LRU order.
+  - Exact `totalDurationMs` persistence across `exportState()` and `importState()` cycles eliminates IEEE 754 floating-point drift.
+  - Configurable `maxQualityCheckDetailLength` on `CreateRuntimeOptions` bounds error messages defensively.
+- **Signal collector shared-read semantics & provider diagnostics:**
+  - `SignalSnapshot.coalesced` distinguishes in-flight shared read joiners from historical cache hits, preventing false cached-sample penalties.
+  - `collector.getDescriptors()` exposes deeply frozen provider descriptors.
+  - Verified resilience against cancellation storms (100 simultaneous aborts) and deterministic provider timeout recovery.
+- **Observability lifecycle sync & simulation fidelity:**
+  - `estimatedLatencyMs`, `ewmaLatencyMs`, and `errorRate` simulation parameters on `SimulatedStrategy` in `adaptive-runtime/testing`.
+  - Automatic series purging in OpenTelemetry UpDownCounter delta tracking upon operation removal.
+  - Full suite expanded to 507 tests across 77 suites with >= 96% branch coverage across all files.
+
+## 1.0.0-RC & 1.0.0 — Stability and Release Candidate
+
+The 0.7.0 milestone completes the technical runway for 1.0.0-RC:
+
+- Complete architectural coverage across 18 ADRs.
+- Zero runtime dependencies, portable core, and platform-targeted subpaths.
+- Rigorous property-based fuzzing and multi-platform CI verification (Node 22, 24, 26, macOS, Windows).
 - At least one published 0.x line with no breaking changes for a full minor cycle.
 - Frozen public type and error-code compatibility policy.
 - A documented deprecation policy.

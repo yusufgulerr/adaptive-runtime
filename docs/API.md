@@ -37,6 +37,7 @@ interface CreateRuntimeOptions {
   readonly providers?: readonly SignalProvider[];
   readonly clock?: Clock;
   readonly providerTimeoutMs?: number;
+  readonly maxQualityCheckDetailLength?: number;
 }
 ```
 
@@ -46,6 +47,7 @@ interface CreateRuntimeOptions {
 | `providers` | `[]` | Provider ids and signal names must be unique and have no surrounding whitespace |
 | `clock` | system clock | `now()` and `setTimeout()` |
 | `providerTimeoutMs` | `1000` | Applies to one provider read; `0` disables |
+| `maxQualityCheckDetailLength` | `1000` | Maximum length for quality check error/detail strings before truncation |
 
 A runtime with no providers is valid. Budgets that reference unavailable signals
 then follow `missingSignalBehavior`.
@@ -78,14 +80,18 @@ based on their observed failure ratio (`errorRate`):
 ```ts
 const selector = createErrorRateGuardSelector({
   maxErrorRate: 0.1, // Discard candidates exceeding 10% failure rate
+  minSamples: 5,     // Cold-start guard: require at least 5 samples before disqualifying
   fallbackSelector: (context) => undefined, // Optional delegation among eligible candidates
 });
 ```
 
 - When eligible candidates remain at or below `maxErrorRate`, it selects the highest quality tier,
   breaking ties by lowest cost tier and code-unit strategy id.
-- If all candidates exceed `maxErrorRate`, it selects the candidate with the lowest observed
-  error rate to mitigate total outage.
+- `minSamples` (default `1`, safe positive integer) protects cold-start strategies: candidates with fewer
+  than `minSamples` observed samples are exempt from disqualification, preventing premature circuit-breaking
+  on early single-failure spikes.
+- If all candidates exceed `maxErrorRate` (and have reached `minSamples`), it selects the candidate with the lowest
+  observed error rate to mitigate total outage.
 - Candidates with unobserved error rates (`errorRate === null`) are treated as eligible.
 
 ## `createLatencyBudgetSelector(options)`
@@ -96,13 +102,32 @@ latency budget:
 ```ts
 const selector = createLatencyBudgetSelector({
   maxLatencyMs: 150,
-  preferLowestCost: true, // When true, optimizes cost over quality among budget-compliant candidates
+  preferLowestCost: true,                    // When true, optimizes cost over quality among budget-compliant candidates
+  fallbackSelector: (context) => undefined,  // Optional delegation among within-budget candidates
+  useEwma: true,                             // When true, filters and orders using ewmaLatencyMs instead of estimatedLatencyMs
 });
 ```
 
-- Selects candidates whose `estimatedLatencyMs <= maxLatencyMs` (or unmeasured `null`).
+- Selects candidates whose latency is within `maxLatencyMs` (or unmeasured `null`).
+- When `useEwma: true`, candidates are evaluated using exponential moving average (`ewmaLatencyMs`); otherwise arithmetic mean (`estimatedLatencyMs`) is used.
+- When `fallbackSelector` is defined and compliant candidates exist, selection delegates to `fallbackSelector`; if it returns `null`/`undefined`, deterministic tier tie-breaking is applied.
 - By default selects highest quality tier; with `preferLowestCost: true` it selects lowest cost tier.
-- If all candidates exceed `maxLatencyMs`, it selects the candidate with the lowest estimated latency.
+- If all candidates exceed `maxLatencyMs`, it selects the candidate with the lowest observed latency.
+
+## `composeSelectors(selectors)`
+
+Combines multiple `CustomPolicySelector` functions into a deterministic sequential pipeline:
+
+```ts
+const selector = composeSelectors([
+  createErrorRateGuardSelector({ maxErrorRate: 0.1, minSamples: 3 }),
+  createLatencyBudgetSelector({ maxLatencyMs: 150, useEwma: true }),
+]);
+```
+
+- Accepts a non-empty array of selector functions and takes a defensive immutable snapshot.
+- Evaluates selectors in order: returns the first non-null, non-undefined `CustomPolicySelection` (`string` or `{ strategyId, reason? }`).
+- If no selector produces a decision (or candidates are empty), returns `null` so normal runtime tie-breaking takes effect.
 
 ## `formatDecisionSummary(decision)`
 
@@ -130,10 +155,12 @@ interface AdaptiveRuntime {
   setAdaptationEnabled(operationId: string, enabled: boolean): void;
   setOperationPolicy(operationId: string, policy: Partial<Policy> | null): void;
   getOperationPolicy(operationId: string): ResolvedPolicy | null;
+  getEffectivePolicy(operationId: string): ResolvedPolicy;
   getDecision(operationId: string): StrategyDecision | null;
   getStats(operationId: string): RuntimeStats;
   getTrackedOperations(): readonly string[];
   getAllStats(): Readonly<Record<string, RuntimeStats>>;
+  getProviderDescriptors(): readonly SignalDescriptor[];
   removeOperation(operationId: string): boolean;
   resetStats(operationId?: string): void;
   on<K extends RuntimeEventName>(event: K, listener: RuntimeEventListener<K>): () => void;
@@ -253,6 +280,13 @@ Returns the frozen `ResolvedPolicy` override configured for the operation, or `n
 if no override has been set. When an operation record exists, calling `getOperationPolicy`
 refreshes the operation's position in the LRU tracking order.
 
+### `getEffectivePolicy(operationId)`
+
+Returns the active `ResolvedPolicy` for the given operation (resolving any operation-level
+override against global policy defaults). Unlike `getOperationPolicy`, `getEffectivePolicy`
+is a non-disturbing introspection API: it **does not** register or track the operation,
+nor does it alter existing LRU eviction order. Remains readable after `close()`.
+
 ### `getDecision(operationId)`
 
 Returns the most recent decision for the operation, or `null` if it has never
@@ -271,6 +305,7 @@ interface StrategyStats {
   readonly averageDurationMs: number | null;
   readonly ewmaDurationMs: number | null;
   readonly durationSamples: number;
+  readonly totalDurationMs?: number;
   readonly errorRate: number;
 }
 
@@ -283,6 +318,7 @@ interface RuntimeStats {
   readonly averageDurationMs: number | null;
   readonly ewmaDurationMs: number | null;
   readonly durationSamples: number;
+  readonly totalDurationMs?: number;
   readonly errorRate: number;
   readonly strategyRuns: Readonly<Record<string, number>>;
   readonly strategies: Readonly<Record<string, StrategyStats>>;
@@ -293,8 +329,10 @@ interface RuntimeStats {
 `strategyRuns` increments when a strategy is selected, before execution.
 `strategies` exposes fine-grained per-strategy counts (`runs`, `successes`,
 `failures`) and durations (`lastDurationMs`, `averageDurationMs`,
-`ewmaDurationMs`). Latency samples include successful runs and failures that
-occurred after selection. `ewmaDurationMs` uses alpha `0.2`; `errorRate` is
+`ewmaDurationMs`, `totalDurationMs`). Latency samples include successful runs and failures that
+occurred after selection. `totalDurationMs` tracks exact cumulative execution milliseconds,
+eliminating IEEE 754 floating-point drift across repeated `exportState()`/`importState()` cycles.
+`ewmaDurationMs` uses alpha `0.2`; `errorRate` is
 `failures / runs` and is `0` before the first run. `durationSamples` is the number
 of duration observations and is persisted in state snapshots. Reading stats
 refreshes the operation's LRU position.
@@ -309,6 +347,12 @@ is read-only and **does not** alter or refresh LRU order. Remains readable after
 
 Returns a frozen dictionary mapping each tracked `operationId` to its current
 `RuntimeStats`. Does not alter or refresh LRU tracking order. Remains readable after `close()`.
+
+### `getProviderDescriptors()`
+
+Returns a frozen array of all `SignalDescriptor` records declared by registered signal
+providers in registration order. Read-only introspection API: **does not** alter or refresh
+LRU tracking order. Remains readable after `close()`.
 
 ### `removeOperation(operationId)`
 
@@ -594,7 +638,13 @@ Concurrent runs share one in-flight read per runtime. That read has its own abor
 controller and a waiter count. Aborting a waiting caller rejects only that caller;
 the provider reads are aborted only when the last waiter leaves. The initiating
 caller has no special cancellation privilege. A read aborted by every caller is
-not cached. See [ADR 0005](adr/0005-ref-counted-shared-reads.md) and
+not cached. Callers joining an in-flight live read receive a snapshot marked with
+`cached: false, coalesced: true`, ensuring live evaluation without false
+`cached-sample` penalty flags. Reused historical snapshots within
+`evaluationIntervalMs` are marked with `cached: true, coalesced: false`. Fresh
+initiators receive `cached: false, coalesced: false`. See
+[ADR 0005](adr/0005-ref-counted-shared-reads.md),
+[ADR 0018](adr/0018-selector-composition-and-simulation-fidelity.md), and
 [PROVIDERS.md](PROVIDERS.md) for authoring guidance.
 
 Readings are validated strictly. A provider read is rejected as a whole — and
@@ -1028,6 +1078,14 @@ attributes are `{ operation_id, signal, status }`; budget attributes are
 `{ budget_id, operation_id }`. The fallback cannot retract a stale value when a
 signal later becomes unavailable.
 
+When an operation is removed via `runtime.removeOperation(operationId)`,
+`attachOpenTelemetryMeter` automatically purges tracking keys for that operation
+from internal UpDownCounter delta maps via lifecycle hooks, preventing memory
+leaks in multi-tenant systems. The returned subscription also exposes
+`subscription.purgeOperation(operationId)` for manual series cleanup.
+Similarly, `MetricsCollector.attach(runtime)` automatically purges operation series
+upon operation removal.
+
 Metric family type is determined by the recording method: `increment` registers
 a counter, `setGauge` a gauge, and `observe` a histogram, regardless of the name
 suffix. Reusing a name with a different instrument kind throws `TypeError` before
@@ -1080,6 +1138,18 @@ const timeline = simulatePolicyTimeline({
 //   engagedBudgetIds, recoveredBudgetIds }
 ```
 
+```ts
+interface SimulatedStrategy {
+  readonly id: string;
+  readonly qualityTier: number;
+  readonly costTier?: number;
+  readonly applicable?: boolean;
+  readonly estimatedLatencyMs?: number | null;
+  readonly ewmaLatencyMs?: number | null;
+  readonly errorRate?: number | null;
+}
+```
+
 `createFakeClock` starts at `0` by default and rejects negative or non-finite
 times. Timers execute in time order, then insertion order; timers scheduled by a
 callback can fire within the same `advance()`. `set()` does not fire timers, so
@@ -1102,8 +1172,9 @@ the policy once, threads policy state through each step, and reports the decisio
 and state for every step. It also reports per-step and cumulative budget
 engagements/recoveries, the number of strategy switches, and the number of
 reversals (a switch that exactly undoes the immediately preceding switch). The
-default `sampleSequence: null` treats every step as a fresh sample. No strategy
-is executed and no timer is scheduled.
+default `sampleSequence: null` treats every step as a fresh sample. Strategies can
+declare `estimatedLatencyMs`, `ewmaLatencyMs`, and `errorRate` for high-fidelity
+simulation of custom selectors. No strategy is executed and no timer is scheduled.
 
 ## Exports
 
@@ -1112,9 +1183,11 @@ The package exports:
 - root (`adaptive-runtime`): the Node.js entry point — core plus
   `ProcessMemoryProvider`, `CpuUtilizationProvider`, `EventLoopDelayProvider`,
   `EventLoopUtilizationProvider`, `NetworkLatencyProvider`,
-  `CompositeSignalProvider`, all public types, and all error classes;
-- `adaptive-runtime/core`: platform-neutral runtime, policy helper, errors,
-  types (including state snapshot types), `NetworkLatencyProvider`, and
+  `CompositeSignalProvider`, `composeSelectors`, `createErrorRateGuardSelector`,
+  `createLatencyBudgetSelector`, all public types, and all error classes;
+- `adaptive-runtime/core`: platform-neutral runtime, policy helper,
+  `composeSelectors`, `createErrorRateGuardSelector`, `createLatencyBudgetSelector`,
+  errors, types (including state snapshot types), `NetworkLatencyProvider`, and
   `CompositeSignalProvider`;
 - `adaptive-runtime/node`: core plus the process-level providers, including
   `EventLoopDelayProvider` and `EventLoopUtilizationProvider`;
@@ -1123,8 +1196,9 @@ The package exports:
   `ComputePressureProvider`;
 - `adaptive-runtime/edge`: core plus `ExecutionBudgetProvider`;
 - `adaptive-runtime/policy`: policy types and defaults, `definePolicy`,
-  `resolvePolicy`, `createInitialPolicyState`, `evaluatePolicy`, and the
-  decision/state types needed to call it;
+  `resolvePolicy`, `createInitialPolicyState`, `evaluatePolicy`,
+  `composeSelectors`, `createErrorRateGuardSelector`, `createLatencyBudgetSelector`,
+  and the decision/state types needed to call it;
 - `adaptive-runtime/providers`: every built-in provider (Node.js, web, edge, and
   composite) plus signal-name constants; this mixed barrel is not
   platform-neutral;

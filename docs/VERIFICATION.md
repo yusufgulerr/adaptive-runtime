@@ -2,7 +2,8 @@
 
 This document records the historical 0.3.0 release verification on
 **2026-10-22**, the 0.5.0 source-line and release verification on
-**2026-10-23**, and the 0.6.0 source-line and release-integration verification on
+**2026-10-23**, the 0.6.0 source-line and release-integration verification on
+**2026-10-24**, and the 0.7.0 source-line and release-integration verification on
 **2026-10-24**. It distinguishes local verification, remote workflow evidence,
 GitHub repository settings, and npm registry status. The 0.3.0 tree was merged to
 `main` at `5504f21`; the release-workflow fix and the OpenSSF readiness
@@ -15,7 +16,49 @@ pushed in pull request #24, merged to `main` at `815c938`, tagged `v0.5.0`, and
 released on GitHub; its remote CI, CodeQL, Scorecard, and release workflow
 passed. npm publication for 0.5.0 remains pending. The 0.6.0 tree integrates Track A
 (PR #26 and PR #28) and Track B (PR #27) into `main` at `49c5f48`, prepared via
-release integration PR #29. npm publication remains pending owner approval.
+release integration PR #29. The 0.7.0 release tree integrates Wave 1 tracks
+(Track A PR #31 `4ed0811`, Track B PR #32 `4c2a700`, Track C PR #33 `a55e6e4`,
+Track D PR #34 `099ed38`) and Wave 2 integration Track E, delivering 1.0-RC
+readiness. npm publication remains pending owner approval.
+
+## 0.7.0 source-line and release-integration verification
+
+The 0.7.0 quality gates were run locally on **2026-10-24** with the repository's
+documented commands. All changes were integrated via conventional pull requests
+with all required CI checks green. Measurements below were captured on the release
+branch `chore/v070-integration-and-docs` before PR creation and squash-merge to `main`.
+
+| Command | Result |
+| --- | --- |
+| `npm run format` | **PASS** — 105 files checked, no fixes applied |
+| `npm run lint` | **PASS** — 105 files checked, no fixes applied |
+| `npm run typecheck` | **PASS** — `tsc -p tsconfig.check.json` (0 errors) |
+| `npm run verify:version-sync` | **PASS** — `adaptive-runtime 0.7.0` in `package.json`, `package-lock.json`, `CHANGELOG.md`, and `CITATION.cff` |
+| `npm run check` | **PASS** — lint, typecheck, version sync, 507 tests / 77 suites, build, exports, zero dependencies, and Markdown links |
+| `npm test` | **PASS** — 507 tests, 77 suites, 0 failures, 0 skipped |
+| `npm run test:fuzz` | **PASS** — 14 property tests, 4 suites, 0 failures |
+| `npm run test:coverage` | **PASS** — 99.00% lines, 96.28% branches, 99.05% functions |
+| `npm run build` | **PASS** — ESM, declarations, and maps emitted to `dist/` |
+| `npm run verify:exports` | **PASS** — 10 export entries, 27 files, and 36 runtime symbols |
+| `npm run verify:zero-deps` | **PASS** — 64 lockfile entries, 0 production packages |
+| `npm audit --omit=dev --audit-level=high` | **PASS** — 0 vulnerabilities |
+| Six `npm run example:*` commands | **PASS** — basic, search, planning, quick-start, observability, edge |
+| `npm run benchmark` | **PASS** — 20,000 runs per round, 7 rounds; see [BENCHMARKS.md](BENCHMARKS.md) |
+| `npm run benchmark -- --dist` | **PASS** — compiled `dist/index.js`, 20,000 runs per round, 7 rounds; see [BENCHMARKS.md](BENCHMARKS.md) |
+| `npm run benchmark:concurrency` | **PASS** — 4,096 runs per level per round, 3 rounds; see [BENCHMARKS.md](BENCHMARKS.md) |
+| `npm pack --dry-run` | **PASS** — 188 files, 209.3 kB packed, 1.0 MB unpacked, version 0.7.0 |
+| Portable source scan | **PASS** — zero `node:` / `process.` matches across 37 portable files |
+| `npm run check:links` | **PASS** — 45 Markdown files, 247 relative links, 0 broken |
+
+Coverage from the 0.7.0 run:
+
+| Metric | Result | Threshold | Status |
+| --- | ---: | ---: | --- |
+| Lines | 99.00% | 80% | PASS |
+| Branches | 96.28% | 80% | PASS |
+| Functions | 99.05% | 80% | PASS |
+
+Every `src/**` file remains above 91% branch coverage (threshold >= 80%, target >= 95%). The package inspection above is a dry-run inventory, not a clean-consumer install of a published tarball. The npm registry and provenance attestation remain **not verified** for 0.7.0; npm publication requires explicit owner approval.
 
 ## 0.6.0 source-line and release-integration verification
 
