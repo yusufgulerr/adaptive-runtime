@@ -346,11 +346,20 @@ test("queue depth provider conforms to the signal contract", async () => {
 });
 ```
 
-The check invokes `start()` and `close()` once, calls `read()` once, and verifies
-the provider id, descriptor names/units, reading names/units, `observedAt`,
-status codes, finite `ok` values, confidence bounds, and error strings. It
-reports failures instead of throwing, so one bad provider does not abort the
-suite. It does not enforce a timeout.
+The check invokes `start()` and `close()` once, calls `read()` once before
+closing, and verifies the provider id, descriptor names/units, reading
+names/units, `observedAt`, status codes, finite `ok` values, confidence bounds,
+and error strings. It reports failures instead of throwing, so one bad provider
+does not abort the suite. It does not enforce a timeout.
+
+By default it also calls `read()` once after `close()` and requires every
+reading to report `status: "unsupported"`. Pass `{ checkPostClose: false }` only
+when a provider intentionally permits post-close reads. If the provider defines
+`drainProviderErrors()`, the check calls it once after the initial read and
+requires an array; a throwing call or a non-array result is reported as a
+failure. All built-in Node.js, web, edge, composite, and scripted providers pass
+this contract. The check never invents a zero reading for an unavailable
+signal.
 
 For runtime integration, use a fake `Clock` and a provider that returns a fixed
 reading. Assert the selected strategy, the decision reasons, and the signal
@@ -364,7 +373,8 @@ status. Do not assert on real heap, CPU, or event-loop values.
 - [ ] Missing data is `unknown`, `unsupported`, `stale`, or `error`, never `0`.
 - [ ] No network, disk, or subprocess work unless the application opted in.
 - [ ] Work is bounded and does not block the event loop.
-- [ ] `close()` releases timers, sockets, and listeners.
+- [ ] `close()` releases timers, sockets, and listeners, and later `read()`
+      calls report `status: "unsupported"`.
 - [ ] Errors and details contain no secrets or unbounded user data.
 - [ ] Tests cover success, unavailable, timeout, abort, and malformed output.
 - [ ] The signal is documented in the application's policy configuration.

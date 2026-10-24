@@ -138,7 +138,6 @@ describe("Tier 5 E2E: Hostile Throwing/Hanging Providers & Adversarial Soak", ()
       providerTimeoutMs: 50, // Short timeout for hanging start
       policy: definePolicy({
         evaluationIntervalMs: 0,
-        defaultStrategyId: "optimal",
         fallbackStrategyId: "safe-fallback",
         missingSignalBehavior: "fallback",
         budgets: [
@@ -221,7 +220,6 @@ describe("Tier 5 E2E: Hostile Throwing/Hanging Providers & Adversarial Soak", ()
       clock,
       policy: definePolicy({
         evaluationIntervalMs: 1000,
-        defaultStrategyId: "optimal",
         fallbackStrategyId: "safe-fallback",
         missingSignalBehavior: "fallback",
         minimumModeDurationMs: 0,
@@ -280,7 +278,6 @@ describe("Tier 5 E2E: Hostile Throwing/Hanging Providers & Adversarial Soak", ()
     const runtime = createAdaptiveRuntime({
       policy: definePolicy({
         maxTrackedOperations: maxTracked,
-        defaultStrategyId: "fast",
       }),
     });
 
@@ -380,7 +377,6 @@ describe("Tier 5 E2E: Hostile Throwing/Hanging Providers & Adversarial Soak", ()
 
     const policy = definePolicy({
       evaluationIntervalMs: 0,
-      defaultStrategyId: "strat-tier2-a",
       fallbackStrategyId: "strat-tier1",
       minQualityTier: 1,
       maxQualityTier: 3,

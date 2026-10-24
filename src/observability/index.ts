@@ -150,6 +150,15 @@ function mergeMetricAttributes(
   return { ...defaults, ...overrides };
 }
 
+function validateMaxSeries(maxSeries: number | undefined): void {
+  if (
+    maxSeries !== undefined &&
+    (typeof maxSeries !== "number" || !Number.isInteger(maxSeries) || maxSeries <= 0)
+  ) {
+    throw new ConfigurationError("maxSeries must be a positive integer.");
+  }
+}
+
 function normalizeBuckets(buckets: readonly number[]): readonly number[] {
   const sorted = [...buckets].sort((a, b) => a - b);
   if (sorted[sorted.length - 1] !== Number.POSITIVE_INFINITY) {
@@ -329,16 +338,7 @@ export class MetricsCollector implements RuntimeMetricsCollector {
   readonly #lruOrder = new Map<string, MetricFamilyType>();
 
   constructor(options?: ObservabilityOptions) {
-    if (options?.maxSeries !== undefined) {
-      if (
-        typeof options.maxSeries !== "number" ||
-        !Number.isInteger(options.maxSeries) ||
-        options.maxSeries <= 0
-      ) {
-        throw new ConfigurationError("maxSeries must be a positive integer.");
-      }
-    }
-
+    validateMaxSeries(options?.maxSeries);
     this.#prefix = options?.prefix ?? "adaptive_runtime";
     this.#defaultAttributes = options?.defaultAttributes;
     this.#buckets =
@@ -715,16 +715,40 @@ function tryCreateGauge(
 }
 
 /**
+ * Stores the latest value for a series and refreshes its LRU position.
+ * When the map already holds `maxSeries` entries, the least recently used
+ * series is evicted before the new entry is inserted.
+ */
+function rememberCurrentValue(
+  lastValues: Map<string, number>,
+  maxSeries: number,
+  seriesKey: string,
+  value: number,
+): void {
+  lastValues.delete(seriesKey);
+  if (lastValues.size >= maxSeries) {
+    const oldestKey = lastValues.keys().next().value;
+    if (oldestKey !== undefined) {
+      lastValues.delete(oldestKey);
+    }
+  }
+  lastValues.set(seriesKey, value);
+}
+
+/**
  * Records a current-value instrument. Gauges receive the value directly.
  * UpDownCounters are additive, so the fallback keeps the last value per label
  * set and writes only the delta needed to converge on the current value.
  * A brand-new series records its initial value (including zero) once so the
- * series is registered; subsequent no-op deltas are skipped.
+ * series is registered; subsequent no-op deltas are skipped. At most
+ * `maxSeries` per-instrument series are tracked; the least recently used entry
+ * is evicted, and a later reading for it converges from zero again.
  */
 function recordCurrentValue(
   gauge: GaugeLike | undefined,
   upDownCounter: UpDownCounterLike | undefined,
   lastValues: Map<string, number>,
+  maxSeries: number,
   seriesKey: string,
   value: number,
   attributes: MetricAttributesLike | undefined,
@@ -739,20 +763,14 @@ function recordCurrentValue(
     return;
   }
   const previous = lastValues.get(seriesKey);
-  if (previous === undefined) {
-    safeRecord(() => {
-      upDownCounter.add(value, attributes);
-      lastValues.set(seriesKey, value);
-    });
-    return;
-  }
-  const delta = value - previous;
-  if (delta === 0) {
+  if (previous === value) {
+    // Refresh the LRU position without emitting a redundant zero delta.
+    rememberCurrentValue(lastValues, maxSeries, seriesKey, value);
     return;
   }
   safeRecord(() => {
-    upDownCounter.add(delta, attributes);
-    lastValues.set(seriesKey, value);
+    upDownCounter.add(previous === undefined ? value : value - previous, attributes);
+    rememberCurrentValue(lastValues, maxSeries, seriesKey, value);
   });
 }
 
@@ -767,7 +785,9 @@ function recordCurrentValue(
  * reading. A brand-new series records its initial value once, including zero,
  * to register it; later no-op deltas are skipped. Non-ok signal and budget
  * readings increment status counters and never record zero gauges or
- * UpDownCounter values.
+ * UpDownCounter values. The UpDownCounter fallback tracks at most `maxSeries`
+ * label sets per instrument (default 1000) and evicts the least recently used
+ * set, matching the in-memory collector's cardinality bound.
  */
 export function attachOpenTelemetryMeter(
   runtime: AdaptiveRuntime,
@@ -790,8 +810,10 @@ export function attachOpenTelemetryMeter(
     );
   }
 
+  validateMaxSeries(options?.maxSeries);
   const prefix = options?.prefix ?? "adaptive_runtime";
   const defaultAttrs = options?.defaultAttributes;
+  const maxSeries = options?.maxSeries ?? 1000;
 
   const strategySelectionsCounter = meter.createCounter(`${prefix}_strategy_selections_total`, {
     description: "Total number of strategy selections started.",
@@ -932,6 +954,7 @@ export function attachOpenTelemetryMeter(
             signalReadingGauge,
             signalReadingUpDownCounter,
             signalReadingLastValues,
+            maxSeries,
             buildSeriesKey("signal_reading", {
               operation_id: decision.operationId,
               signal: signal.name,
@@ -962,6 +985,7 @@ export function attachOpenTelemetryMeter(
             budgetEngagedGauge,
             budgetEngagedUpDownCounter,
             budgetEngagedLastValues,
+            maxSeries,
             buildSeriesKey("budget_engaged", {
               budget_id: budget.id,
               operation_id: decision.operationId,

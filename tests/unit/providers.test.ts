@@ -508,6 +508,114 @@ describe("EventLoopUtilizationProvider", () => {
         }),
       ConfigurationError,
     );
+    assert.throws(
+      () =>
+        new EventLoopUtilizationProvider({
+          signalName: 42 as unknown as string,
+        }),
+      ConfigurationError,
+    );
+    assert.throws(
+      () =>
+        new EventLoopUtilizationProvider({
+          eventLoopUtilization: null as unknown as () => EventLoopUtilizationSnapshot,
+        }),
+      ConfigurationError,
+    );
+  });
+
+  it("uses the default id and signal name for an empty options object", () => {
+    const provider = new EventLoopUtilizationProvider({});
+    assert.equal(provider.id, "event-loop-utilization");
+    assert.equal(provider.signals[0]?.name, EVENT_LOOP_UTILIZATION);
+    assert.equal(provider.signals[0]?.unit, "ratio");
+  });
+
+  it("reports explicit errors for every malformed snapshot field", () => {
+    const invalidSnapshots: readonly (readonly [unknown, RegExp])[] = [
+      [null, /must be an object/],
+      ["snapshot", /must be an object/],
+      [{ idle: -1, active: 1, utilization: 0.5 }, /idle time/],
+      [{ idle: Number.NaN, active: 1, utilization: 0.5 }, /idle time/],
+      [{ idle: "1", active: 1, utilization: 0.5 }, /idle time/],
+      [{ idle: 1, active: -1, utilization: 0.5 }, /active time/],
+      [{ idle: 1, active: Number.POSITIVE_INFINITY, utilization: 0.5 }, /active time/],
+      [{ idle: 1, active: null, utilization: 0.5 }, /active time/],
+      [{ idle: 1, active: 1, utilization: -0.1 }, /between 0 and 1/],
+      [{ idle: 1, active: 1, utilization: Number.NaN }, /between 0 and 1/],
+      [{ idle: 1, active: 1, utilization: "0.5" }, /between 0 and 1/],
+    ];
+
+    for (const [snapshot, expectedError] of invalidSnapshots) {
+      const provider = new EventLoopUtilizationProvider({
+        eventLoopUtilization: () => snapshot as EventLoopUtilizationSnapshot,
+      });
+      const reading = provider.read({ now: NOW, signal })[0];
+      assert.equal(reading?.status, "error");
+      assert.match(reading?.status === "error" ? (reading.error ?? "") : "", expectedError);
+    }
+  });
+
+  it("converts a throwing snapshot getter into an error reading", () => {
+    const snapshot = Object.defineProperty({}, "idle", {
+      get() {
+        throw new Error("getter exploded");
+      },
+    }) as EventLoopUtilizationSnapshot;
+    const provider = new EventLoopUtilizationProvider({
+      eventLoopUtilization: () => snapshot,
+    });
+
+    const reading = provider.read({ now: NOW, signal })[0];
+    assert.equal(reading?.status, "error");
+    assert.match(
+      reading?.status === "error" ? (reading.error ?? "") : "",
+      /Failed to read event-loop utilization snapshot: getter exploded/,
+    );
+  });
+
+  it("distinguishes backwards idle and active counters", () => {
+    const createProvider = (
+      first: EventLoopUtilizationSnapshot,
+      second: EventLoopUtilizationSnapshot,
+    ) => {
+      let reads = 0;
+      return new EventLoopUtilizationProvider({
+        eventLoopUtilization: () => {
+          reads += 1;
+          return reads === 1 ? first : second;
+        },
+      });
+    };
+
+    const idleProvider = createProvider(
+      { idle: 100, active: 100, utilization: 0.5 },
+      { idle: 90, active: 110, utilization: 0.5 },
+    );
+    assert.equal(idleProvider.read({ now: NOW, signal })[0]?.status, "ok");
+    const idleReading = idleProvider.read({ now: NOW + 1, signal })[0];
+    assert.equal(idleReading?.status, "error");
+    assert.match(idleReading?.status === "error" ? (idleReading.error ?? "") : "", /backwards/);
+
+    const activeProvider = createProvider(
+      { idle: 100, active: 100, utilization: 0.5 },
+      { idle: 110, active: 90, utilization: 0.5 },
+    );
+    assert.equal(activeProvider.read({ now: NOW, signal })[0]?.status, "ok");
+    const activeReading = activeProvider.read({ now: NOW + 1, signal })[0];
+    assert.equal(activeReading?.status, "error");
+    assert.match(activeReading?.status === "error" ? (activeReading.error ?? "") : "", /backwards/);
+  });
+
+  it("accepts and clamps snapshot utilization within floating-point tolerance", () => {
+    const provider = new EventLoopUtilizationProvider({
+      eventLoopUtilization: () => ({ idle: 0, active: 1, utilization: 1 + 1e-10 }),
+    });
+
+    const reading = provider.read({ now: NOW, signal })[0];
+    assert.equal(reading?.status, "ok");
+    assert.equal(requireOk(reading).value, 1);
+    assert.deepEqual(reading?.details, { mode: "cumulative", idleMs: 0, activeMs: 1 });
   });
 });
 

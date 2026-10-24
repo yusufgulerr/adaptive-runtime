@@ -713,6 +713,80 @@ describe("Observability Bridge Unit Tests", () => {
       );
     });
 
+    it("bounds UpDownCounter last-value maps with maxSeries LRU eviction", () => {
+      const mockRuntime = new MockEmitterRuntime();
+      const mockMeter = new MockOpenTelemetryMeter();
+
+      attachOpenTelemetryMeter(mockRuntime as unknown as AdaptiveRuntime, mockMeter, {
+        maxSeries: 5,
+      });
+
+      const emitReading = (operationId: string, value: number, engaged: boolean): void => {
+        mockRuntime.emit("decision", {
+          decision: makeDecision({
+            operationId,
+            signals: [{ name: "queue.depth", status: "ok", value, unit: "count" }],
+            budgets: [
+              {
+                id: "queue-depth",
+                signal: "queue.depth",
+                status: "ok",
+                engaged,
+                limit: 10,
+                recoverBelow: 5,
+                tierReduction: 1,
+              },
+            ],
+          }),
+        });
+      };
+
+      for (let index = 0; index < 10; index += 1) {
+        emitReading(`op-${index}`, 100 + index, index % 2 === 0);
+      }
+
+      const signalUpDown = mockMeter.upDownCounters.get("adaptive_runtime_signal_reading");
+      const budgetUpDown = mockMeter.upDownCounters.get("adaptive_runtime_budget_engaged");
+      assert.ok(signalUpDown);
+      assert.ok(budgetUpDown);
+      assert.equal(signalUpDown.adds.length, 10);
+      assert.equal(budgetUpDown.adds.length, 10);
+
+      // op-5..op-9 remain inside the five-entry LRU window, so updating op-5
+      // writes only the delta from its retained previous value.
+      emitReading("op-5", 110, true);
+      assert.equal(signalUpDown.adds.at(-1)?.value, 5);
+      assert.equal(budgetUpDown.adds.at(-1)?.value, 1);
+
+      // op-4 was evicted, so its next reading is a brand-new series and writes
+      // the full value instead of a delta. The budget zero is no longer
+      // suppressed as a no-op either.
+      emitReading("op-4", 120, true);
+      assert.equal(signalUpDown.adds.at(-1)?.value, 120);
+      assert.equal(budgetUpDown.adds.at(-1)?.value, 1);
+      assert.equal(signalUpDown.adds.length, 12);
+      assert.equal(budgetUpDown.adds.length, 12);
+    });
+
+    it("validates OpenTelemetry maxSeries configuration", () => {
+      const mockRuntime = new MockEmitterRuntime() as unknown as AdaptiveRuntime;
+      const mockMeter = new MockOpenTelemetryMeter();
+
+      for (const maxSeries of [0, -1, 3.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+        assert.throws(
+          () => attachOpenTelemetryMeter(mockRuntime, mockMeter, { maxSeries }),
+          ConfigurationError,
+        );
+      }
+      assert.throws(
+        () =>
+          attachOpenTelemetryMeter(mockRuntime, mockMeter, {
+            maxSeries: "10" as unknown as number,
+          }),
+        ConfigurationError,
+      );
+    });
+
     it("prefers gauges when the meter exposes createGauge", () => {
       const mockRuntime = new MockEmitterRuntime();
 
