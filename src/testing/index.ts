@@ -362,6 +362,11 @@ export interface ConformanceOptions {
   readonly now?: number;
   /** Abort signal supplied to read(); defaults to a fresh, un-aborted signal. */
   readonly signal?: AbortSignal;
+  /**
+   * When true (the default), a provider that defines `close()` is read once
+   * more after closing, and every reading must report `status: "unsupported"`.
+   */
+  readonly checkPostClose?: boolean;
 }
 
 export interface ProviderConformanceReport {

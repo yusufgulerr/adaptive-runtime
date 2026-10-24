@@ -2,6 +2,19 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { ConfigurationError } from "../../src/errors/index.js";
 import {
+  CompositeSignalProvider,
+  ComputePressureProvider,
+  CpuUtilizationProvider,
+  DeviceMemoryProvider,
+  EventLoopDelayProvider,
+  EventLoopUtilizationProvider,
+  ExecutionBudgetProvider,
+  FrameTimingProvider,
+  NetworkInformationProvider,
+  NetworkLatencyProvider,
+  ProcessMemoryProvider,
+} from "../../src/providers/index.js";
+import {
   createFakeClock,
   runProviderConformanceCheck,
   type ScriptedSignal,
@@ -268,6 +281,7 @@ describe("runProviderConformanceCheck", () => {
     let starts = 0;
     let reads = 0;
     let closes = 0;
+    let closed = false;
     const provider: SignalProvider = {
       id: "conforming",
       signals: [{ name: "test.value", unit: "count", description: "A value." }],
@@ -277,18 +291,27 @@ describe("runProviderConformanceCheck", () => {
       read: (context) => {
         reads += 1;
         return [
-          {
-            name: "test.value",
-            unit: "count",
-            status: "ok",
-            value: 7,
-            observedAt: context.now,
-            confidence: 0.5,
-          },
+          closed
+            ? {
+                name: "test.value",
+                unit: "count",
+                status: "unsupported",
+                observedAt: context.now,
+                error: "Provider is closed.",
+              }
+            : {
+                name: "test.value",
+                unit: "count",
+                status: "ok",
+                value: 7,
+                observedAt: context.now,
+                confidence: 0.5,
+              },
         ];
       },
       close: () => {
         closes += 1;
+        closed = true;
       },
     };
 
@@ -298,8 +321,186 @@ describe("runProviderConformanceCheck", () => {
     assert.ok(report.checksPassed > 0);
     assert.deepEqual(report.failures, []);
     assert.equal(starts, 1);
-    assert.equal(reads, 1);
+    assert.equal(reads, 2);
     assert.equal(closes, 1);
+  });
+
+  it("skips the post-close read when checkPostClose is false", async () => {
+    let reads = 0;
+    const provider: SignalProvider = {
+      id: "skip-post-close",
+      signals: [{ name: "test.value", unit: "count" }],
+      read: (context) => {
+        reads += 1;
+        return [
+          {
+            name: "test.value",
+            unit: "count",
+            status: "ok",
+            value: 1,
+            observedAt: context.now,
+          },
+        ];
+      },
+      close: () => undefined,
+    };
+
+    const report = await runProviderConformanceCheck(provider, { checkPostClose: false });
+    assert.equal(report.ok, true);
+    assert.equal(reads, 1);
+  });
+
+  it("reports post-close readings that are not unsupported", async () => {
+    const provider: SignalProvider = {
+      id: "still-live",
+      signals: [{ name: "test.value", unit: "count" }],
+      read: (context) => [
+        {
+          name: "test.value",
+          unit: "count",
+          status: "ok",
+          value: 1,
+          observedAt: context.now,
+        },
+      ],
+      close: () => undefined,
+    };
+
+    const report = await runProviderConformanceCheck(provider);
+    assert.equal(report.ok, false);
+    assert.match(report.failures.join(" "), /status "unsupported" after close\(\)/);
+  });
+
+  it("reports throwing and malformed post-close reads", async () => {
+    const throwing: SignalProvider = {
+      id: "throwing-post-close",
+      signals: [{ name: "test.value", unit: "count" }],
+      read: () => [
+        {
+          name: "test.value",
+          unit: "count",
+          status: "ok",
+          value: 1,
+          observedAt: 1_000_000,
+        },
+      ],
+      close: () => {
+        throw new Error("close failed");
+      },
+    };
+    const throwReport = await runProviderConformanceCheck(throwing);
+    assert.match(throwReport.failures.join(" "), /close\(\) threw/);
+    // A failed close must not trigger the post-close read.
+    assert.doesNotMatch(throwReport.failures.join(" "), /after close/);
+
+    let closed = false;
+    const malformed: SignalProvider = {
+      id: "malformed-post-close",
+      signals: [{ name: "test.value", unit: "count" }],
+      read: (context) =>
+        closed
+          ? (undefined as unknown as readonly ResourceSignal[])
+          : [
+              {
+                name: "test.value",
+                unit: "count",
+                status: "ok",
+                value: 1,
+                observedAt: context.now,
+              },
+            ],
+      close: () => {
+        closed = true;
+      },
+    };
+    const malformedReport = await runProviderConformanceCheck(malformed);
+    assert.match(malformedReport.failures.join(" "), /after close\(\) must return an array/);
+
+    let closeThenThrow = false;
+    const postCloseThrow: SignalProvider = {
+      id: "post-close-throw",
+      signals: [{ name: "test.value", unit: "count" }],
+      read: (context) => {
+        if (closeThenThrow) {
+          throw new Error("post-close read failed");
+        }
+        return [
+          {
+            name: "test.value",
+            unit: "count",
+            status: "ok",
+            value: 1,
+            observedAt: context.now,
+          },
+        ];
+      },
+      close: () => {
+        closeThenThrow = true;
+      },
+    };
+    const postCloseThrowReport = await runProviderConformanceCheck(postCloseThrow);
+    assert.match(postCloseThrowReport.failures.join(" "), /after close\(\) threw/);
+  });
+
+  it("accepts drainProviderErrors implementations that return an array", async () => {
+    let drains = 0;
+    const provider: SignalProvider = {
+      id: "draining",
+      signals: [{ name: "test.value", unit: "count" }],
+      read: (context) => [
+        {
+          name: "test.value",
+          unit: "count",
+          status: "ok",
+          value: 1,
+          observedAt: context.now,
+        },
+      ],
+      drainProviderErrors: () => {
+        drains += 1;
+        return [new Error("child failure")];
+      },
+    };
+
+    const report = await runProviderConformanceCheck(provider);
+    assert.equal(report.ok, true, report.failures.join("; "));
+    assert.equal(drains, 1);
+  });
+
+  it("reports non-array and throwing drainProviderErrors implementations", async () => {
+    const nonArray = await runProviderConformanceCheck({
+      id: "bad-drain",
+      signals: [{ name: "test.value", unit: "count" }],
+      read: (context: SignalReadContext) => [
+        {
+          name: "test.value",
+          unit: "count",
+          status: "ok",
+          value: 1,
+          observedAt: context.now,
+        },
+      ],
+      drainProviderErrors: () => "not-an-array",
+    } as unknown as SignalProvider);
+    assert.match(nonArray.failures.join(" "), /drainProviderErrors\(\) must return an array/);
+
+    const throwing = await runProviderConformanceCheck({
+      id: "throwing-drain",
+      signals: [{ name: "test.value", unit: "count" }],
+      read: (context: SignalReadContext) => [
+        {
+          name: "test.value",
+          unit: "count",
+          status: "ok",
+          value: 1,
+          observedAt: context.now,
+        },
+      ],
+      drainProviderErrors: () => {
+        throw new Error("drain failed");
+      },
+    } as unknown as SignalProvider);
+    assert.match(throwing.failures.join(" "), /drainProviderErrors\(\) threw/);
   });
 
   it("passes providers without lifecycle hooks and forwards the aborted signal", async () => {
@@ -538,6 +739,71 @@ describe("runProviderConformanceCheck", () => {
     assert.equal(report.ok, true);
     assert.equal(report.failures.length, 0);
   });
+});
+
+describe("built-in provider conformance", () => {
+  const cases: readonly (readonly [string, () => SignalProvider])[] = [
+    ["ProcessMemoryProvider", () => new ProcessMemoryProvider()],
+    ["CpuUtilizationProvider", () => new CpuUtilizationProvider()],
+    ["EventLoopDelayProvider", () => new EventLoopDelayProvider()],
+    ["EventLoopUtilizationProvider", () => new EventLoopUtilizationProvider()],
+    ["NetworkLatencyProvider", () => new NetworkLatencyProvider({ probe: () => 1 })],
+    ["DeviceMemoryProvider", () => new DeviceMemoryProvider()],
+    ["NetworkInformationProvider", () => new NetworkInformationProvider()],
+    ["FrameTimingProvider", () => new FrameTimingProvider()],
+    ["ComputePressureProvider", () => new ComputePressureProvider()],
+    [
+      "ExecutionBudgetProvider",
+      () =>
+        new ExecutionBudgetProvider({
+          getBudgetSnapshot: () => ({
+            totalBudgetMs: 1_000,
+            elapsedMs: 100,
+            activeRequests: 1,
+            maxConcurrency: 4,
+          }),
+        }),
+    ],
+    [
+      "CompositeSignalProvider",
+      () =>
+        new CompositeSignalProvider({
+          providers: [
+            new ScriptedSignalProvider({
+              script: [{ name: "scripted.value", unit: "count", values: [1] }],
+            }),
+          ],
+          rules: [
+            {
+              name: "composite.value",
+              unit: "count",
+              inputs: ["scripted.value"],
+              compute: (values) => {
+                const value = values["scripted.value"];
+                if (value === undefined) {
+                  throw new Error("missing scripted value");
+                }
+                return value * 2;
+              },
+            },
+          ],
+        }),
+    ],
+    [
+      "ScriptedSignalProvider",
+      () =>
+        new ScriptedSignalProvider({
+          script: [{ name: "scripted.value", unit: "count", values: [1] }],
+        }),
+    ],
+  ];
+
+  for (const [label, create] of cases) {
+    it(`passes for ${label}`, async () => {
+      const report = await runProviderConformanceCheck(create());
+      assert.equal(report.ok, true, `${label}: ${report.failures.join("; ")}`);
+    });
+  }
 });
 
 describe("simulatePolicyTimeline", () => {
