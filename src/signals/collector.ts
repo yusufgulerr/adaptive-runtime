@@ -15,6 +15,7 @@ export interface SignalSnapshot {
   readonly collectedAt: number;
   readonly sequence: number;
   readonly cached: boolean;
+  readonly coalesced: boolean;
 }
 
 export interface SignalCollectorOptions {
@@ -88,7 +89,7 @@ function validateDescriptor(
   if (descriptor.description !== undefined && typeof descriptor.description !== "string") {
     throw new ConfigurationError(`Signal "${name}" description must be a string.`);
   }
-  return descriptor;
+  return Object.freeze({ ...descriptor });
 }
 
 /**
@@ -97,6 +98,7 @@ function validateDescriptor(
  */
 export class SignalCollector {
   readonly #entries: readonly ProviderEntry[];
+  readonly #descriptors: readonly SignalDescriptor[];
   readonly #evaluationIntervalMs: number;
   readonly #providerTimeoutMs: number;
   readonly #clock: Clock;
@@ -116,6 +118,7 @@ export class SignalCollector {
     const seenProviderIds = new Set<string>();
     const seenSignalNames = new Set<string>();
     const entries: ProviderEntry[] = [];
+    const descriptorsList: SignalDescriptor[] = [];
     for (const provider of options.providers) {
       if (provider === null || typeof provider !== "object") {
         throw new ConfigurationError("Signal providers must be objects.");
@@ -135,6 +138,7 @@ export class SignalCollector {
       for (const descriptor of provider.signals) {
         const validated = validateDescriptor(descriptor, providerId, seenSignalNames);
         descriptors.set(validated.name, validated);
+        descriptorsList.push(validated);
       }
       entries.push({
         provider,
@@ -145,10 +149,15 @@ export class SignalCollector {
       });
     }
     this.#entries = entries;
+    this.#descriptors = Object.freeze(descriptorsList);
   }
 
   get closed(): boolean {
     return this.#closed;
+  }
+
+  getDescriptors(): readonly SignalDescriptor[] {
+    return this.#descriptors;
   }
 
   async collect(
@@ -167,12 +176,12 @@ export class SignalCollector {
     if (cached !== null) {
       const age = now - cached.collectedAt;
       if (age >= 0 && age < effectiveIntervalMs) {
-        return { ...cached, cached: true };
+        return { ...cached, cached: true, coalesced: false };
       }
     }
     if (this.#inflight !== null && !this.#inflight.controller.signal.aborted) {
       const snapshot = await this.#joinSharedRead(this.#inflight, signal);
-      return { ...snapshot, cached: true };
+      return { ...snapshot, cached: false, coalesced: true };
     }
 
     if (this.#entries.length === 0) {
@@ -182,6 +191,7 @@ export class SignalCollector {
         collectedAt: now,
         sequence: this.#sequence,
         cached: false,
+        coalesced: false,
       };
       this.#snapshot = snapshot;
       return snapshot;
@@ -190,7 +200,7 @@ export class SignalCollector {
     const entry = this.#startSharedRead(now);
     this.#inflight = entry;
     const snapshot = await this.#joinSharedRead(entry, signal);
-    return { ...snapshot, cached: false };
+    return { ...snapshot, cached: false, coalesced: false };
   }
 
   async close(): Promise<void> {
@@ -309,6 +319,7 @@ export class SignalCollector {
       collectedAt: now,
       sequence: this.#sequence,
       cached: false,
+      coalesced: false,
     };
   }
 

@@ -45,16 +45,19 @@ describe("SignalCollector", () => {
 
     const first = await collector.collect(clock.now(), new AbortController().signal);
     assert.equal(first.cached, false);
+    assert.equal(first.coalesced, false);
     assert.equal(requireOk(first.readings[0]).value, 10);
 
     const second = await collector.collect(clock.now(), new AbortController().signal);
     assert.equal(second.cached, true);
+    assert.equal(second.coalesced, false);
     assert.equal(second.sequence, first.sequence);
     assert.equal(requireOk(second.readings[0]).value, 10);
 
     clock.advance(1000);
     const third = await collector.collect(clock.now(), new AbortController().signal);
     assert.equal(third.cached, false);
+    assert.equal(third.coalesced, false);
     assert.notEqual(third.sequence, first.sequence);
     assert.equal(requireOk(third.readings[0]).value, 20);
   });
@@ -208,6 +211,7 @@ describe("SignalCollector", () => {
     release?.([okSignal(PROVIDER_SIGNAL, 1, clock.now())]);
     const first = await firstPromise;
     assert.equal(first.cached, false);
+    assert.equal(first.coalesced, false);
     assert.equal(requireOk(first.readings[0]).value, 1);
   });
 
@@ -233,17 +237,19 @@ describe("SignalCollector", () => {
 
     release?.([okSignal(PROVIDER_SIGNAL, 2, clock.now())]);
     const second = await secondPromise;
-    assert.equal(second.cached, true);
+    assert.equal(second.cached, false);
+    assert.equal(second.coalesced, true);
     assert.equal(requireOk(second.readings[0]).value, 2);
     assert.equal(reads, 1);
 
     const third = await collector.collect(clock.now(), new AbortController().signal);
     assert.equal(third.cached, true);
+    assert.equal(third.coalesced, false);
     assert.equal(requireOk(third.readings[0]).value, 2);
     assert.equal(reads, 1);
   });
 
-  it("shares an in-flight read and marks the second caller as cached", async () => {
+  it("shares an in-flight read and marks the second caller as coalesced", async () => {
     let releases: (() => void) | undefined;
     const provider = new FunctionSignalProvider({
       read: () =>
@@ -267,7 +273,9 @@ describe("SignalCollector", () => {
     releases?.();
     const [first, second] = await Promise.all([firstPromise, secondPromise]);
     assert.equal(first.cached, false);
-    assert.equal(second.cached, true);
+    assert.equal(first.coalesced, false);
+    assert.equal(second.cached, false);
+    assert.equal(second.coalesced, true);
     assert.equal(second.sequence, first.sequence);
   });
 
@@ -953,5 +961,114 @@ describe("SignalCollector", () => {
     assert.ok(childBContext !== undefined);
     assert.equal(childBContext.now, clock.now());
     assert.ok(childBContext.signal instanceof AbortSignal);
+  });
+
+  it("collects empty snapshot with cached: false and coalesced: false when no providers registered", async () => {
+    const { collector, clock } = makeCollector([], { evaluationIntervalMs: 1000 });
+    const first = await collector.collect(clock.now(), new AbortController().signal);
+    assert.deepEqual(first.readings, []);
+    assert.equal(first.cached, false);
+    assert.equal(first.coalesced, false);
+    assert.equal(first.sequence, 1);
+
+    const second = await collector.collect(clock.now(), new AbortController().signal);
+    assert.deepEqual(second.readings, []);
+    assert.equal(second.cached, true);
+    assert.equal(second.coalesced, false);
+    assert.equal(second.sequence, 1);
+
+    clock.advance(1000);
+    const third = await collector.collect(clock.now(), new AbortController().signal);
+    assert.deepEqual(third.readings, []);
+    assert.equal(third.cached, false);
+    assert.equal(third.coalesced, false);
+    assert.equal(third.sequence, 2);
+  });
+
+  it("marks multiple concurrent joiners as coalesced: true and cached: false", async () => {
+    let release: (() => void) | undefined;
+    const provider = new FunctionSignalProvider({
+      read: (ctx) =>
+        new Promise((resolve) => {
+          release = () => resolve([okSignal(PROVIDER_SIGNAL, 99, ctx.now)]);
+        }),
+    });
+    const { collector, clock } = makeCollector([provider]);
+    const callers = Array.from({ length: 4 }, () =>
+      collector.collect(clock.now(), new AbortController().signal),
+    );
+    await Promise.resolve();
+    release?.();
+    const snapshots = await Promise.all(callers);
+    assert.equal(snapshots[0]?.cached, false);
+    assert.equal(snapshots[0]?.coalesced, false);
+    for (let i = 1; i < snapshots.length; i++) {
+      assert.equal(snapshots[i]?.cached, false);
+      assert.equal(snapshots[i]?.coalesced, true);
+      assert.equal(snapshots[i]?.sequence, snapshots[0]?.sequence);
+    }
+  });
+
+  describe("getDescriptors()", () => {
+    it("exposes frozen signal descriptors in provider registration and declaration order", () => {
+      const providerA: SignalProvider = {
+        id: "provider-a",
+        signals: [
+          { name: "sig.a1", unit: "count", description: "first" },
+          { name: "sig.a2", unit: "bytes" },
+        ],
+        read: () => [],
+      };
+      const providerB: SignalProvider = {
+        id: "provider-b",
+        signals: [{ name: "sig.b1", unit: "ratio" }],
+        read: () => [],
+      };
+      const { collector } = makeCollector([providerA, providerB]);
+      const descriptors = collector.getDescriptors();
+
+      assert.equal(descriptors.length, 3);
+      assert.equal(Object.isFrozen(descriptors), true);
+      assert.deepEqual(
+        descriptors.map((d) => d.name),
+        ["sig.a1", "sig.a2", "sig.b1"],
+      );
+      assert.deepEqual(descriptors[0], {
+        name: "sig.a1",
+        unit: "count",
+        description: "first",
+      });
+      for (const descriptor of descriptors) {
+        assert.equal(Object.isFrozen(descriptor), true);
+      }
+      assert.throws(() => {
+        (descriptors as unknown as unknown[]).push({ name: "illegal", unit: "count" });
+      }, TypeError);
+      assert.throws(() => {
+        (descriptors[0] as unknown as { description: string }).description = "mutated";
+      }, TypeError);
+    });
+
+    it("returns empty frozen descriptors array when collector has no providers", () => {
+      const { collector } = makeCollector([]);
+      const descriptors = collector.getDescriptors();
+
+      assert.deepEqual(descriptors, []);
+      assert.equal(Object.isFrozen(descriptors), true);
+    });
+
+    it("preserves descriptors reference across collect and close calls", async () => {
+      const provider = new FunctionSignalProvider({
+        read: (ctx) => [okSignal(PROVIDER_SIGNAL, 1, ctx.now)],
+      });
+      const { collector, clock } = makeCollector([provider]);
+      const initialDescriptors = collector.getDescriptors();
+
+      assert.equal(collector.getDescriptors(), initialDescriptors);
+      await collector.collect(clock.now(), new AbortController().signal);
+      assert.equal(collector.getDescriptors(), initialDescriptors);
+      await collector.close();
+      assert.equal(collector.getDescriptors(), initialDescriptors);
+    });
   });
 });
