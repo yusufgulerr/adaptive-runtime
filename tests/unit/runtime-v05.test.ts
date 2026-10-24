@@ -6,9 +6,11 @@ import {
   QualityCheckError,
 } from "../../src/errors/index.js";
 import { createAdaptiveRuntime } from "../../src/runtime/runtime.js";
+import { SignalCollector } from "../../src/signals/collector.js";
 import type { CustomSelectorCandidate } from "../../src/types/policy.js";
 import type { RuntimeStateSnapshot } from "../../src/types/state.js";
 import type { Strategy } from "../../src/types/strategy.js";
+import { errorMessage } from "../../src/utils/errors.js";
 import { FakeClock } from "../helpers/fake-clock.js";
 import { FunctionSignalProvider, okSignal } from "../helpers/providers.js";
 
@@ -518,5 +520,327 @@ describe("AdaptiveRuntime v0.5 surfaces", () => {
     assert.equal(runtime.getOperationPolicy("tenant-b"), null);
 
     await runtime.close();
+  });
+
+  describe("maxQualityCheckDetailLength and errorMessage bounding", () => {
+    it("validates maxQualityCheckDetailLength in CreateRuntimeOptions", () => {
+      // Valid positive safe integers accepted
+      const r1 = createAdaptiveRuntime({ maxQualityCheckDetailLength: 50 });
+      assert.ok(r1);
+      const r2 = createAdaptiveRuntime({ maxQualityCheckDetailLength: 1 });
+      assert.ok(r2);
+      const r3 = createAdaptiveRuntime({});
+      assert.ok(r3);
+
+      // Rejects 0, negative numbers, floats, NaN, Infinity, strings, etc.
+      for (const invalid of [
+        0,
+        -1,
+        -500,
+        1.5,
+        NaN,
+        Infinity,
+        -Infinity,
+        "1000",
+        null,
+        false,
+        Number.MAX_SAFE_INTEGER + 1,
+      ]) {
+        assert.throws(
+          () =>
+            createAdaptiveRuntime({ maxQualityCheckDetailLength: invalid as unknown as number }),
+          (err: unknown) =>
+            err instanceof ConfigurationError &&
+            err.message === "maxQualityCheckDetailLength must be a safe positive integer.",
+        );
+      }
+    });
+
+    it("bounds errorMessage with custom maxLength and falls back for invalid maxLength", () => {
+      const longStr = "x".repeat(200);
+      assert.equal(errorMessage(longStr, 50), `${"x".repeat(50)}…`);
+      assert.equal(errorMessage(new Error(longStr), 20), `${"x".repeat(20)}…`);
+
+      // Shorter than bound remains intact
+      assert.equal(errorMessage("hello", 50), "hello");
+
+      // Non-positive or non-safe integer maxLength falls back to 1000
+      const str1200 = "y".repeat(1200);
+      assert.equal(errorMessage(str1200, 0), `${"y".repeat(1000)}…`);
+      assert.equal(errorMessage(str1200, -10), `${"y".repeat(1000)}…`);
+      assert.equal(errorMessage(str1200, NaN), `${"y".repeat(1000)}…`);
+      assert.equal(errorMessage(str1200, 1.5), `${"y".repeat(1000)}…`);
+    });
+
+    it("bounds quality check details in report mode with custom length", async () => {
+      const runtime = createAdaptiveRuntime({
+        maxQualityCheckDetailLength: 50,
+        policy: { qualityCheck: "report" },
+      });
+
+      // Passed check with long detail
+      const resPassed = await runtime.run({
+        operationId: "detail-pass",
+        input: 1,
+        strategies: [
+          {
+            id: "s1",
+            qualityTier: 1,
+            run: () => "ok",
+            checkQuality: () => ({ ok: true, detail: "a".repeat(100) }),
+          },
+        ],
+      });
+      assert.equal(resPassed.metadata.quality.status, "passed");
+      assert.equal(resPassed.metadata.quality.detail, `${"a".repeat(50)}…`);
+
+      // Failed check with long detail
+      const resFailed = await runtime.run({
+        operationId: "detail-fail",
+        input: 1,
+        strategies: [
+          {
+            id: "s2",
+            qualityTier: 1,
+            run: () => "ok",
+            checkQuality: () => ({ ok: false, detail: "b".repeat(100) }),
+          },
+        ],
+      });
+      assert.equal(resFailed.metadata.quality.status, "failed");
+      assert.equal(resFailed.metadata.quality.detail, `${"b".repeat(50)}…`);
+
+      // Thrown error with long detail
+      const resError = await runtime.run({
+        operationId: "detail-throw",
+        input: 1,
+        strategies: [
+          {
+            id: "s3",
+            qualityTier: 1,
+            run: () => "ok",
+            checkQuality: () => {
+              throw new Error("c".repeat(100));
+            },
+          },
+        ],
+      });
+      assert.equal(resError.metadata.quality.status, "error");
+      assert.equal(resError.metadata.quality.detail, `Quality check threw: ${"c".repeat(50)}…`);
+
+      await runtime.close();
+    });
+
+    it("bounds quality check details in error mode with custom length", async () => {
+      const runtime = createAdaptiveRuntime({
+        maxQualityCheckDetailLength: 60,
+        policy: { qualityCheck: "error" },
+      });
+
+      // Failed check in error mode
+      await assert.rejects(
+        () =>
+          runtime.run({
+            operationId: "error-mode-fail",
+            input: 1,
+            strategies: [
+              {
+                id: "s1",
+                qualityTier: 1,
+                run: () => "ok",
+                checkQuality: () => ({ ok: false, detail: "d".repeat(120) }),
+              },
+            ],
+          }),
+        (err: unknown) => {
+          assert.ok(err instanceof QualityCheckError);
+          assert.ok(err.message.includes(`${"d".repeat(60)}…`));
+          return true;
+        },
+      );
+
+      // Thrown error in error mode
+      await assert.rejects(
+        () =>
+          runtime.run({
+            operationId: "error-mode-throw",
+            input: 1,
+            strategies: [
+              {
+                id: "s2",
+                qualityTier: 1,
+                run: () => "ok",
+                checkQuality: () => {
+                  throw new Error("e".repeat(120));
+                },
+              },
+            ],
+          }),
+        (err: unknown) => {
+          assert.ok(err instanceof QualityCheckError);
+          assert.ok(err.message.includes(`Quality check threw: ${"e".repeat(60)}…`));
+          return true;
+        },
+      );
+
+      await runtime.close();
+    });
+
+    it("uses default 1000 char bounding when maxQualityCheckDetailLength is omitted", async () => {
+      const runtime = createAdaptiveRuntime({
+        policy: { qualityCheck: "report" },
+      });
+
+      const longDetail = "z".repeat(1500);
+      const res = await runtime.run({
+        operationId: "default-bound",
+        input: 1,
+        strategies: [
+          {
+            id: "s1",
+            qualityTier: 1,
+            run: () => "ok",
+            checkQuality: () => ({ ok: true, detail: longDetail }),
+          },
+        ],
+      });
+      assert.equal(res.metadata.quality.detail, `${"z".repeat(1000)}…`);
+
+      await runtime.close();
+    });
+  });
+
+  describe("getEffectivePolicy and getProviderDescriptors introspection", () => {
+    it("getEffectivePolicy returns root policy when no override is set and returns override when set", async () => {
+      const runtime = createAdaptiveRuntime({
+        policy: { minQualityTier: 1 },
+      });
+
+      // Root policy returned for untracked/unconfigured operation
+      const rootEffective = runtime.getEffectivePolicy("op-1");
+      assert.equal(rootEffective.minQualityTier, 1);
+      assert.ok(Object.isFrozen(rootEffective));
+
+      // Set override
+      runtime.setOperationPolicy("op-1", { minQualityTier: 3 });
+      const overridden = runtime.getEffectivePolicy("op-1");
+      assert.equal(overridden.minQualityTier, 3);
+      assert.ok(Object.isFrozen(overridden));
+
+      // Reverts after setOperationPolicy(id, null)
+      runtime.setOperationPolicy("op-1", null);
+      assert.equal(runtime.getEffectivePolicy("op-1").minQualityTier, 1);
+
+      // Reverts after removeOperation(id)
+      runtime.setOperationPolicy("op-2", { minQualityTier: 2 });
+      assert.equal(runtime.getEffectivePolicy("op-2").minQualityTier, 2);
+      runtime.removeOperation("op-2");
+      assert.equal(runtime.getEffectivePolicy("op-2").minQualityTier, 1);
+
+      // Trims whitespace from valid operationId
+      assert.equal(runtime.getEffectivePolicy(" op-1 ").minQualityTier, 1);
+
+      // Rejects invalid operationId
+      for (const invalid of ["", "   ", null, undefined, 123, false]) {
+        assert.throws(
+          () => runtime.getEffectivePolicy(invalid as unknown as string),
+          ConfigurationError,
+        );
+      }
+
+      await runtime.close();
+      // Remains readable after close()
+      assert.equal(runtime.getEffectivePolicy("op-1").minQualityTier, 1);
+    });
+
+    it("getEffectivePolicy does not disturb LRU cache order or track untracked operations", async () => {
+      const runtime = createAdaptiveRuntime({
+        policy: { minQualityTier: 1 },
+      });
+
+      runtime.setOperationPolicy("tenant-a", { minQualityTier: 1 });
+      runtime.setOperationPolicy("tenant-b", { minQualityTier: 2 });
+      runtime.setOperationPolicy("tenant-c", { minQualityTier: 3 });
+      assert.deepEqual(runtime.getTrackedOperations(), ["tenant-a", "tenant-b", "tenant-c"]);
+
+      // Querying tenant-a with getEffectivePolicy does NOT move it to the end
+      const policyA = runtime.getEffectivePolicy("tenant-a");
+      assert.equal(policyA.minQualityTier, 1);
+      assert.deepEqual(runtime.getTrackedOperations(), ["tenant-a", "tenant-b", "tenant-c"]);
+
+      // Querying an untracked operation does NOT add it to tracked operations
+      runtime.getEffectivePolicy("untracked-op");
+      assert.deepEqual(runtime.getTrackedOperations(), ["tenant-a", "tenant-b", "tenant-c"]);
+
+      // In contrast, getOperationPolicy does refresh LRU order
+      runtime.getOperationPolicy("tenant-a");
+      assert.deepEqual(runtime.getTrackedOperations(), ["tenant-b", "tenant-c", "tenant-a"]);
+
+      await runtime.close();
+    });
+
+    it("getProviderDescriptors returns declared descriptors and does not affect LRU tracking", async () => {
+      // Empty providers
+      const runtimeEmpty = createAdaptiveRuntime({});
+      const emptyDescriptors = runtimeEmpty.getProviderDescriptors();
+      assert.deepEqual(emptyDescriptors, []);
+      assert.ok(Object.isFrozen(emptyDescriptors));
+      await runtimeEmpty.close();
+      assert.deepEqual(runtimeEmpty.getProviderDescriptors(), []);
+
+      // Configured providers
+      const p1 = new FunctionSignalProvider({
+        id: "p1",
+        signalName: "signal.a",
+        unit: "count",
+        read: () => [],
+      });
+      const p2 = new FunctionSignalProvider({
+        id: "p2",
+        signalName: "signal.b",
+        unit: "milliseconds",
+        read: () => [],
+      });
+      const runtime = createAdaptiveRuntime({
+        providers: [p1, p2],
+      });
+
+      const descriptors = runtime.getProviderDescriptors();
+      assert.equal(descriptors.length, 2);
+      assert.equal(descriptors[0]?.name, "signal.a");
+      assert.equal(descriptors[0]?.unit, "count");
+      assert.equal(descriptors[1]?.name, "signal.b");
+      assert.equal(descriptors[1]?.unit, "milliseconds");
+      assert.ok(Object.isFrozen(descriptors));
+
+      // Does not alter LRU tracking
+      assert.deepEqual(runtime.getTrackedOperations(), []);
+
+      // Remains readable after close()
+      await runtime.close();
+      assert.equal(runtime.getProviderDescriptors().length, 2);
+    });
+
+    it("getProviderDescriptors delegates to collector.getDescriptors when present", async () => {
+      const mockDescriptors = Object.freeze([
+        { name: "collector.signal", unit: "custom" as const },
+      ]);
+      const collectorProto = SignalCollector.prototype as unknown as {
+        getDescriptors?: () => readonly unknown[];
+      };
+      const original = collectorProto.getDescriptors;
+      try {
+        collectorProto.getDescriptors = () => mockDescriptors;
+        const runtime = createAdaptiveRuntime({});
+        assert.equal(runtime.getProviderDescriptors(), mockDescriptors);
+        await runtime.close();
+      } finally {
+        if (original === undefined) {
+          delete collectorProto.getDescriptors;
+        } else {
+          collectorProto.getDescriptors = original;
+        }
+      }
+    });
   });
 });

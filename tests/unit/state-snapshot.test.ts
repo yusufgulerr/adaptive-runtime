@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { ConfigurationError } from "../../src/errors/index.js";
+import { createAdaptiveRuntime } from "../../src/runtime/runtime.js";
 import { validateRuntimeStateSnapshot } from "../../src/runtime/state.js";
 import type { StrategyDecision } from "../../src/types/decision.js";
 import type { RuntimeStateSnapshot } from "../../src/types/state.js";
+import { FakeClock } from "../helpers/fake-clock.js";
 
 function validSnapshot(): RuntimeStateSnapshot {
   return {
@@ -453,5 +455,270 @@ describe("validateRuntimeStateSnapshot", () => {
       },
     });
     assert.throws(() => validate(paddedStrategyKey), ConfigurationError);
+
+    // totalDurationMs validation on stats and strategies
+    const validWithTotalDuration = mutableSnapshot();
+    mutate(validWithTotalDuration, ["operations", 0, "state", "stats"], {
+      ...positiveStats,
+      totalDurationMs: 5,
+      strategies: {
+        high: {
+          ...positiveStats.strategies.high,
+          totalDurationMs: 5,
+        },
+      },
+    });
+    const validatedWithTotal = validate(validWithTotalDuration);
+    assert.equal(validatedWithTotal.operations[0]?.state.stats.totalDurationMs, 5);
+    assert.equal(validatedWithTotal.operations[0]?.state.stats.strategies.high?.totalDurationMs, 5);
+
+    // Negative totalDurationMs rejected on stats
+    const negativeTotalOnStats = mutableSnapshot();
+    mutate(negativeTotalOnStats, ["operations", 0, "state", "stats"], {
+      ...positiveStats,
+      totalDurationMs: -1,
+    });
+    assert.throws(
+      () => validate(negativeTotalOnStats),
+      (err: unknown) =>
+        err instanceof ConfigurationError &&
+        err.message.includes("totalDurationMs must be greater than or equal to 0."),
+    );
+
+    // Non-finite totalDurationMs rejected on stats
+    for (const nonFinite of [NaN, Infinity, -Infinity]) {
+      const nonFiniteStats = mutableSnapshot();
+      mutate(nonFiniteStats, ["operations", 0, "state", "stats"], {
+        ...positiveStats,
+        totalDurationMs: nonFinite,
+      });
+      assert.throws(
+        () => validate(nonFiniteStats),
+        (err: unknown) =>
+          err instanceof ConfigurationError &&
+          err.message.includes("totalDurationMs must be a finite number."),
+      );
+    }
+
+    // totalDurationMs > 0 when durationSamples === 0 rejected on stats
+    const zeroSamplesWithTotal = mutableSnapshot();
+    mutate(zeroSamplesWithTotal, ["operations", 0, "state", "stats", "totalDurationMs"], 10);
+    assert.throws(
+      () => validate(zeroSamplesWithTotal),
+      (err: unknown) =>
+        err instanceof ConfigurationError &&
+        err.message.includes("totalDurationMs must be 0 when durationSamples is 0."),
+    );
+
+    // Negative totalDurationMs rejected on strategy
+    const negativeTotalOnStrat = mutableSnapshot();
+    mutate(negativeTotalOnStrat, ["operations", 0, "state", "stats"], {
+      ...positiveStats,
+      strategies: {
+        high: {
+          ...positiveStats.strategies.high,
+          totalDurationMs: -1,
+        },
+      },
+    });
+    assert.throws(
+      () => validate(negativeTotalOnStrat),
+      (err: unknown) =>
+        err instanceof ConfigurationError &&
+        err.message.includes("totalDurationMs must be greater than or equal to 0."),
+    );
+
+    // Non-finite totalDurationMs rejected on strategy
+    for (const nonFinite of [NaN, Infinity, -Infinity]) {
+      const nonFiniteStrat = mutableSnapshot();
+      mutate(nonFiniteStrat, ["operations", 0, "state", "stats"], {
+        ...positiveStats,
+        strategies: {
+          high: {
+            ...positiveStats.strategies.high,
+            totalDurationMs: nonFinite,
+          },
+        },
+      });
+      assert.throws(
+        () => validate(nonFiniteStrat),
+        (err: unknown) =>
+          err instanceof ConfigurationError &&
+          err.message.includes("totalDurationMs must be a finite number."),
+      );
+    }
+
+    // totalDurationMs > 0 when durationSamples === 0 rejected on strategy
+    const zeroStratWithTotal = mutableSnapshot();
+    mutate(zeroStratWithTotal, ["operations", 0, "state", "stats"], {
+      ...baseStats,
+      strategyRuns: { high: 0 },
+      strategies: {
+        high: {
+          runs: 0,
+          successes: 0,
+          failures: 0,
+          lastDurationMs: null,
+          averageDurationMs: null,
+          ewmaDurationMs: null,
+          durationSamples: 0,
+          totalDurationMs: 10,
+          errorRate: 0,
+        },
+      },
+    });
+    assert.throws(
+      () => validate(zeroStratWithTotal),
+      (err: unknown) =>
+        err instanceof ConfigurationError &&
+        err.message.includes("totalDurationMs must be 0 when durationSamples is 0."),
+    );
+  });
+
+  describe("exact totalDurationMs preservation across hydration cycles", () => {
+    it("eliminates floating-point drift across repeated export/import cycles", async () => {
+      const clock = new FakeClock();
+      const runtime = createAdaptiveRuntime({
+        clock,
+        policy: { evaluationIntervalMs: 0 },
+      });
+
+      // Execute 3 runs with durations 3ms, 3ms, 4ms (sum = 10, avg = 3.3333333333333335)
+      const durations = [3, 3, 4];
+      for (const dur of durations) {
+        await runtime.run({
+          operationId: "drift-test",
+          input: dur,
+          strategies: [
+            {
+              id: "strat",
+              qualityTier: 1,
+              run: () => {
+                clock.advance(dur);
+                return "done";
+              },
+            },
+          ],
+        });
+      }
+
+      const initialStats = runtime.getStats("drift-test");
+      assert.equal(initialStats.runs, 3);
+      assert.equal(initialStats.durationSamples, 3);
+      assert.equal(initialStats.totalDurationMs, 10);
+      assert.equal(initialStats.strategies.strat?.totalDurationMs, 10);
+
+      // Export state
+      let state = runtime.exportState();
+      await runtime.close();
+
+      // Cycle 20 times across fresh runtimes
+      for (let i = 0; i < 20; i++) {
+        const nextRuntime = createAdaptiveRuntime({
+          clock,
+          policy: { evaluationIntervalMs: 0 },
+        });
+        nextRuntime.importState(state);
+        const currentStats = nextRuntime.getStats("drift-test");
+        // Verify exact integer 10 without floating-point drift (not 10.000000000000002)
+        assert.equal(currentStats.totalDurationMs, 10);
+        assert.equal(currentStats.strategies.strat?.totalDurationMs, 10);
+        state = nextRuntime.exportState();
+        await nextRuntime.close();
+      }
+
+      // Restore into final runtime and perform a 4th run of 5ms
+      const finalRuntime = createAdaptiveRuntime({
+        clock,
+        policy: { evaluationIntervalMs: 0 },
+      });
+      finalRuntime.importState(state);
+      await finalRuntime.run({
+        operationId: "drift-test",
+        input: 5,
+        strategies: [
+          {
+            id: "strat",
+            qualityTier: 1,
+            run: () => {
+              clock.advance(5);
+              return "done";
+            },
+          },
+        ],
+      });
+
+      const finalStats = finalRuntime.getStats("drift-test");
+      assert.equal(finalStats.runs, 4);
+      assert.equal(finalStats.durationSamples, 4);
+      assert.equal(finalStats.totalDurationMs, 15);
+      assert.equal(finalStats.strategies.strat?.totalDurationMs, 15);
+      await finalRuntime.close();
+    });
+
+    it("falls back to averageDurationMs * durationSamples when restoring legacy snapshot without totalDurationMs", async () => {
+      const clock = new FakeClock();
+      const runtime = createAdaptiveRuntime({
+        clock,
+        policy: { evaluationIntervalMs: 0 },
+      });
+
+      // Construct a valid snapshot without totalDurationMs
+      const legacySnapshot: RuntimeStateSnapshot = {
+        version: 1,
+        exportedAt: 100,
+        operations: [
+          {
+            operationId: "legacy-op",
+            state: {
+              policyState: {
+                initialized: false,
+                currentStrategyId: null,
+                currentQualityTier: null,
+                modeSince: 0,
+                budgets: {},
+                pendingStrategyId: null,
+                pendingStreak: 0,
+                lastSampleSequence: null,
+              },
+              decision: null,
+              pinnedStrategyId: null,
+              adaptationEnabled: null,
+              stats: {
+                operationId: "legacy-op",
+                runs: 2,
+                successes: 2,
+                failures: 0,
+                lastDurationMs: 10,
+                averageDurationMs: 10,
+                ewmaDurationMs: 10,
+                durationSamples: 2,
+                errorRate: 0,
+                strategyRuns: { high: 2 },
+                strategies: {
+                  high: {
+                    runs: 2,
+                    successes: 2,
+                    failures: 0,
+                    lastDurationMs: 10,
+                    averageDurationMs: 10,
+                    ewmaDurationMs: 10,
+                    durationSamples: 2,
+                    errorRate: 0,
+                  },
+                },
+              },
+            },
+          },
+        ],
+      };
+
+      runtime.importState(legacySnapshot);
+      const stats = runtime.getStats("legacy-op");
+      assert.equal(stats.totalDurationMs, 20);
+      assert.equal(stats.strategies.high?.totalDurationMs, 20);
+
+      await runtime.close();
+    });
   });
 });
