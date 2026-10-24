@@ -9,6 +9,7 @@ import {
 } from "../../src/policy/engine.js";
 import { resolvePolicy } from "../../src/policy/resolve.js";
 import {
+  composeSelectors,
   createErrorRateGuardSelector,
   createLatencyBudgetSelector,
   type ErrorRateGuardSelectorOptions,
@@ -1171,6 +1172,122 @@ describe("Built-in Policy Selectors and formatDecisionSummary", () => {
         res.reason,
         'latency-budget: all candidates exceeded budget 50ms; selected candidate "moderate-ewma" with lowest latency 70ms',
       );
+    });
+  });
+
+  describe("composeSelectors", () => {
+    it("validates input selectors array", () => {
+      assert.throws(
+        () => composeSelectors(null as unknown as CustomPolicySelector[]),
+        (err: unknown) =>
+          err instanceof ConfigurationError && err.message.includes("selectors must be an array"),
+      );
+      assert.throws(
+        () => composeSelectors(undefined as unknown as CustomPolicySelector[]),
+        (err: unknown) =>
+          err instanceof ConfigurationError && err.message.includes("selectors must be an array"),
+      );
+      assert.throws(
+        () => composeSelectors("not-an-array" as unknown as CustomPolicySelector[]),
+        (err: unknown) =>
+          err instanceof ConfigurationError && err.message.includes("selectors must be an array"),
+      );
+      assert.throws(
+        () => composeSelectors([]),
+        (err: unknown) =>
+          err instanceof ConfigurationError && err.message.includes("selectors must not be empty"),
+      );
+      assert.throws(
+        () => composeSelectors([() => null, "invalid" as unknown as CustomPolicySelector]),
+        (err: unknown) =>
+          err instanceof ConfigurationError &&
+          err.message.includes("Selector at index 1 must be a function"),
+      );
+    });
+
+    it("returns null when candidates are empty", () => {
+      let firstCalled = false;
+      const selector = composeSelectors([
+        () => {
+          firstCalled = true;
+          return { strategyId: "fast" };
+        },
+      ]);
+      const res = selector({ operation: "test", candidates: [], signals: {}, now: 1000 });
+      assert.equal(res, null);
+      assert.equal(firstCalled, false);
+    });
+
+    it("evaluates pipeline in sequential order and short-circuits on first decision", () => {
+      const callLog: string[] = [];
+      const selA: CustomPolicySelector = () => {
+        callLog.push("A");
+        return null;
+      };
+      const selB: CustomPolicySelector = () => {
+        callLog.push("B");
+        return { strategyId: "strat-b", reason: "chosen by B" };
+      };
+      const selC: CustomPolicySelector = () => {
+        callLog.push("C");
+        return { strategyId: "strat-c" };
+      };
+
+      const composed = composeSelectors([selA, selB, selC]);
+      const cands = [cand("strat-b", 2, 1), cand("strat-c", 3, 1)];
+      const res = composed({ operation: "test", candidates: cands, signals: {}, now: 1000 });
+
+      assert.deepEqual(callLog, ["A", "B"]);
+      assert.ok(typeof res === "object" && res !== null);
+      assert.equal(res.strategyId, "strat-b");
+      assert.equal(res.reason, "chosen by B");
+    });
+
+    it("returns null if all selectors return null or undefined", () => {
+      const composed = composeSelectors([() => null, () => undefined]);
+      const cands = [cand("strat-1", 1, 1)];
+      const res = composed({ operation: "test", candidates: cands, signals: {}, now: 1000 });
+      assert.equal(res, null);
+    });
+
+    it("supports string return value from selector in pipeline", () => {
+      const composed = composeSelectors([() => "strat-direct"]);
+      const cands = [cand("strat-direct", 1, 1)];
+      const res = composed({ operation: "test", candidates: cands, signals: {}, now: 1000 });
+      assert.equal(res, "strat-direct");
+    });
+
+    it("creates defensive copy of selectors array preventing external mutation", () => {
+      const mutableArray: CustomPolicySelector[] = [() => ({ strategyId: "initial-choice" })];
+      const composed = composeSelectors(mutableArray);
+      mutableArray.push(() => ({ strategyId: "mutated-choice" }));
+      mutableArray[0] = () => ({ strategyId: "replaced-choice" });
+
+      const cands = [cand("initial-choice", 1, 1)];
+      const res = composed({ operation: "test", candidates: cands, signals: {}, now: 1000 });
+      assert.ok(typeof res === "object" && res !== null);
+      assert.equal(res.strategyId, "initial-choice");
+    });
+
+    it("seamlessly chains error-rate-guard with latency-budget in an end-to-end policy", () => {
+      const composed = composeSelectors([
+        createErrorRateGuardSelector({ maxErrorRate: 0.1 }),
+        createLatencyBudgetSelector({ maxLatencyMs: 50 }),
+      ]);
+
+      const policy = resolvePolicy({ customSelector: composed });
+      const state = createInitialPolicyState();
+      const input = createInput({
+        strategies: [{ id: "fast", qualityTier: 2, costTier: 1, applicable: true }],
+      });
+      const evalResult = evaluatePolicy(state, input, policy);
+      assert.equal(evalResult.decision.strategyId, "fast");
+    });
+
+    it("is re-exported from policy barrel src/policy/index.js", async () => {
+      const policyModule = await import("../../src/policy/index.js");
+      assert.equal(typeof policyModule.composeSelectors, "function");
+      assert.equal(policyModule.composeSelectors, composeSelectors);
     });
   });
 

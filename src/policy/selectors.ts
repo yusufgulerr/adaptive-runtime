@@ -233,6 +233,47 @@ export function createLatencyBudgetSelector(
 }
 
 /**
+ * Composes multiple CustomPolicySelector functions into a single sequential
+ * pipeline. Selectors are evaluated in the order provided.
+ *
+ * The first selector that returns a non-null, non-undefined selection determines
+ * the outcome. If all selectors return null or undefined, the composed selector
+ * returns null (allowing downstream policy defaults to take effect).
+ *
+ * If `context.candidates` is empty, evaluation short-circuits to null.
+ */
+export function composeSelectors(
+  selectors: readonly CustomPolicySelector[],
+): CustomPolicySelector {
+  if (!Array.isArray(selectors)) {
+    throw new ConfigurationError("selectors must be an array.");
+  }
+  if (selectors.length === 0) {
+    throw new ConfigurationError("selectors must not be empty.");
+  }
+  for (let i = 0; i < selectors.length; i++) {
+    if (typeof selectors[i] !== "function") {
+      throw new ConfigurationError(`Selector at index ${i} must be a function.`);
+    }
+  }
+
+  const pipeline = [...selectors];
+
+  return (context) => {
+    if (context.candidates.length === 0) {
+      return null;
+    }
+    for (const selector of pipeline) {
+      const selection = selector(context);
+      if (selection !== null && selection !== undefined) {
+        return selection;
+      }
+    }
+    return null;
+  };
+}
+
+/**
  * Formats a single-line audit summary of a StrategyDecision.
  *
  * Example output:
