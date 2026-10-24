@@ -1,8 +1,10 @@
 const MAX_ERROR_MESSAGE_LENGTH = 1000;
 
-export function errorMessage(error: unknown): string {
+export function errorMessage(error: unknown, maxLength: number = MAX_ERROR_MESSAGE_LENGTH): string {
   const raw = error instanceof Error ? error.message : String(error);
-  return raw.length > MAX_ERROR_MESSAGE_LENGTH ? `${raw.slice(0, MAX_ERROR_MESSAGE_LENGTH)}…` : raw;
+  const bound =
+    Number.isSafeInteger(maxLength) && maxLength > 0 ? maxLength : MAX_ERROR_MESSAGE_LENGTH;
+  return raw.length > bound ? `${raw.slice(0, bound)}…` : raw;
 }
 
 export function toError(error: unknown): Error {

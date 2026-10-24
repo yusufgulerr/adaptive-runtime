@@ -18,6 +18,11 @@ export interface CreateRuntimeOptions {
    * Set to 0 to disable the timeout.
    */
   readonly providerTimeoutMs?: number;
+  /**
+   * Maximum length for quality check detail strings before truncation.
+   * Defaults to 1000. Must be a safe positive integer.
+   */
+  readonly maxQualityCheckDetailLength?: number;
 }
 
 export interface EvaluateOptions {

@@ -9,6 +9,7 @@ import { createAdaptiveRuntime } from "../../src/runtime/runtime.js";
 import type { CustomSelectorCandidate } from "../../src/types/policy.js";
 import type { RuntimeStateSnapshot } from "../../src/types/state.js";
 import type { Strategy } from "../../src/types/strategy.js";
+import { errorMessage } from "../../src/utils/errors.js";
 import { FakeClock } from "../helpers/fake-clock.js";
 import { FunctionSignalProvider, okSignal } from "../helpers/providers.js";
 
@@ -518,5 +519,193 @@ describe("AdaptiveRuntime v0.5 surfaces", () => {
     assert.equal(runtime.getOperationPolicy("tenant-b"), null);
 
     await runtime.close();
+  });
+
+  describe("maxQualityCheckDetailLength and errorMessage bounding", () => {
+    it("validates maxQualityCheckDetailLength in CreateRuntimeOptions", () => {
+      // Valid positive safe integers accepted
+      const r1 = createAdaptiveRuntime({ maxQualityCheckDetailLength: 50 });
+      assert.ok(r1);
+      const r2 = createAdaptiveRuntime({ maxQualityCheckDetailLength: 1 });
+      assert.ok(r2);
+      const r3 = createAdaptiveRuntime({});
+      assert.ok(r3);
+
+      // Rejects 0, negative numbers, floats, NaN, Infinity, strings, etc.
+      for (const invalid of [
+        0,
+        -1,
+        -500,
+        1.5,
+        NaN,
+        Infinity,
+        -Infinity,
+        "1000",
+        null,
+        false,
+        Number.MAX_SAFE_INTEGER + 1,
+      ]) {
+        assert.throws(
+          () =>
+            createAdaptiveRuntime({ maxQualityCheckDetailLength: invalid as unknown as number }),
+          (err: unknown) =>
+            err instanceof ConfigurationError &&
+            err.message === "maxQualityCheckDetailLength must be a safe positive integer.",
+        );
+      }
+    });
+
+    it("bounds errorMessage with custom maxLength and falls back for invalid maxLength", () => {
+      const longStr = "x".repeat(200);
+      assert.equal(errorMessage(longStr, 50), `${"x".repeat(50)}…`);
+      assert.equal(errorMessage(new Error(longStr), 20), `${"x".repeat(20)}…`);
+
+      // Shorter than bound remains intact
+      assert.equal(errorMessage("hello", 50), "hello");
+
+      // Non-positive or non-safe integer maxLength falls back to 1000
+      const str1200 = "y".repeat(1200);
+      assert.equal(errorMessage(str1200, 0), `${"y".repeat(1000)}…`);
+      assert.equal(errorMessage(str1200, -10), `${"y".repeat(1000)}…`);
+      assert.equal(errorMessage(str1200, NaN), `${"y".repeat(1000)}…`);
+      assert.equal(errorMessage(str1200, 1.5), `${"y".repeat(1000)}…`);
+    });
+
+    it("bounds quality check details in report mode with custom length", async () => {
+      const runtime = createAdaptiveRuntime({
+        maxQualityCheckDetailLength: 50,
+        policy: { qualityCheck: "report" },
+      });
+
+      // Passed check with long detail
+      const resPassed = await runtime.run({
+        operationId: "detail-pass",
+        input: 1,
+        strategies: [
+          {
+            id: "s1",
+            qualityTier: 1,
+            run: () => "ok",
+            checkQuality: () => ({ ok: true, detail: "a".repeat(100) }),
+          },
+        ],
+      });
+      assert.equal(resPassed.metadata.quality.status, "passed");
+      assert.equal(resPassed.metadata.quality.detail, `${"a".repeat(50)}…`);
+
+      // Failed check with long detail
+      const resFailed = await runtime.run({
+        operationId: "detail-fail",
+        input: 1,
+        strategies: [
+          {
+            id: "s2",
+            qualityTier: 1,
+            run: () => "ok",
+            checkQuality: () => ({ ok: false, detail: "b".repeat(100) }),
+          },
+        ],
+      });
+      assert.equal(resFailed.metadata.quality.status, "failed");
+      assert.equal(resFailed.metadata.quality.detail, `${"b".repeat(50)}…`);
+
+      // Thrown error with long detail
+      const resError = await runtime.run({
+        operationId: "detail-throw",
+        input: 1,
+        strategies: [
+          {
+            id: "s3",
+            qualityTier: 1,
+            run: () => "ok",
+            checkQuality: () => {
+              throw new Error("c".repeat(100));
+            },
+          },
+        ],
+      });
+      assert.equal(resError.metadata.quality.status, "error");
+      assert.equal(resError.metadata.quality.detail, `Quality check threw: ${"c".repeat(50)}…`);
+
+      await runtime.close();
+    });
+
+    it("bounds quality check details in error mode with custom length", async () => {
+      const runtime = createAdaptiveRuntime({
+        maxQualityCheckDetailLength: 60,
+        policy: { qualityCheck: "error" },
+      });
+
+      // Failed check in error mode
+      await assert.rejects(
+        () =>
+          runtime.run({
+            operationId: "error-mode-fail",
+            input: 1,
+            strategies: [
+              {
+                id: "s1",
+                qualityTier: 1,
+                run: () => "ok",
+                checkQuality: () => ({ ok: false, detail: "d".repeat(120) }),
+              },
+            ],
+          }),
+        (err: unknown) => {
+          assert.ok(err instanceof QualityCheckError);
+          assert.ok(err.message.includes(`${"d".repeat(60)}…`));
+          return true;
+        },
+      );
+
+      // Thrown error in error mode
+      await assert.rejects(
+        () =>
+          runtime.run({
+            operationId: "error-mode-throw",
+            input: 1,
+            strategies: [
+              {
+                id: "s2",
+                qualityTier: 1,
+                run: () => "ok",
+                checkQuality: () => {
+                  throw new Error("e".repeat(120));
+                },
+              },
+            ],
+          }),
+        (err: unknown) => {
+          assert.ok(err instanceof QualityCheckError);
+          assert.ok(err.message.includes(`Quality check threw: ${"e".repeat(60)}…`));
+          return true;
+        },
+      );
+
+      await runtime.close();
+    });
+
+    it("uses default 1000 char bounding when maxQualityCheckDetailLength is omitted", async () => {
+      const runtime = createAdaptiveRuntime({
+        policy: { qualityCheck: "report" },
+      });
+
+      const longDetail = "z".repeat(1500);
+      const res = await runtime.run({
+        operationId: "default-bound",
+        input: 1,
+        strategies: [
+          {
+            id: "s1",
+            qualityTier: 1,
+            run: () => "ok",
+            checkQuality: () => ({ ok: true, detail: longDetail }),
+          },
+        ],
+      });
+      assert.equal(res.metadata.quality.detail, `${"z".repeat(1000)}…`);
+
+      await runtime.close();
+    });
   });
 });

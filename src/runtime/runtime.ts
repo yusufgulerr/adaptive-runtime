@@ -84,6 +84,16 @@ function validateClock(clock: Clock): void {
   }
 }
 
+function validateMaxQualityCheckDetailLength(value: unknown): number {
+  if (value === undefined) {
+    return 1000;
+  }
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
+    throw new ConfigurationError("maxQualityCheckDetailLength must be a safe positive integer.");
+  }
+  return value;
+}
+
 function isQualityCheckResult(value: unknown): value is QualityCheckResult {
   if (value === null || typeof value !== "object") {
     return false;
@@ -105,6 +115,7 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
   readonly #policy: ResolvedPolicy;
   readonly #clock: Clock;
   readonly #collector: SignalCollector;
+  readonly #maxQualityCheckDetailLength: number;
   readonly #emitter = new RuntimeEmitter();
   readonly #states = new Map<string, PolicyState>();
   readonly #decisions = new Map<string, StrategyDecision>();
@@ -123,6 +134,9 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
     this.#clock = options.clock ?? systemClock;
     validateClock(this.#clock);
     const providerTimeoutMs = validateProviderTimeout(options.providerTimeoutMs);
+    this.#maxQualityCheckDetailLength = validateMaxQualityCheckDetailLength(
+      options.maxQualityCheckDetailLength,
+    );
     if (options.providers !== undefined && !Array.isArray(options.providers)) {
       throw new ConfigurationError("providers must be an array.");
     }
@@ -572,7 +586,7 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
     try {
       result = await strategy.checkQuality(value, context);
     } catch (error) {
-      const detail = `Quality check threw: ${errorMessage(error)}`;
+      const detail = `Quality check threw: ${errorMessage(error, this.#maxQualityCheckDetailLength)}`;
       if (effectivePolicy.qualityCheck === "error") {
         throw new QualityCheckError(
           operationId,
@@ -603,7 +617,7 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
     if (!result.ok) {
       const detail =
         result.detail !== undefined
-          ? errorMessage(result.detail)
+          ? errorMessage(result.detail, this.#maxQualityCheckDetailLength)
           : "Quality check returned ok: false.";
       if (effectivePolicy.qualityCheck === "error") {
         throw new QualityCheckError(
@@ -623,7 +637,9 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
 
     return {
       status: "passed",
-      ...(result.detail === undefined ? {} : { detail: errorMessage(result.detail) }),
+      ...(result.detail === undefined
+        ? {}
+        : { detail: errorMessage(result.detail, this.#maxQualityCheckDetailLength) }),
       ...(result.score === undefined ? {} : { score: result.score }),
     };
   }
