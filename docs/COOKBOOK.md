@@ -22,6 +22,8 @@ misread. The patterns are independent; use the parts that fit your workload.
 7. [Testing providers and policy deterministically](#7-testing-providers-and-policy-deterministically)
 8. [Observability from decisions, events, and stats](#8-observability-from-decisions-events-and-stats)
 9. [Input-dependent eligibility](#9-input-dependent-eligibility)
+10. [Cost budget selector for financial and compute bounding](#10-cost-budget-selector-for-financial-and-compute-bounding)
+11. [Safe selector wrapper for crash-proof pipelines](#11-safe-selector-wrapper-for-crash-proof-pipelines)
 
 ## Ground rules
 
@@ -578,17 +580,32 @@ one `run()` corresponds to one invocation.
 
 **Watch out:**
 
-- A timeout or abort is cooperative. If the strategy is already awaiting a write,
-  the write can still complete after the caller sees `OperationTimeoutError` or
-  `OperationAbortedError`.
+- **Timeouts and aborts are cooperative:** The runtime creates and passes an
+  `AbortSignal` into your strategy's `run({ input, signal })` context. When a
+  timeout expires or the caller cancels, `run()` rejects immediately with
+  `OperationTimeoutError` or `OperationAbortedError`, and triggers `signal.abort()`.
+  However, JavaScript execution cannot be forcibly preempted. If your strategy does
+  not actively check `signal.aborted` or pass `signal` into downstream async APIs
+  (such as `fetch(url, { signal })`, database queries, or child processes), the
+  underlying network call or compute task will continue executing as an orphaned
+  background operation.
+- **Idempotency keys are mandatory for side effects:** If a strategy times out
+  after sending a mutation request to an external server but before receiving the
+  response, the external server may successfully commit the mutation. If the
+  calling service retries the operation, it risks executing duplicate writes
+  unless protected by a deterministic idempotency key (such as an execution UUID
+  or cryptographic hash of the input). Always generate and attach idempotency keys
+  prior to invoking the runtime.
 - The in-memory `Map` above is only an illustration. A real sink needs an atomic
-  uniqueness constraint or an idempotency key enforced by the store.
+  uniqueness constraint, conditional insertion (e.g. `INSERT ... ON CONFLICT DO NOTHING`),
+  or an idempotency store with distributed locking.
 - If you retry outside the runtime, reuse the same idempotency key and apply your
-  own backoff and amplification limits.
+  own backoff, jitter, and amplification limits.
 - `checkQuality` runs after execution. A failed check under
-  `qualityCheck: "error"` rejects the run but cannot roll back a write. Keep
-  quality checks pure and side-effect free.
-- `metadata.attempts` is `1`; do not infer that a failed run had no side effects.
+  `qualityCheck: "error"` rejects the run but cannot roll back an already committed
+  write. Keep quality checks pure and side-effect free.
+- `metadata.attempts` is always `1`; do not infer that a timed-out or failed run had
+  no side effects.
 
 ## 7. Testing providers and policy deterministically
 
@@ -854,6 +871,137 @@ With a small corpus, only `exact-scan` is applicable; with a large corpus, only
 - Applicability is a hard filter, not a pressure policy. It has no hysteresis,
   sample count, or mode duration. Use a budget when you need gradual adaptation.
 - Keep `isApplicable` pure and fast; it runs for every strategy on every run.
+
+## 10. Cost budget selector for financial and compute bounding
+
+**Use when** orchestrating strategies with disparate economic or compute costs
+(such as local inference versus paid cloud APIs), and you want to enforce a hard
+ceiling on `costTier` while optimizing for quality or latency within that budget.
+
+```ts
+import {
+  createAdaptiveRuntime,
+  createCostBudgetSelector,
+  createLatencyBudgetSelector,
+  composeSelectors,
+  type Strategy,
+} from "adaptive-runtime";
+
+const strategies: readonly Strategy<string, string>[] = [
+  {
+    id: "premium-cloud-model",
+    qualityTier: 3,
+    costTier: 2, // Expensive cloud API
+    run: async ({ input }) => `Cloud response for: ${input}`,
+  },
+  {
+    id: "balanced-local-model",
+    qualityTier: 2,
+    costTier: 1, // Medium cost local server
+    run: async ({ input }) => `Local response for: ${input}`,
+  },
+  {
+    id: "fast-rule-heuristic",
+    qualityTier: 1,
+    costTier: 0, // Free in-memory rule
+    run: async ({ input }) => `Heuristic response for: ${input}`,
+  },
+];
+
+// Enforce maxCostTier: 1 (disallowing premium-cloud-model),
+// delegating among compliant candidates to a latency budget selector:
+const customSelector = createCostBudgetSelector({
+  maxCostTier: 1,
+  fallbackSelector: createLatencyBudgetSelector({
+    maxLatencyMs: 100,
+    preferLowestCost: true,
+  }),
+});
+
+const runtime = createAdaptiveRuntime({
+  policy: { customSelector },
+});
+
+const result = await runtime.run({
+  operationId: "model-routing",
+  input: "summarize prompt",
+  strategies,
+});
+
+console.info(result.metadata.strategyId); // Selects "balanced-local-model" or "fast-rule-heuristic"
+await runtime.close();
+```
+
+**Why it works:** `createCostBudgetSelector` discards any candidate whose `costTier`
+exceeds `maxCostTier`. It forwards the remaining candidates to `fallbackSelector`
+(or picks the highest quality tier with lowest cost tier tie-breaking).
+
+**Watch out:**
+
+- If no strategy satisfies `costTier <= maxCostTier`, the selector returns `undefined`,
+  permitting subsequent selectors in a pipeline or default engine tie-breaking to act.
+- Missing `costTier` on a strategy defaults to unconstrained compliance; ensure all
+  cost-sensitive strategies declare explicit `costTier` numbers.
+
+## 11. Safe selector wrapper for crash-proof pipelines
+
+**Use when** incorporating experimental, dynamic, or third-party custom selectors
+into production systems. `createSafeSelector` provides an error-isolation boundary
+so an uncaught exception or invalid return value inside a custom selector cannot
+crash the runtime.
+
+```ts
+import {
+  createAdaptiveRuntime,
+  createSafeSelector,
+  type CustomPolicySelector,
+  type Strategy,
+} from "adaptive-runtime";
+
+// A buggy or third-party custom selector that might throw or return invalid IDs:
+const riskySelector: CustomPolicySelector = (context) => {
+  if (Math.random() < 0.5) {
+    throw new Error("Unexpected database disconnection in selector!");
+  }
+  return "non-existent-strategy-id";
+};
+
+// Wrap with createSafeSelector, specifying a safe deterministic fallback:
+const safeSelector = createSafeSelector(
+  riskySelector,
+  ({ candidates }) => candidates[0]?.id,
+);
+
+const strategies: readonly Strategy<number, number>[] = [
+  { id: "primary", qualityTier: 2, costTier: 1, run: ({ input }) => input * 2 },
+  { id: "fallback", qualityTier: 1, costTier: 0, run: ({ input }) => input },
+];
+
+const runtime = createAdaptiveRuntime({
+  policy: { customSelector: safeSelector },
+});
+
+// Guaranteed not to throw a selector exception:
+const result = await runtime.run({
+  operationId: "safe-dispatch",
+  input: 21,
+  strategies,
+});
+
+console.info(result.value, result.metadata.strategyId);
+await runtime.close();
+```
+
+**Why it works:** `createSafeSelector` wraps execution in a `try/catch` boundary
+and verifies that returned strategy IDs belong to currently applicable candidates.
+If an exception is caught or an invalid candidate is chosen, it seamlessly delegates
+to the optional `fallbackSelector` or falls back to engine defaults.
+
+**Watch out:**
+
+- While `createSafeSelector` prevents runtime crashes, silent fallbacks can mask
+  underlying logic bugs in custom selectors. Monitor `run:start` and audit decision
+  reasons (`formatDecisionSummary`) in observability pipelines.
 
 ## Related documents
 

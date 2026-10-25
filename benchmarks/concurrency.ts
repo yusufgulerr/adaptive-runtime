@@ -1,4 +1,5 @@
-import { cpus, platform, release, totalmem } from "node:os";
+import { readFileSync } from "node:fs";
+import { arch, cpus, platform, release, totalmem } from "node:os";
 import {
   type AdaptiveRuntime,
   createAdaptiveRuntime,
@@ -140,7 +141,91 @@ interface WorkerOptions {
   readonly runs: number;
   readonly startIndex: number;
   readonly expected: (input: number) => number;
+  readonly latencies?: number[];
 }
+
+interface PackageIdentity {
+  readonly name: string;
+  readonly version: string;
+}
+
+interface EnvironmentInfo {
+  readonly nodeVersion: string;
+  readonly platform: string;
+  readonly arch: string;
+  readonly timestamp: string;
+}
+
+interface ConcurrencyConfig {
+  readonly concurrencyLevels: readonly number[];
+  readonly operationsCount: number;
+  readonly iterationsPerLevel: number;
+}
+
+interface ConcurrencyLevelResult {
+  readonly concurrency: number;
+  readonly totalOperations: number;
+  readonly opsPerSec: number;
+  readonly scalingFactor: number;
+  readonly p50Us: number;
+  readonly p95Us: number;
+  readonly p99Us: number;
+  readonly heapDeltaBytes: number;
+}
+
+interface ConcurrencyBenchmarkDocument {
+  readonly schemaVersion: 1;
+  readonly benchmark: "concurrency";
+  readonly package: PackageIdentity;
+  readonly environment: EnvironmentInfo;
+  readonly config: ConcurrencyConfig;
+  readonly results: readonly ConcurrencyLevelResult[];
+}
+
+function readPackageIdentity(): PackageIdentity {
+  const raw = readFileSync(new URL("../package.json", import.meta.url), "utf8");
+  const parsed = JSON.parse(raw) as { readonly name?: unknown; readonly version?: unknown };
+  if (typeof parsed.name !== "string" || typeof parsed.version !== "string") {
+    throw new Error("package.json must define string name and version fields.");
+  }
+  return { name: parsed.name, version: parsed.version };
+}
+
+function percentile(sorted: readonly number[], p: number): number {
+  if (sorted.length === 0) {
+    return 0;
+  }
+  const index = Math.min(Math.max(0, Math.floor((p / 100) * sorted.length)), sorted.length - 1);
+  return sorted[index] ?? 0;
+}
+
+const JSON_OUTPUT = process.argv.includes("--json");
+
+function parseIterationsArg(): number | undefined {
+  for (let i = 2; i < process.argv.length; i += 1) {
+    const arg = process.argv[i];
+    if (arg === undefined) {
+      continue;
+    }
+    if (arg.startsWith("--iterations=")) {
+      const val = Number(arg.slice("--iterations=".length));
+      if (Number.isInteger(val) && val >= 1) {
+        return val;
+      }
+    } else if (arg === "--iterations") {
+      const next = process.argv[i + 1];
+      if (next !== undefined) {
+        const val = Number(next);
+        if (Number.isInteger(val) && val >= 1) {
+          return val;
+        }
+      }
+    }
+  }
+  return undefined;
+}
+
+const ITERATIONS_OVERRIDE = parseIterationsArg();
 
 /**
  * Starts `concurrency` worker loops and splits `runs` across them. Each worker
@@ -148,7 +233,7 @@ interface WorkerOptions {
  * run count is the requested level.
  */
 async function runWorkers(options: WorkerOptions): Promise<void> {
-  const { runtime, operationIds, concurrency, runs, startIndex, expected } = options;
+  const { runtime, operationIds, concurrency, runs, startIndex, expected, latencies } = options;
   const baseRuns = Math.floor(runs / concurrency);
   const remainder = runs % concurrency;
   const workers = Array.from({ length: concurrency }, (_, workerIndex) => {
@@ -161,7 +246,12 @@ async function runWorkers(options: WorkerOptions): Promise<void> {
     return (async () => {
       for (let offset = 0; offset < workerRuns; offset += 1) {
         const input = startIndex + inputOffset + offset;
+        const opStart = latencies !== undefined ? process.hrtime.bigint() : 0n;
         const result = await runtime.run({ operationId, input, strategies });
+        if (latencies !== undefined) {
+          const elapsedUs = Number(process.hrtime.bigint() - opStart) / 1_000;
+          latencies.push(elapsedUs);
+        }
         const expectedValue = expected(input);
         if (result.value !== expectedValue) {
           throw new Error(
@@ -422,24 +512,125 @@ async function runHeapScenario(
   }
 }
 
+async function getHeapUsed(): Promise<number> {
+  if (typeof globalThis.gc === "function") {
+    return heapUsedAfterGc();
+  }
+  return process.memoryUsage().heapUsed;
+}
+
 async function main(): Promise<void> {
-  const runs = positiveIntegerFromEnv("CONCURRENCY_RUNS", 4_096);
-  const rounds = positiveIntegerFromEnv("CONCURRENCY_ROUNDS", 3);
+  const runs = ITERATIONS_OVERRIDE ?? positiveIntegerFromEnv("CONCURRENCY_RUNS", 4_096);
+  const defaultRounds = ITERATIONS_OVERRIDE !== undefined ? 1 : 3;
+  const rounds = positiveIntegerFromEnv("CONCURRENCY_ROUNDS", defaultRounds);
   const levels = levelsFromEnv();
   const maxLevel = levels[levels.length - 1] ?? 1;
-  if (rounds < 3) {
+  if (rounds < 1) {
+    throw new Error("CONCURRENCY_ROUNDS must be at least 1.");
+  }
+  if (rounds < 3 && ITERATIONS_OVERRIDE === undefined && !JSON_OUTPUT) {
     throw new Error("CONCURRENCY_ROUNDS must be at least 3 to report a median.");
   }
-  if (runs < maxLevel) {
+  if (runs < maxLevel && ITERATIONS_OVERRIDE === undefined) {
     throw new Error(
       `CONCURRENCY_RUNS (${runs}) must be at least the largest concurrency level (${maxLevel}).`,
     );
   }
-  const warmupRuns = Math.max(maxLevel, Math.min(512, Math.floor(runs / 4)));
+  const warmupRuns =
+    ITERATIONS_OVERRIDE !== undefined
+      ? Math.min(512, Math.max(1, Math.floor(runs / 4)))
+      : Math.max(maxLevel, Math.min(512, Math.floor(runs / 4)));
   const heapRuns = positiveIntegerFromEnv("CONCURRENCY_HEAP_RUNS", 10_000);
   const heapSamples = positiveIntegerFromEnv("CONCURRENCY_HEAP_SAMPLES", 3);
   const sharedCallers = positiveIntegerFromEnv("CONCURRENCY_SHARED_CALLERS", 64);
   const heapLevel = Math.min(maxLevel, 64);
+
+  if (JSON_OUTPUT) {
+    const runtime = createBenchmarkRuntime(immediateProvider, CACHE_INTERVAL_MS);
+    const results: ConcurrencyLevelResult[] = [];
+    let baselineOpsPerSec = 0;
+    try {
+      for (const level of levels) {
+        const ids = operationIds(`distinct-${level}`, level);
+        await runWorkers({
+          runtime,
+          operationIds: ids,
+          concurrency: level,
+          runs: warmupRuns,
+          startIndex: -warmupRuns,
+          expected: work,
+        });
+
+        const roundRates: number[] = [];
+        const latencies: number[] = [];
+        let totalHeapDelta = 0;
+
+        for (let round = 0; round < rounds; round += 1) {
+          const heapBefore = await getHeapUsed();
+          const started = process.hrtime.bigint();
+          await runWorkers({
+            runtime,
+            operationIds: ids,
+            concurrency: level,
+            runs,
+            startIndex: round * runs,
+            expected: work,
+            latencies,
+          });
+          const elapsedSeconds = Number(process.hrtime.bigint() - started) / 1_000_000_000;
+          const heapAfter = await getHeapUsed();
+          roundRates.push(runs / Math.max(elapsedSeconds, 1e-9));
+          totalHeapDelta += heapAfter - heapBefore;
+        }
+
+        const opsPerSec = median(roundRates);
+        if (baselineOpsPerSec === 0) {
+          baselineOpsPerSec = opsPerSec;
+        }
+        const scalingFactor = baselineOpsPerSec > 0 ? opsPerSec / baselineOpsPerSec : 1;
+
+        latencies.sort((left, right) => left - right);
+        const p50Us = percentile(latencies, 50);
+        const p95Us = percentile(latencies, 95);
+        const p99Us = percentile(latencies, 99);
+        const heapDeltaBytes = Math.round(totalHeapDelta / rounds);
+
+        results.push({
+          concurrency: level,
+          totalOperations: runs,
+          opsPerSec: Number(opsPerSec.toFixed(2)),
+          scalingFactor: Number(scalingFactor.toFixed(3)),
+          p50Us: Number(p50Us.toFixed(3)),
+          p95Us: Number(p95Us.toFixed(3)),
+          p99Us: Number(p99Us.toFixed(3)),
+          heapDeltaBytes,
+        });
+      }
+    } finally {
+      await runtime.close();
+    }
+
+    const document: ConcurrencyBenchmarkDocument = {
+      schemaVersion: 1,
+      benchmark: "concurrency",
+      package: readPackageIdentity(),
+      environment: {
+        nodeVersion: process.version,
+        platform: platform(),
+        arch: arch(),
+        timestamp: new Date().toISOString(),
+      },
+      config: {
+        concurrencyLevels: [...levels],
+        operationsCount: levels.length * runs,
+        iterationsPerLevel: runs,
+      },
+      results,
+    };
+
+    console.log(JSON.stringify(document, null, 2));
+    return;
+  }
 
   console.log("Adaptive Runtime local concurrency and memory observations");
   console.log(

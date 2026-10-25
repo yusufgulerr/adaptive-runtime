@@ -4,8 +4,8 @@ import { readFileSync } from "node:fs";
 
 const USAGE = `Usage: node scripts/compare-benchmarks.mjs <baseline.json> <current.json> [options]
 
-Compares two adaptive-runtime benchmark JSON documents (schemaVersion 1) and
-prints the percentage change of every mode.
+Compares two adaptive-runtime benchmark JSON documents (schemaVersion 1;
+runtime-overhead or concurrency) and prints the percentage change of every mode.
 
 Options:
   --max-regression-percent <number>  Exit 1 if any mode is slower than the baseline by
@@ -117,6 +117,60 @@ function readBenchmark(filePath, label) {
       `${label} file must use schemaVersion 1 (received ${JSON.stringify(document.schemaVersion)}).`,
     );
   }
+
+  const isConcurrency = document.benchmark === "concurrency" || Array.isArray(document.results);
+  if (isConcurrency) {
+    if (!Array.isArray(document.results)) {
+      throw new InputError(`${label} file must contain a "results" array.`);
+    }
+    if (document.results.length === 0) {
+      throw new InputError(`${label} file must contain at least one result.`);
+    }
+
+    const results = [];
+    const seen = new Set();
+    for (const [index, entry] of document.results.entries()) {
+      const item = assertRecord(entry, `${label} results[${index}]`);
+      if (
+        typeof item.concurrency !== "number" ||
+        !Number.isInteger(item.concurrency) ||
+        item.concurrency < 1
+      ) {
+        throw new InputError(
+          `${label} results[${index}] must have a positive integer concurrency.`,
+        );
+      }
+      if (seen.has(item.concurrency)) {
+        throw new InputError(
+          `${label} file has a duplicate concurrency level "${item.concurrency}".`,
+        );
+      }
+      seen.add(item.concurrency);
+      if (
+        typeof item.opsPerSec !== "number" ||
+        !Number.isFinite(item.opsPerSec) ||
+        item.opsPerSec <= 0
+      ) {
+        throw new InputError(
+          `${label} concurrency ${item.concurrency} must have a finite positive opsPerSec.`,
+        );
+      }
+      results.push({
+        concurrency: item.concurrency,
+        label: `concurrency ${item.concurrency}`,
+        opsPerSec: item.opsPerSec,
+      });
+    }
+
+    return {
+      type: "concurrency",
+      path: filePath,
+      generatedAt: optionalString(document.environment?.timestamp ?? document.generatedAt),
+      package: readPackage(document),
+      results,
+    };
+  }
+
   if (!Array.isArray(document.modes)) {
     throw new InputError(`${label} file must contain a "modes" array.`);
   }
@@ -148,6 +202,7 @@ function readBenchmark(filePath, label) {
   }
 
   return {
+    type: "runtime-overhead",
     path: filePath,
     generatedAt: optionalString(document.generatedAt),
     package: readPackage(document),
@@ -156,6 +211,54 @@ function readBenchmark(filePath, label) {
 }
 
 function compareDocuments(baseline, current, maxRegressionPercent) {
+  if (baseline.type !== current.type) {
+    throw new InputError(
+      `cannot compare ${baseline.type} benchmark with ${current.type} benchmark.`,
+    );
+  }
+
+  if (baseline.type === "concurrency") {
+    const currentByLevel = new Map(current.results.map((r) => [r.concurrency, r]));
+    const baselineLevels = new Set(baseline.results.map((r) => r.concurrency));
+    const missing = baseline.results
+      .filter((r) => !currentByLevel.has(r.concurrency))
+      .map((r) => r.concurrency);
+    const unexpected = current.results
+      .filter((r) => !baselineLevels.has(r.concurrency))
+      .map((r) => r.concurrency);
+
+    if (missing.length > 0 || unexpected.length > 0) {
+      const details = [];
+      if (missing.length > 0) {
+        details.push(`missing from current: ${missing.join(", ")}`);
+      }
+      if (unexpected.length > 0) {
+        details.push(`not present in baseline: ${unexpected.join(", ")}`);
+      }
+      throw new InputError(`concurrency level sets differ (${details.join("; ")}).`);
+    }
+
+    return baseline.results.map((baselineItem) => {
+      const currentItem = currentByLevel.get(baselineItem.concurrency);
+      const deltaPercent =
+        ((currentItem.opsPerSec - baselineItem.opsPerSec) / baselineItem.opsPerSec) * 100;
+      const regressionPercent =
+        ((baselineItem.opsPerSec - currentItem.opsPerSec) / baselineItem.opsPerSec) * 100;
+      const regressed = regressionPercent > 0;
+      const exceedsThreshold =
+        maxRegressionPercent !== null && regressionPercent > maxRegressionPercent;
+      return {
+        concurrency: baselineItem.concurrency,
+        label: baselineItem.label,
+        baselineOpsPerSec: baselineItem.opsPerSec,
+        currentOpsPerSec: currentItem.opsPerSec,
+        deltaPercent,
+        regressed,
+        exceedsThreshold,
+      };
+    });
+  }
+
   const currentByLabel = new Map(current.modes.map((mode) => [mode.label, mode]));
   const baselineLabels = new Set(baseline.modes.map((mode) => mode.label));
   const missing = baseline.modes
@@ -269,10 +372,78 @@ function printHuman(report) {
   console.log(`All modes are within +${report.maxRegressionPercent}%.`);
 }
 
+function printHumanConcurrency(report) {
+  const items = report.results ?? report.modes;
+  const labelWidth = Math.max(
+    "concurrency".length,
+    ...items.map((item) => String(item.concurrency).length),
+  );
+  const numberWidth = Math.max(
+    "baseline ops/s".length,
+    ...items.map((item) => item.baselineOpsPerSec.toFixed(2).length),
+  );
+  const currentWidth = Math.max(
+    "current ops/s".length,
+    ...items.map((item) => item.currentOpsPerSec.toFixed(2).length),
+  );
+  const deltaWidth = Math.max(
+    "delta".length,
+    ...items.map((item) => formatSignedPercent(item.deltaPercent).length),
+  );
+
+  console.log("Concurrency benchmark comparison");
+  console.log(`baseline: ${formatPathMetadata(report.baseline.path, report.baseline)}`);
+  console.log(`current:  ${formatPathMetadata(report.current.path, report.current)}`);
+  console.log("");
+  console.log(
+    `${"concurrency".padEnd(labelWidth)}  ${"baseline ops/s".padStart(numberWidth)}  ${"current ops/s".padStart(currentWidth)}  ${"delta".padStart(deltaWidth)}  note`,
+  );
+  for (const item of items) {
+    const note = item.exceedsThreshold
+      ? "REGRESSION"
+      : item.deltaPercent < 0
+        ? "slower"
+        : item.deltaPercent > 0
+          ? "faster"
+          : "unchanged";
+    console.log(
+      `${String(item.concurrency).padEnd(labelWidth)}  ${item.baselineOpsPerSec.toFixed(2).padStart(numberWidth)}  ${item.currentOpsPerSec.toFixed(2).padStart(currentWidth)}  ${formatSignedPercent(item.deltaPercent).padStart(deltaWidth)}  ${note}`,
+    );
+  }
+  console.log("");
+
+  if (report.maxRegressionPercent === null) {
+    if (report.regressions.length > 0) {
+      console.log(
+        `Regression warning (informational): ${report.regressions.length} concurrency level(s) slower than the baseline: ${report.regressions.join(", ")}.`,
+      );
+    } else {
+      console.log("No concurrency level was slower than the baseline.");
+    }
+    console.log(
+      "No regression threshold configured: differences are informational only and the exit code is 0.",
+    );
+    return;
+  }
+
+  if (report.thresholdExceeded) {
+    const offenders = items
+      .filter((item) => item.exceedsThreshold)
+      .map((item) => `${item.label} (${formatSignedPercent(item.deltaPercent)})`);
+    console.log(
+      `Regression threshold +${report.maxRegressionPercent}% exceeded by ${offenders.length} level(s): ${offenders.join(", ")}.`,
+    );
+    return;
+  }
+
+  console.log(`All concurrency levels are within +${report.maxRegressionPercent}%.`);
+}
+
 function buildReport(options, baseline, current, modes) {
   const thresholdExceeded = modes.some((mode) => mode.exceedsThreshold);
-  return {
+  const report = {
     schemaVersion: 1,
+    benchmark: baseline.type,
     baseline: {
       path: baseline.path,
       generatedAt: baseline.generatedAt,
@@ -289,6 +460,10 @@ function buildReport(options, baseline, current, modes) {
     thresholdExceeded,
     exitCode: thresholdExceeded ? 1 : 0,
   };
+  if (baseline.type === "concurrency") {
+    report.results = modes;
+  }
+  return report;
 }
 
 function main(argv) {
@@ -328,6 +503,8 @@ function main(argv) {
   const report = buildReport(options, baseline, current, modes);
   if (options.json) {
     console.log(JSON.stringify(report, null, 2));
+  } else if (baseline.type === "concurrency") {
+    printHumanConcurrency(report);
   } else {
     printHuman(report);
   }
