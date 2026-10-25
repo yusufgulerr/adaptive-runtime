@@ -34,7 +34,41 @@ export interface EvaluateOptions {
   readonly dryRun?: boolean;
 }
 
+export interface WaitForIdleOptions {
+  readonly operationId?: string;
+  readonly timeoutMs?: number;
+  readonly signal?: AbortSignal;
+}
+
+export interface RuntimeHealthSummary {
+  readonly closed: boolean;
+  readonly trackedOperationCount: number;
+  readonly maxTrackedOperations: number;
+  readonly activeOperationCount: number;
+  readonly activeOperations: readonly string[];
+  readonly pinnedOperationCount: number;
+  readonly pinnedOperations: readonly string[];
+  readonly adaptationDisabledOperations: readonly string[];
+}
+
+export interface ImportStateOptions {
+  readonly mode?: "replace" | "merge";
+  readonly conflictResolution?: "incoming" | "existing" | "latest";
+}
+
 export interface AdaptiveRuntime {
+  /**
+   * Cooperatively waits until there are no active selections or in-flight runs,
+   * either for a specific operation or across the entire runtime. Resolves true
+   * when idle, or false if timeout expires or the abort signal triggers.
+   */
+  waitForIdle(options?: WaitForIdleOptions): Promise<boolean>;
+  /**
+   * Returns a frozen summary of runtime health, capacity, tracked operations,
+   * active runs, and pinned/adaptation-disabled sets without altering LRU order.
+   * Usable before and after close().
+   */
+  getRuntimeHealth(): RuntimeHealthSummary;
   /**
    * Selects a strategy, executes it exactly once, and returns the value with
    * decision metadata. Rejected strategies are never retried automatically.
@@ -58,9 +92,9 @@ export interface AdaptiveRuntime {
    * Validates and restores snapshot state. Existing operations not present in
    * the snapshot are left untouched. Returns the number of restored operations.
    * Throws before mutating anything when the snapshot is invalid or targets an
-   * operation with an in-flight selection or run.
+   * operation with an in-flight selection or run in replace mode.
    */
-  importState(snapshot: RuntimeStateSnapshot): number;
+  importState(snapshot: RuntimeStateSnapshot, options?: ImportStateOptions): number;
   /** Explicit manual override. Bypasses pressure, but not applicability checks. */
   pinStrategy(operationId: string, strategyId: string): void;
   unpinStrategy(operationId: string): void;

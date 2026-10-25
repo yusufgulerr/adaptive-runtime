@@ -1208,4 +1208,580 @@ describe("AdaptiveRuntime v0.5 surfaces", () => {
       await runtime.close();
     });
   });
+
+  describe("waitForIdle - graceful runtime drain", () => {
+    it("resolves immediately to true when runtime has no work in flight", async () => {
+      const runtime = createAdaptiveRuntime();
+      const idle = await runtime.waitForIdle();
+      assert.equal(idle, true);
+      await runtime.close();
+    });
+
+    it("resolves immediately to true for specific operationId when idle", async () => {
+      const runtime = createAdaptiveRuntime();
+      const idle = await runtime.waitForIdle({ operationId: "my-op" });
+      assert.equal(idle, true);
+      await runtime.close();
+    });
+
+    it("resolves immediately to true if already idle even when signal is already aborted", async () => {
+      const runtime = createAdaptiveRuntime();
+      const controller = new AbortController();
+      controller.abort();
+      const idle = await runtime.waitForIdle({ signal: controller.signal });
+      assert.equal(idle, true);
+      await runtime.close();
+    });
+
+    it("waits for an in-flight run to complete and resolves true", async () => {
+      const clock = new FakeClock();
+      const runtime = createAdaptiveRuntime({ clock, providers: [fixedProvider(10)] });
+      let resolveRun: () => void = () => {};
+      const runPromise = new Promise<void>((r) => {
+        resolveRun = r;
+      });
+
+      const strat: Strategy<number, string> = {
+        id: "async-strat",
+        qualityTier: 1,
+        run: async () => {
+          await runPromise;
+          return "done";
+        },
+      };
+
+      const execPromise = runtime.run({
+        operationId: "drain-op",
+        input: 1,
+        strategies: [strat],
+      });
+
+      assert.equal(runtime.hasInFlight("drain-op"), true);
+
+      const drainPromise = runtime.waitForIdle();
+      let drainResolved = false;
+      drainPromise.then(() => {
+        drainResolved = true;
+      });
+
+      await new Promise((r) => setImmediate(r));
+      assert.equal(drainResolved, false);
+
+      resolveRun();
+      await execPromise;
+
+      const result = await drainPromise;
+      assert.equal(result, true);
+      assert.equal(drainResolved, true);
+      assert.equal(runtime.hasInFlight("drain-op"), false);
+
+      await runtime.close();
+    });
+
+    it("waits for a specific operationId while other operations remain in-flight", async () => {
+      const clock = new FakeClock();
+      const runtime = createAdaptiveRuntime({ clock, providers: [fixedProvider(10)] });
+      let resolveOp1: () => void = () => {};
+      const op1Promise = new Promise<void>((r) => {
+        resolveOp1 = r;
+      });
+      let resolveOp2: () => void = () => {};
+      const op2Promise = new Promise<void>((r) => {
+        resolveOp2 = r;
+      });
+
+      const strat1: Strategy<number, string> = {
+        id: "s1",
+        qualityTier: 1,
+        run: async () => {
+          await op1Promise;
+          return "op1";
+        },
+      };
+      const strat2: Strategy<number, string> = {
+        id: "s2",
+        qualityTier: 1,
+        run: async () => {
+          await op2Promise;
+          return "op2";
+        },
+      };
+
+      const run1 = runtime.run({ operationId: "op-1", input: 1, strategies: [strat1] });
+      const run2 = runtime.run({ operationId: "op-2", input: 2, strategies: [strat2] });
+
+      assert.equal(runtime.hasInFlight("op-1"), true);
+      assert.equal(runtime.hasInFlight("op-2"), true);
+
+      const waitOp1 = runtime.waitForIdle({ operationId: "op-1" });
+      let op1Drained = false;
+      waitOp1.then(() => {
+        op1Drained = true;
+      });
+
+      await new Promise((r) => setImmediate(r));
+      assert.equal(op1Drained, false);
+
+      resolveOp1();
+      await run1;
+
+      const op1Result = await waitOp1;
+      assert.equal(op1Result, true);
+      assert.equal(op1Drained, true);
+      assert.equal(runtime.hasInFlight("op-2"), true);
+
+      resolveOp2();
+      await run2;
+      assert.equal(await runtime.waitForIdle(), true);
+
+      await runtime.close();
+    });
+
+    it("waits for an in-flight evaluate to complete and resolves true", async () => {
+      const clock = new FakeClock();
+      let resolveRead: () => void = () => {};
+      const readPromise = new Promise<void>((r) => {
+        resolveRead = r;
+      });
+      const provider = new FunctionSignalProvider({
+        id: "async-p",
+        signalName: SIGNAL,
+        read: async (ctx) => {
+          await readPromise;
+          return [okSignal(SIGNAL, 10, ctx.now)];
+        },
+      });
+      const runtime = createAdaptiveRuntime({ clock, providers: [provider] });
+
+      const evalPromise = runtime.evaluate({
+        operationId: "eval-op",
+        input: 1,
+        strategies: strategies(),
+      });
+
+      assert.equal(runtime.hasInFlight("eval-op"), true);
+
+      const drainPromise = runtime.waitForIdle({ operationId: "eval-op" });
+      let drainDone = false;
+      drainPromise.then(() => {
+        drainDone = true;
+      });
+
+      await new Promise((r) => setImmediate(r));
+      assert.equal(drainDone, false);
+
+      resolveRead();
+      await evalPromise;
+
+      assert.equal(await drainPromise, true);
+      assert.equal(drainDone, true);
+      assert.equal(runtime.hasInFlight("eval-op"), false);
+
+      await runtime.close();
+    });
+
+    it("resolves false when timeoutMs expires before runtime becomes idle", async () => {
+      const clock = new FakeClock();
+      const runtime = createAdaptiveRuntime({ clock, providers: [fixedProvider(10)] });
+      let resolveRun: () => void = () => {};
+      const runPromise = new Promise<void>((r) => {
+        resolveRun = r;
+      });
+
+      const strat: Strategy<number, string> = {
+        id: "slow",
+        qualityTier: 1,
+        run: async () => {
+          await runPromise;
+          return "slow";
+        },
+      };
+
+      const runTask = runtime.run({ operationId: "timeout-op", input: 1, strategies: [strat] });
+
+      const drainPromise = runtime.waitForIdle({ timeoutMs: 50 });
+      clock.advance(50);
+
+      const result = await drainPromise;
+      assert.equal(result, false);
+
+      resolveRun();
+      await runTask;
+      await runtime.close();
+    });
+
+    it("resolves false when AbortSignal aborts while waiting for idle", async () => {
+      const clock = new FakeClock();
+      const runtime = createAdaptiveRuntime({ clock, providers: [fixedProvider(10)] });
+      let resolveRun: () => void = () => {};
+      const runPromise = new Promise<void>((r) => {
+        resolveRun = r;
+      });
+
+      const strat: Strategy<number, string> = {
+        id: "slow",
+        qualityTier: 1,
+        run: async () => {
+          await runPromise;
+          return "slow";
+        },
+      };
+
+      const runTask = runtime.run({ operationId: "abort-op", input: 1, strategies: [strat] });
+
+      const controller = new AbortController();
+      const drainPromise = runtime.waitForIdle({ signal: controller.signal });
+
+      controller.abort();
+      const result = await drainPromise;
+      assert.equal(result, false);
+
+      resolveRun();
+      await runTask;
+      await runtime.close();
+    });
+
+    it("resolves false immediately if already in-flight and signal is already aborted", async () => {
+      const clock = new FakeClock();
+      const runtime = createAdaptiveRuntime({ clock, providers: [fixedProvider(10)] });
+      let resolveRun: () => void = () => {};
+      const runPromise = new Promise<void>((r) => {
+        resolveRun = r;
+      });
+
+      const strat: Strategy<number, string> = {
+        id: "slow",
+        qualityTier: 1,
+        run: async () => {
+          await runPromise;
+          return "slow";
+        },
+      };
+
+      const runTask = runtime.run({
+        operationId: "already-aborted",
+        input: 1,
+        strategies: [strat],
+      });
+
+      const controller = new AbortController();
+      controller.abort();
+      const result = await runtime.waitForIdle({ signal: controller.signal });
+      assert.equal(result, false);
+
+      resolveRun();
+      await runTask;
+      await runtime.close();
+    });
+
+    it("validates waitForIdle options and throws ConfigurationError on invalid inputs", async () => {
+      const runtime = createAdaptiveRuntime();
+      await assert.rejects(
+        () => runtime.waitForIdle("invalid" as never),
+        (err: unknown) =>
+          err instanceof ConfigurationError && /must be an object/.test((err as Error).message),
+      );
+      await assert.rejects(() => runtime.waitForIdle({ operationId: "" }), ConfigurationError);
+      await assert.rejects(
+        () => runtime.waitForIdle({ timeoutMs: -10 }),
+        (err: unknown) =>
+          err instanceof ConfigurationError && /timeoutMs/.test((err as Error).message),
+      );
+      await assert.rejects(
+        () => runtime.waitForIdle({ timeoutMs: Number.NaN }),
+        ConfigurationError,
+      );
+      await assert.rejects(() => runtime.waitForIdle({ timeoutMs: Infinity }), ConfigurationError);
+      await assert.rejects(
+        () => runtime.waitForIdle({ signal: {} as never }),
+        (err: unknown) =>
+          err instanceof ConfigurationError && /signal/.test((err as Error).message),
+      );
+      await runtime.close();
+    });
+
+    it("allows calling waitForIdle before and after close()", async () => {
+      const runtime = createAdaptiveRuntime();
+      assert.equal(await runtime.waitForIdle(), true);
+      await runtime.close();
+      assert.equal(await runtime.waitForIdle(), true);
+    });
+  });
+
+  describe("getRuntimeHealth - runtime health & capacity summary", () => {
+    it("returns a deeply frozen summary with correct defaults for a fresh runtime", () => {
+      const runtime = createAdaptiveRuntime();
+      const health = runtime.getRuntimeHealth();
+      assert.equal(health.closed, false);
+      assert.equal(health.trackedOperationCount, 0);
+      assert.equal(health.maxTrackedOperations, Infinity);
+      assert.equal(health.activeOperationCount, 0);
+      assert.deepEqual(health.activeOperations, []);
+      assert.equal(health.pinnedOperationCount, 0);
+      assert.deepEqual(health.pinnedOperations, []);
+      assert.deepEqual(health.adaptationDisabledOperations, []);
+      assert.ok(Object.isFrozen(health));
+      assert.ok(Object.isFrozen(health.activeOperations));
+      assert.ok(Object.isFrozen(health.pinnedOperations));
+      assert.ok(Object.isFrozen(health.adaptationDisabledOperations));
+    });
+
+    it("reports configured maxTrackedOperations capacity bound", () => {
+      const runtime = createAdaptiveRuntime({ policy: { maxTrackedOperations: 50 } });
+      const health = runtime.getRuntimeHealth();
+      assert.equal(health.maxTrackedOperations, 50);
+    });
+
+    it("reflects active, pinned, and adaptation-disabled operations with deterministic code-unit sorting", async () => {
+      const clock = new FakeClock();
+      const runtime = createAdaptiveRuntime({ clock, providers: [fixedProvider(10)] });
+      let resolveRun: () => void = () => {};
+      const runPromise = new Promise<void>((r) => {
+        resolveRun = r;
+      });
+
+      const slowHigh: Strategy<number, string> = {
+        id: "high",
+        qualityTier: 2,
+        run: async () => {
+          await runPromise;
+          return "slow-high";
+        },
+      };
+
+      const slowEconomy: Strategy<number, string> = {
+        id: "economy",
+        qualityTier: 1,
+        run: async () => {
+          await runPromise;
+          return "slow-economy";
+        },
+      };
+
+      runtime.pinStrategy("zeta-op", "high");
+      runtime.pinStrategy("alpha-op", "economy");
+      runtime.setAdaptationEnabled("beta-op", false);
+      runtime.setAdaptationEnabled("gamma-op", false);
+      runtime.setAdaptationEnabled("delta-op", true);
+
+      runtime.setOperationPolicy("eta-op", { adaptationEnabled: false });
+
+      const runZeta = runtime.run({ operationId: "zeta-op", input: 1, strategies: [slowHigh] });
+      const runBeta = runtime.run({ operationId: "beta-op", input: 1, strategies: [slowEconomy] });
+
+      const health = runtime.getRuntimeHealth();
+      assert.equal(health.activeOperationCount, 2);
+      assert.deepEqual(health.activeOperations, ["beta-op", "zeta-op"]);
+      assert.equal(health.pinnedOperationCount, 2);
+      assert.deepEqual(health.pinnedOperations, ["alpha-op", "zeta-op"]);
+      assert.deepEqual(health.adaptationDisabledOperations, ["beta-op", "eta-op", "gamma-op"]);
+
+      resolveRun();
+      await Promise.all([runZeta, runBeta]);
+
+      const afterHealth = runtime.getRuntimeHealth();
+      assert.equal(afterHealth.activeOperationCount, 0);
+      assert.deepEqual(afterHealth.activeOperations, []);
+
+      await runtime.close();
+      const closedHealth = runtime.getRuntimeHealth();
+      assert.equal(closedHealth.closed, true);
+      assert.equal(closedHealth.pinnedOperationCount, 2);
+    });
+
+    it("does not disturb LRU tracking order when called", async () => {
+      const clock = new FakeClock();
+      const runtime = createAdaptiveRuntime({
+        clock,
+        providers: [fixedProvider(10)],
+        policy: { maxTrackedOperations: 5 },
+      });
+      await runtime.run({ operationId: "op-1", input: 1, strategies: strategies() });
+      await runtime.run({ operationId: "op-2", input: 2, strategies: strategies() });
+      await runtime.run({ operationId: "op-3", input: 3, strategies: strategies() });
+
+      const trackedBefore = runtime.getTrackedOperations();
+      assert.deepEqual(trackedBefore, ["op-1", "op-2", "op-3"]);
+
+      const health = runtime.getRuntimeHealth();
+      assert.equal(health.trackedOperationCount, 3);
+
+      const trackedAfter = runtime.getTrackedOperations();
+      assert.deepEqual(trackedAfter, ["op-1", "op-2", "op-3"]);
+      await runtime.close();
+    });
+  });
+
+  describe("importState - mode: 'merge' and conflictResolution", () => {
+    it("validates importState options and rejects invalid parameters", () => {
+      const runtime = createAdaptiveRuntime();
+      const snapshot: RuntimeStateSnapshot = { version: 1, exportedAt: 0, operations: [] };
+
+      assert.throws(
+        () => runtime.importState(snapshot, "invalid" as never),
+        (err: unknown) =>
+          err instanceof ConfigurationError && /must be an object/.test((err as Error).message),
+      );
+      assert.throws(
+        () => runtime.importState(snapshot, { mode: "unknown" as never }),
+        (err: unknown) => err instanceof ConfigurationError && /mode/.test((err as Error).message),
+      );
+      assert.throws(
+        () => runtime.importState(snapshot, { conflictResolution: "invalid" as never }),
+        (err: unknown) =>
+          err instanceof ConfigurationError && /conflictResolution/.test((err as Error).message),
+      );
+    });
+
+    it("mode: 'merge' retains existing tracked operations not present in the snapshot", async () => {
+      const runtime1 = createAdaptiveRuntime();
+      await runtime1.run({ operationId: "existing-op", input: 1, strategies: strategies() });
+
+      const runtime2 = createAdaptiveRuntime();
+      await runtime2.run({ operationId: "incoming-op", input: 2, strategies: strategies() });
+      const snapshot2 = runtime2.exportState();
+
+      const restored = runtime1.importState(snapshot2, { mode: "merge" });
+      assert.equal(restored, 1);
+      assert.deepEqual(runtime1.getTrackedOperations(), ["existing-op", "incoming-op"]);
+      assert.equal(runtime1.getStats("existing-op").runs, 1);
+      assert.equal(runtime1.getStats("incoming-op").runs, 1);
+
+      await runtime1.close();
+      await runtime2.close();
+    });
+
+    it("mode: 'merge' with conflictResolution: 'incoming' overwrites existing operation", async () => {
+      const runtime1 = createAdaptiveRuntime();
+      runtime1.pinStrategy("shared-op", "high");
+      await runtime1.run({ operationId: "shared-op", input: 1, strategies: strategies() });
+
+      const runtime2 = createAdaptiveRuntime();
+      runtime2.pinStrategy("shared-op", "economy");
+      await runtime2.run({ operationId: "shared-op", input: 2, strategies: strategies() });
+      await runtime2.run({ operationId: "shared-op", input: 3, strategies: strategies() });
+      const snapshot2 = runtime2.exportState();
+
+      runtime1.importState(snapshot2, { mode: "merge", conflictResolution: "incoming" });
+      assert.equal(runtime1.getStats("shared-op").runs, 2);
+      const health = runtime1.getRuntimeHealth();
+      assert.deepEqual(health.pinnedOperations, ["shared-op"]);
+      assert.equal(runtime1.getDecision("shared-op")?.strategyId, "economy");
+
+      await runtime1.close();
+      await runtime2.close();
+    });
+
+    it("mode: 'merge' leaves in-flight operations untouched", async () => {
+      const runtime = createAdaptiveRuntime();
+      let resolveRun: () => void = () => {};
+      const runPromise = new Promise<void>((r) => {
+        resolveRun = r;
+      });
+
+      const strat: Strategy<number, string> = {
+        id: "high",
+        qualityTier: 1,
+        run: async () => {
+          await runPromise;
+          return "active";
+        },
+      };
+
+      const runTask = runtime.run({ operationId: "busy-op", input: 1, strategies: [strat] });
+      assert.equal(runtime.hasInFlight("busy-op"), true);
+
+      const otherRuntime = createAdaptiveRuntime();
+      await otherRuntime.run({ operationId: "busy-op", input: 1, strategies: strategies() });
+      await otherRuntime.run({ operationId: "busy-op", input: 1, strategies: strategies() });
+      const snapshot = otherRuntime.exportState();
+      await otherRuntime.close();
+
+      const count = runtime.importState(snapshot, { mode: "merge" });
+      assert.equal(count, 0);
+
+      resolveRun();
+      await runTask;
+
+      assert.equal(runtime.getStats("busy-op").runs, 1);
+      await runtime.close();
+    });
+
+    it("mode: 'merge' with conflictResolution: 'existing' keeps existing operation state untouched and imports new operations", async () => {
+      const runtime = createAdaptiveRuntime();
+      runtime.pinStrategy("conflicting-op", "high");
+      await runtime.run({ operationId: "conflicting-op", input: 1, strategies: strategies() });
+
+      const otherRuntime = createAdaptiveRuntime();
+      otherRuntime.pinStrategy("conflicting-op", "economy");
+      await otherRuntime.run({ operationId: "conflicting-op", input: 2, strategies: strategies() });
+      await otherRuntime.run({ operationId: "conflicting-op", input: 3, strategies: strategies() });
+      await otherRuntime.run({ operationId: "brand-new-op", input: 4, strategies: strategies() });
+      const snapshot = otherRuntime.exportState();
+      await otherRuntime.close();
+
+      const restored = runtime.importState(snapshot, {
+        mode: "merge",
+        conflictResolution: "existing",
+      });
+      assert.equal(restored, 1);
+
+      assert.equal(runtime.getStats("conflicting-op").runs, 1);
+      assert.equal(runtime.getRuntimeHealth().pinnedOperations.includes("conflicting-op"), true);
+
+      assert.equal(runtime.getStats("brand-new-op").runs, 1);
+
+      await runtime.close();
+    });
+
+    it("mode: 'merge' with conflictResolution: 'latest' applies incoming when incoming transition timestamp >= existing", async () => {
+      const clock = new FakeClock(100);
+      const runtime = createAdaptiveRuntime({ clock, providers: [fixedProvider(10)] });
+      await runtime.run({ operationId: "ts-op", input: 1, strategies: strategies() });
+
+      const otherRuntime = createAdaptiveRuntime();
+      await otherRuntime.run({ operationId: "ts-op", input: 2, strategies: strategies() });
+      await otherRuntime.run({ operationId: "ts-op", input: 3, strategies: strategies() });
+      const baseSnapshot = otherRuntime.exportState();
+      await otherRuntime.close();
+
+      // 1. Snapshot with newer timestamp (200 >= 100) -> applied
+      const newerSnapshot: RuntimeStateSnapshot = {
+        ...baseSnapshot,
+        operations: [
+          {
+            ...baseSnapshot.operations[0],
+            lastTransitionTimestamp: 200,
+          } as never,
+        ],
+      };
+
+      const count1 = runtime.importState(newerSnapshot, {
+        mode: "merge",
+        conflictResolution: "latest",
+      });
+      assert.equal(count1, 1);
+      assert.equal(runtime.getStats("ts-op").runs, 2);
+
+      // 2. Snapshot with older timestamp (150 < 200) -> rejected / skipped
+      const olderSnapshot: RuntimeStateSnapshot = {
+        ...baseSnapshot,
+        operations: [
+          {
+            ...baseSnapshot.operations[0],
+            lastTransitionTimestamp: 150,
+          } as never,
+        ],
+      };
+
+      const count2 = runtime.importState(olderSnapshot, {
+        mode: "merge",
+        conflictResolution: "latest",
+      });
+      assert.equal(count2, 0);
+      assert.equal(runtime.getStats("ts-op").runs, 2);
+
+      await runtime.close();
+    });
+  });
 });
