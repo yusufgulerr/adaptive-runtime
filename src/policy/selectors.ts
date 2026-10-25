@@ -33,6 +33,31 @@ export interface CostBudgetSelectorOptions {
   readonly useEwma?: boolean;
 }
 
+export interface WeightedUtilitySelectorOptions {
+  readonly qualityWeight?: number;
+  readonly latencyWeight?: number;
+  readonly errorRateWeight?: number;
+  readonly costWeight?: number;
+  readonly maxLatencyRefMs?: number;
+  readonly maxCostTierRef?: number;
+  readonly minSamplesForErrorRate?: number;
+  readonly useEwma?: boolean;
+}
+
+export interface SignalTrendGuardSelectorOptions {
+  readonly signalName: string;
+  readonly maxSlopePerSec: number;
+  readonly windowSize?: number;
+  readonly minTimeSpanMs?: number;
+  readonly degradedQualityCap?: number;
+  readonly preferLowestLatencyOnSpike?: boolean;
+  readonly fallbackSelector?: CustomPolicySelector;
+}
+
+export type SignalTrendGuardSelector = CustomPolicySelector & {
+  reset: () => void;
+};
+
 export interface SafeSelectorOptions {
   readonly fallbackSelector?: CustomPolicySelector;
   readonly onSelectorError?: (error: unknown, context: CustomSelectorContext) => void;
@@ -448,6 +473,419 @@ export function createSafeSelector(
       return null;
     }
   };
+}
+
+function getCandidateUtilityLatency(c: CustomSelectorCandidate, useEwma: boolean): number | null {
+  const ewma =
+    typeof c.ewmaLatencyMs === "number" && Number.isFinite(c.ewmaLatencyMs)
+      ? c.ewmaLatencyMs
+      : null;
+  const lastRaw = (c as { lastLatencyMs?: number | null }).lastLatencyMs;
+  const last = typeof lastRaw === "number" && Number.isFinite(lastRaw) ? lastRaw : null;
+  const est =
+    typeof c.estimatedLatencyMs === "number" && Number.isFinite(c.estimatedLatencyMs)
+      ? c.estimatedLatencyMs
+      : null;
+
+  const primary = useEwma ? (ewma ?? last) : (last ?? ewma);
+  return primary ?? est ?? null;
+}
+
+function getCandidateUtilityErrorRate(
+  c: CustomSelectorCandidate,
+  minSamples: number,
+  useEwma: boolean,
+): number | null {
+  const samples = getCandidateSamples(c) ?? 0;
+  if (samples < minSamples) {
+    return null;
+  }
+  const ewmaRaw = (c as { ewmaErrorRate?: number | null }).ewmaErrorRate;
+  const ewma = typeof ewmaRaw === "number" && Number.isFinite(ewmaRaw) ? ewmaRaw : null;
+  const errRaw = c.errorRate;
+  const err = typeof errRaw === "number" && Number.isFinite(errRaw) ? errRaw : null;
+
+  const rate = useEwma ? (ewma ?? err) : (err ?? ewma);
+  return rate ?? null;
+}
+
+function getSignalTrendCandidateLatency(c: CustomSelectorCandidate): number {
+  const ewma =
+    typeof c.ewmaLatencyMs === "number" && Number.isFinite(c.ewmaLatencyMs)
+      ? c.ewmaLatencyMs
+      : null;
+  const lastRaw = (c as { lastLatencyMs?: number | null }).lastLatencyMs;
+  const last = typeof lastRaw === "number" && Number.isFinite(lastRaw) ? lastRaw : null;
+  const est =
+    typeof c.estimatedLatencyMs === "number" && Number.isFinite(c.estimatedLatencyMs)
+      ? c.estimatedLatencyMs
+      : null;
+
+  return ewma ?? last ?? est ?? Number.POSITIVE_INFINITY;
+}
+
+function getSignalTimestamp(signal: unknown): number | null {
+  if (signal === null || typeof signal !== "object") {
+    return null;
+  }
+  const raw =
+    (signal as { timestamp?: unknown; observedAt?: unknown }).timestamp ??
+    (signal as { observedAt?: unknown }).observedAt;
+  return typeof raw === "number" && Number.isFinite(raw) ? raw : null;
+}
+
+interface SignalWindowEntry {
+  readonly timestamp: number;
+  value: number;
+}
+
+/**
+ * Creates a pure custom selector that scores strategy candidates using a
+ * multi-objective weighted utility function balancing quality, latency, error
+ * rate, and cost.
+ */
+export function createWeightedUtilitySelector(
+  options?: WeightedUtilitySelectorOptions,
+): CustomPolicySelector {
+  if (options !== undefined) {
+    if (options === null || typeof options !== "object" || Array.isArray(options)) {
+      throw new InvalidConfigurationError("options must be an object.");
+    }
+    if (
+      options.qualityWeight !== undefined &&
+      (typeof options.qualityWeight !== "number" ||
+        !Number.isFinite(options.qualityWeight) ||
+        options.qualityWeight < 0)
+    ) {
+      throw new InvalidConfigurationError("qualityWeight must be a non-negative finite number.");
+    }
+    if (
+      options.latencyWeight !== undefined &&
+      (typeof options.latencyWeight !== "number" ||
+        !Number.isFinite(options.latencyWeight) ||
+        options.latencyWeight < 0)
+    ) {
+      throw new InvalidConfigurationError("latencyWeight must be a non-negative finite number.");
+    }
+    if (
+      options.errorRateWeight !== undefined &&
+      (typeof options.errorRateWeight !== "number" ||
+        !Number.isFinite(options.errorRateWeight) ||
+        options.errorRateWeight < 0)
+    ) {
+      throw new InvalidConfigurationError("errorRateWeight must be a non-negative finite number.");
+    }
+    if (
+      options.costWeight !== undefined &&
+      (typeof options.costWeight !== "number" ||
+        !Number.isFinite(options.costWeight) ||
+        options.costWeight < 0)
+    ) {
+      throw new InvalidConfigurationError("costWeight must be a non-negative finite number.");
+    }
+    if (
+      options.maxLatencyRefMs !== undefined &&
+      (typeof options.maxLatencyRefMs !== "number" ||
+        !Number.isFinite(options.maxLatencyRefMs) ||
+        options.maxLatencyRefMs <= 0)
+    ) {
+      throw new InvalidConfigurationError("maxLatencyRefMs must be a positive finite number.");
+    }
+    if (
+      options.maxCostTierRef !== undefined &&
+      (typeof options.maxCostTierRef !== "number" ||
+        !Number.isFinite(options.maxCostTierRef) ||
+        options.maxCostTierRef <= 0)
+    ) {
+      throw new InvalidConfigurationError("maxCostTierRef must be a positive finite number.");
+    }
+    if (
+      options.minSamplesForErrorRate !== undefined &&
+      (typeof options.minSamplesForErrorRate !== "number" ||
+        !Number.isSafeInteger(options.minSamplesForErrorRate) ||
+        options.minSamplesForErrorRate < 0)
+    ) {
+      throw new InvalidConfigurationError(
+        "minSamplesForErrorRate must be a non-negative safe integer.",
+      );
+    }
+    if (options.useEwma !== undefined && typeof options.useEwma !== "boolean") {
+      throw new InvalidConfigurationError("useEwma must be a boolean.");
+    }
+  }
+
+  const qualityWeight = options?.qualityWeight ?? 0.4;
+  const latencyWeight = options?.latencyWeight ?? 0.3;
+  const errorRateWeight = options?.errorRateWeight ?? 0.2;
+  const costWeight = options?.costWeight ?? 0.1;
+
+  if (qualityWeight === 0 && latencyWeight === 0 && errorRateWeight === 0 && costWeight === 0) {
+    throw new InvalidConfigurationError("At least one weight must be greater than zero.");
+  }
+
+  const maxLatencyRefMs = options?.maxLatencyRefMs;
+  const maxCostTierRef = options?.maxCostTierRef;
+  const minSamplesForErrorRate = options?.minSamplesForErrorRate ?? 1;
+  const useEwma = options?.useEwma !== false;
+
+  return (context) => {
+    if (context.candidates.length === 0) {
+      return null;
+    }
+    if (context.candidates.length === 1) {
+      const single = context.candidates[0] as CustomSelectorCandidate;
+      const singleId = getCandidateId(single);
+      return {
+        strategyId: singleId,
+        reason: `weighted-utility: single candidate "${singleId}" selected`,
+      };
+    }
+
+    const qualities = context.candidates.map((c) => getCandidateQualityTier(c));
+    const minQ = Math.min(...qualities);
+    const maxQ = Math.max(...qualities);
+
+    const latencies = context.candidates.map((c) => getCandidateUtilityLatency(c, useEwma));
+    const finiteLatencies = latencies.filter(
+      (lat): lat is number => lat !== null && Number.isFinite(lat),
+    );
+    const refLatency =
+      maxLatencyRefMs ?? (finiteLatencies.length > 0 ? Math.max(1, ...finiteLatencies) : 1);
+
+    const costs = context.candidates.map((c) => getCandidateCostTier(c));
+    const refCost = maxCostTierRef ?? Math.max(1, ...costs);
+
+    const scored = context.candidates.map((c, index) => {
+      const id = getCandidateId(c);
+      const q = qualities[index] as number;
+      const cost = costs[index] as number;
+      const latency = latencies[index] as number | null;
+      const errorRate = getCandidateUtilityErrorRate(c, minSamplesForErrorRate, useEwma);
+
+      const normQuality = maxQ === minQ ? 1 : (q - minQ) / (maxQ - minQ);
+      const normLatencyPenalty =
+        latency === null || !Number.isFinite(latency)
+          ? 0.5
+          : Math.min(1, Math.max(0, latency / refLatency));
+      const normErrorPenalty =
+        errorRate === null || !Number.isFinite(errorRate) ? 0 : Math.min(1, Math.max(0, errorRate));
+      const normCostPenalty = refCost > 0 ? Math.min(1, Math.max(0, cost / refCost)) : 0;
+
+      const utilityScore =
+        qualityWeight * normQuality -
+        latencyWeight * normLatencyPenalty -
+        errorRateWeight * normErrorPenalty -
+        costWeight * normCostPenalty;
+
+      return {
+        id,
+        qualityTier: q,
+        costTier: cost,
+        utilityScore,
+      };
+    });
+
+    scored.sort((a, b) => {
+      const diff = b.utilityScore - a.utilityScore;
+      if (Math.abs(diff) > 1e-12) {
+        return diff;
+      }
+      if (b.qualityTier !== a.qualityTier) {
+        return b.qualityTier - a.qualityTier;
+      }
+      if (a.costTier !== b.costTier) {
+        return a.costTier - b.costTier;
+      }
+      return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+    });
+
+    const chosen = scored[0] as { id: string; utilityScore: number };
+    return {
+      strategyId: chosen.id,
+      reason: `weighted-utility: selected strategy "${chosen.id}" with utility score ${chosen.utilityScore.toFixed(4)}`,
+    };
+  };
+}
+
+/**
+ * Creates a stateful custom selector closure that detects rising or falling
+ * signal slope spikes across a sliding window and triggers proactive load
+ * shedding or low-latency degraded candidate selection.
+ */
+export function createSignalTrendGuardSelector(
+  options: SignalTrendGuardSelectorOptions,
+): SignalTrendGuardSelector {
+  if (options === null || typeof options !== "object" || Array.isArray(options)) {
+    throw new InvalidConfigurationError("options must be an object.");
+  }
+  const {
+    signalName,
+    maxSlopePerSec,
+    windowSize = 5,
+    minTimeSpanMs = 100,
+    degradedQualityCap,
+    preferLowestLatencyOnSpike = true,
+    fallbackSelector,
+  } = options;
+
+  if (typeof signalName !== "string" || signalName.trim().length === 0) {
+    throw new InvalidConfigurationError("signalName must be a non-empty string.");
+  }
+  if (
+    typeof maxSlopePerSec !== "number" ||
+    !Number.isFinite(maxSlopePerSec) ||
+    maxSlopePerSec === 0
+  ) {
+    throw new InvalidConfigurationError("maxSlopePerSec must be a non-zero finite number.");
+  }
+  if (
+    options.windowSize !== undefined &&
+    (typeof windowSize !== "number" ||
+      !Number.isSafeInteger(windowSize) ||
+      windowSize < 2 ||
+      windowSize > 100)
+  ) {
+    throw new InvalidConfigurationError("windowSize must be a safe integer between 2 and 100.");
+  }
+  if (
+    options.minTimeSpanMs !== undefined &&
+    (typeof minTimeSpanMs !== "number" || !Number.isFinite(minTimeSpanMs) || minTimeSpanMs <= 0)
+  ) {
+    throw new InvalidConfigurationError("minTimeSpanMs must be a positive finite number.");
+  }
+  if (
+    degradedQualityCap !== undefined &&
+    (typeof degradedQualityCap !== "number" || !Number.isFinite(degradedQualityCap))
+  ) {
+    throw new InvalidConfigurationError("degradedQualityCap must be a finite number.");
+  }
+  if (
+    options.preferLowestLatencyOnSpike !== undefined &&
+    typeof preferLowestLatencyOnSpike !== "boolean"
+  ) {
+    throw new InvalidConfigurationError("preferLowestLatencyOnSpike must be a boolean.");
+  }
+  if (fallbackSelector !== undefined && typeof fallbackSelector !== "function") {
+    throw new InvalidConfigurationError("fallbackSelector must be a function.");
+  }
+
+  let window: SignalWindowEntry[] = [];
+
+  const selector = (context: CustomSelectorContext) => {
+    const signal = context.signals[signalName];
+    const signalTimestamp = getSignalTimestamp(signal);
+
+    if (
+      signal !== undefined &&
+      signal !== null &&
+      signal.status === "ok" &&
+      typeof signal.value === "number" &&
+      Number.isFinite(signal.value) &&
+      signalTimestamp !== null
+    ) {
+      const lastEntry = window[window.length - 1];
+      if (lastEntry !== undefined && lastEntry.timestamp > signalTimestamp) {
+        window = [];
+      }
+
+      const currentLast = window[window.length - 1];
+      if (currentLast === undefined || currentLast.timestamp < signalTimestamp) {
+        window.push({ timestamp: signalTimestamp, value: signal.value });
+        while (window.length > windowSize) {
+          window.shift();
+        }
+      } else if (currentLast.timestamp === signalTimestamp) {
+        currentLast.value = signal.value;
+      }
+    }
+
+    if (context.candidates.length === 0) {
+      return null;
+    }
+
+    let spikeActive = false;
+    let slopePerSec = 0;
+
+    if (window.length >= 2) {
+      const oldest = window[0] as SignalWindowEntry;
+      const newest = window[window.length - 1] as SignalWindowEntry;
+      const timeSpanMs = newest.timestamp - oldest.timestamp;
+
+      if (timeSpanMs >= minTimeSpanMs) {
+        slopePerSec = (newest.value - oldest.value) / (timeSpanMs / 1000);
+        spikeActive =
+          (maxSlopePerSec > 0 && slopePerSec > maxSlopePerSec) ||
+          (maxSlopePerSec < 0 && slopePerSec < maxSlopePerSec);
+      }
+    }
+
+    if (spikeActive) {
+      let pool = [...context.candidates];
+      if (degradedQualityCap !== undefined) {
+        const filtered = pool.filter((c) => getCandidateQualityTier(c) <= degradedQualityCap);
+        if (filtered.length > 0) {
+          pool = filtered;
+        }
+      }
+
+      if (preferLowestLatencyOnSpike !== false) {
+        pool.sort((a, b) => {
+          const latA = getSignalTrendCandidateLatency(a);
+          const latB = getSignalTrendCandidateLatency(b);
+          if (latA !== latB) {
+            return latA - latB;
+          }
+          const costA = getCandidateCostTier(a);
+          const costB = getCandidateCostTier(b);
+          if (costA !== costB) {
+            return costA - costB;
+          }
+          const qA = getCandidateQualityTier(a);
+          const qB = getCandidateQualityTier(b);
+          if (qA !== qB) {
+            return qA - qB;
+          }
+          const idA = getCandidateId(a);
+          const idB = getCandidateId(b);
+          return idA < idB ? -1 : idA > idB ? 1 : 0;
+        });
+      } else {
+        pool.sort((a, b) => {
+          const qA = getCandidateQualityTier(a);
+          const qB = getCandidateQualityTier(b);
+          if (qA !== qB) {
+            return qA - qB;
+          }
+          const costA = getCandidateCostTier(a);
+          const costB = getCandidateCostTier(b);
+          if (costA !== costB) {
+            return costA - costB;
+          }
+          const idA = getCandidateId(a);
+          const idB = getCandidateId(b);
+          return idA < idB ? -1 : idA > idB ? 1 : 0;
+        });
+      }
+
+      const chosen = pool[0] as CustomSelectorCandidate;
+      const chosenId = getCandidateId(chosen);
+      return {
+        strategyId: chosenId,
+        reason: `signal-trend-guard: spike detected on "${signalName}" (slope=${slopePerSec.toFixed(2)}/s, threshold=${maxSlopePerSec}/s); selected "${chosenId}"`,
+      };
+    }
+
+    if (fallbackSelector !== undefined) {
+      return fallbackSelector(context);
+    }
+    return null;
+  };
+
+  return Object.assign(selector, {
+    reset(): void {
+      window = [];
+    },
+  });
 }
 
 /**
