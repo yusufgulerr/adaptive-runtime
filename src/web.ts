@@ -24,6 +24,7 @@ export {
 export {
   FrameTimingProvider,
   type FrameTimingProviderOptions,
+  type FrameTimingStats,
   WEB_FRAME_DROPPED_RATIO,
   WEB_FRAME_DURATION_P95_MS,
 } from "./providers/web/frame-timing.js";

@@ -16,6 +16,7 @@ import {
 } from "../../src/providers/web/device-memory.js";
 import {
   FrameTimingProvider,
+  type FrameTimingStats,
   WEB_FRAME_DROPPED_RATIO,
   WEB_FRAME_DURATION_P95_MS,
 } from "../../src/providers/web/frame-timing.js";
@@ -25,6 +26,7 @@ import {
   WEB_NETWORK_RTT_MS,
   WEB_NETWORK_SAVE_DATA,
 } from "../../src/providers/web/network-info.js";
+import { createFakeClock } from "../../src/testing/index.js";
 import type { AvailableSignalReading, UnavailableSignalReading } from "../../src/types/signals.js";
 
 const NOW = 1_500_000;
@@ -644,6 +646,105 @@ describe("NetworkInformationProvider", () => {
       ),
     );
   });
+
+  it("validates saveDataPenaltyRttMs option thoroughly", () => {
+    assert.throws(
+      // @ts-expect-error invalid saveDataPenaltyRttMs type
+      () => new NetworkInformationProvider({ saveDataPenaltyRttMs: "100" }),
+      ConfigurationError,
+    );
+    assert.throws(
+      () => new NetworkInformationProvider({ saveDataPenaltyRttMs: -1 }),
+      ConfigurationError,
+    );
+    assert.throws(
+      () => new NetworkInformationProvider({ saveDataPenaltyRttMs: Number.NaN }),
+      ConfigurationError,
+    );
+    assert.throws(
+      () => new NetworkInformationProvider({ saveDataPenaltyRttMs: Number.POSITIVE_INFINITY }),
+      ConfigurationError,
+    );
+
+    // 0 and positive numbers are valid
+    const zeroPenalty = new NetworkInformationProvider({ saveDataPenaltyRttMs: 0 });
+    assert.equal(zeroPenalty.id, "web-network-information");
+    const positivePenalty = new NetworkInformationProvider({ saveDataPenaltyRttMs: 150 });
+    assert.equal(positivePenalty.id, "web-network-information");
+  });
+
+  it("applies saveDataPenaltyRttMs when saveData is true and penalty is configured", () => {
+    const provider = new NetworkInformationProvider({
+      saveDataPenaltyRttMs: 150,
+      getConnection: () => ({
+        rtt: 40,
+        downlink: 5,
+        saveData: true,
+        effectiveType: "4g",
+      }),
+    });
+
+    const readings = provider.read({ now: NOW, signal });
+    const rttReading = readings[0] as AvailableSignalReading;
+    assert.equal(rttReading.name, WEB_NETWORK_RTT_MS);
+    assert.equal(rttReading.status, "ok");
+    assert.equal(rttReading.value, 190); // 40 + 150
+    assert.equal(rttReading.details?.rtt, 40);
+    assert.equal(rttReading.details?.rawRtt, 40);
+    assert.equal(rttReading.details?.saveDataPenaltyRttMs, 150);
+    assert.equal(rttReading.details?.effectiveRtt, 190);
+
+    // saveData reading itself remains 1
+    const saveDataReading = readings[2] as AvailableSignalReading;
+    assert.equal(saveDataReading.value, 1);
+  });
+
+  it("does not apply saveDataPenaltyRttMs when saveData is false", () => {
+    const provider = new NetworkInformationProvider({
+      saveDataPenaltyRttMs: 150,
+      getConnection: () => ({
+        rtt: 40,
+        downlink: 5,
+        saveData: false,
+        effectiveType: "4g",
+      }),
+    });
+
+    const readings = provider.read({ now: NOW, signal });
+    const rttReading = readings[0] as AvailableSignalReading;
+    assert.equal(rttReading.status, "ok");
+    assert.equal(rttReading.value, 40); // No penalty added
+    assert.equal(rttReading.details?.rtt, 40);
+    assert.equal(rttReading.details?.rawRtt, undefined);
+  });
+
+  it("does not apply penalty when saveData is true but saveDataPenaltyRttMs is omitted", () => {
+    const provider = new NetworkInformationProvider({
+      getConnection: () => ({
+        rtt: 40,
+        downlink: 5,
+        saveData: true,
+      }),
+    });
+
+    const readings = provider.read({ now: NOW, signal });
+    const rttReading = readings[0] as AvailableSignalReading;
+    assert.equal(rttReading.status, "ok");
+    assert.equal(rttReading.value, 40);
+  });
+
+  it("preserves unknown status when connection.rtt is invalid even with saveData penalty", () => {
+    const provider = new NetworkInformationProvider({
+      saveDataPenaltyRttMs: 100,
+      getConnection: () => ({
+        rtt: undefined,
+        saveData: true,
+      }),
+    });
+
+    const readings = provider.read({ now: NOW, signal });
+    assert.equal(readings[0]?.status, "unknown");
+  });
 });
 
 describe("FrameTimingProvider", () => {
@@ -857,6 +958,160 @@ describe("FrameTimingProvider", () => {
     // Record after close throws ConfigurationError
     assert.throws(() => provider.recordFrameDuration(16), ConfigurationError);
   });
+
+  it("validates droppedFrameThresholdMs and targetFrameDurationMs options thoroughly", () => {
+    // Non-number / invalid types
+    assert.throws(
+      // @ts-expect-error invalid type
+      () => new FrameTimingProvider({ droppedFrameThresholdMs: "50" }),
+      ConfigurationError,
+    );
+    assert.throws(
+      () => new FrameTimingProvider({ droppedFrameThresholdMs: Number.NaN }),
+      ConfigurationError,
+    );
+    assert.throws(
+      () => new FrameTimingProvider({ droppedFrameThresholdMs: Number.POSITIVE_INFINITY }),
+      ConfigurationError,
+    );
+    assert.throws(
+      () => new FrameTimingProvider({ droppedFrameThresholdMs: -10 }),
+      ConfigurationError,
+    );
+
+    // droppedFrameThresholdMs <= targetFrameBudgetMs (default 16.67)
+    assert.throws(
+      () => new FrameTimingProvider({ droppedFrameThresholdMs: 16.67 }),
+      ConfigurationError,
+    );
+    assert.throws(
+      () => new FrameTimingProvider({ droppedFrameThresholdMs: 10 }),
+      ConfigurationError,
+    );
+
+    // Target frame budget >= 50 causes default droppedFrameThresholdMs (50) to fail validation
+    assert.throws(() => new FrameTimingProvider({ targetFrameBudgetMs: 50 }), ConfigurationError);
+    assert.throws(() => new FrameTimingProvider({ targetFrameBudgetMs: 60 }), ConfigurationError);
+
+    // Unless explicit droppedFrameThresholdMs > targetFrameBudgetMs is provided
+    const validWide = new FrameTimingProvider({
+      targetFrameBudgetMs: 60,
+      droppedFrameThresholdMs: 120,
+    });
+    assert.equal(validWide.id, "web-frame-timing");
+
+    // targetFrameDurationMs validation and aliasing
+    assert.throws(() => new FrameTimingProvider({ targetFrameDurationMs: 0 }), ConfigurationError);
+    assert.throws(() => new FrameTimingProvider({ targetFrameDurationMs: -5 }), ConfigurationError);
+    assert.throws(
+      () =>
+        new FrameTimingProvider({
+          targetFrameBudgetMs: 16.67,
+          targetFrameDurationMs: 8.33,
+        }),
+      ConfigurationError,
+    );
+
+    const aliasProvider = new FrameTimingProvider({
+      targetFrameDurationMs: 8.33,
+      droppedFrameThresholdMs: 25,
+    });
+    assert.equal(aliasProvider.id, "web-frame-timing");
+  });
+
+  it("exposes frozen, non-disturbing getFrameStats()", () => {
+    const provider = new FrameTimingProvider({
+      targetFrameBudgetMs: 16.67,
+      droppedFrameThresholdMs: 50,
+      minSamples: 3,
+    });
+
+    // Initial stats before any samples
+    const initialStats: FrameTimingStats = provider.getFrameStats();
+    assert.ok(Object.isFrozen(initialStats));
+    assert.deepEqual(initialStats, {
+      sampleCount: 0,
+      droppedFrames: 0,
+      maxFrameDurationMs: null,
+      running: true,
+    });
+
+    // Record samples: [12, 16, 25, 55, 60]
+    provider.recordFrameDuration(12);
+    provider.recordFrameDuration(16);
+    provider.recordFrameDuration(25);
+    provider.recordFrameDuration(55);
+    provider.recordFrameDuration(60);
+
+    const stats: FrameTimingStats = provider.getFrameStats();
+    assert.ok(Object.isFrozen(stats));
+    assert.equal(stats.sampleCount, 5);
+    // 55 and 60 exceed droppedFrameThresholdMs (50)
+    assert.equal(stats.droppedFrames, 2);
+    assert.equal(stats.maxFrameDurationMs, 60);
+    assert.equal(stats.running, true);
+
+    // Calling getFrameStats() multiple times is completely non-disturbing
+    const stats2 = provider.getFrameStats();
+    assert.deepEqual(stats, stats2);
+
+    // read() still works without disturbance
+    const readings = provider.read({ now: NOW, signal });
+    assert.equal(readings[0]?.status, "ok");
+  });
+
+  it("supports resetSamples() to clear sliding window without stopping RAF loop", () => {
+    const provider = new FrameTimingProvider({
+      targetFrameBudgetMs: 16.67,
+      droppedFrameThresholdMs: 50,
+      minSamples: 3,
+    });
+
+    provider.recordFrameDuration(10);
+    provider.recordFrameDuration(20);
+    provider.recordFrameDuration(65);
+
+    let stats = provider.getFrameStats();
+    assert.equal(stats.sampleCount, 3);
+    assert.equal(stats.droppedFrames, 1);
+    assert.equal(stats.maxFrameDurationMs, 65);
+    assert.equal(stats.running, true);
+
+    // Reset samples
+    provider.resetSamples();
+
+    stats = provider.getFrameStats();
+    assert.deepEqual(stats, {
+      sampleCount: 0,
+      droppedFrames: 0,
+      maxFrameDurationMs: null,
+      running: true, // running remains true!
+    });
+
+    // Provider read now reports unknown due to insufficient samples
+    const readings = provider.read({ now: NOW, signal });
+    assert.equal(readings[0]?.status, "unknown");
+
+    // Can record fresh samples normally
+    provider.recordFrameDuration(14);
+    assert.equal(provider.getFrameStats().sampleCount, 1);
+    assert.equal(provider.getFrameStats().maxFrameDurationMs, 14);
+  });
+
+  it("reports running: false in getFrameStats() after close", () => {
+    const provider = new FrameTimingProvider({ minSamples: 1 });
+    provider.recordFrameDuration(30);
+    assert.equal(provider.getFrameStats().running, true);
+
+    provider.close();
+    const stats = provider.getFrameStats();
+    assert.deepEqual(stats, {
+      sampleCount: 0,
+      droppedFrames: 0,
+      maxFrameDurationMs: null,
+      running: false,
+    });
+  });
 });
 
 describe("ComputePressureProvider", () => {
@@ -1018,5 +1273,154 @@ describe("ComputePressureProvider", () => {
         }),
       ConfigurationError,
     );
+  });
+
+  it("exposes getLastState() reflecting state lifecycle", async () => {
+    FakePressureObserver.instances.length = 0;
+    const provider = new ComputePressureProvider({
+      pressureObserverFactory: FakePressureObserver,
+    });
+
+    // 1. Returns null initially
+    assert.equal(provider.getLastState(), null);
+
+    // 2. Reflects state recorded via recordPressureState
+    provider.recordPressureState("fair");
+    assert.equal(provider.getLastState(), "fair");
+
+    // 3. Reflects state emitted by observer
+    await provider.start();
+    const observer = FakePressureObserver.instances[0];
+    assert.ok(observer);
+    observer.emit([{ source: "cpu", state: "serious", time: NOW }]);
+    assert.equal(provider.getLastState(), "serious");
+
+    // 4. Preserves last state after close
+    provider.close();
+    assert.equal(provider.getLastState(), "serious");
+  });
+
+  it("validates maxSampleAgeMs and clock options", () => {
+    assert.throws(() => new ComputePressureProvider({ maxSampleAgeMs: 0 }), ConfigurationError);
+    assert.throws(() => new ComputePressureProvider({ maxSampleAgeMs: -50 }), ConfigurationError);
+    assert.throws(
+      () => new ComputePressureProvider({ maxSampleAgeMs: Number.NaN }),
+      ConfigurationError,
+    );
+    assert.throws(
+      () => new ComputePressureProvider({ maxSampleAgeMs: Number.POSITIVE_INFINITY }),
+      ConfigurationError,
+    );
+    assert.throws(
+      // @ts-expect-error invalid type
+      () => new ComputePressureProvider({ maxSampleAgeMs: "5000" }),
+      ConfigurationError,
+    );
+
+    // clock validation
+    assert.throws(
+      // @ts-expect-error invalid clock type
+      () => new ComputePressureProvider({ clock: "system" }),
+      ConfigurationError,
+    );
+    assert.throws(
+      // @ts-expect-error invalid clock missing now()
+      () => new ComputePressureProvider({ clock: {} }),
+      ConfigurationError,
+    );
+
+    // sampleTime validation on recordPressureState
+    const provider = new ComputePressureProvider();
+    assert.throws(() => provider.recordPressureState("nominal", -1), ConfigurationError);
+    assert.throws(() => provider.recordPressureState("nominal", Number.NaN), ConfigurationError);
+    assert.throws(
+      // @ts-expect-error invalid sampleTime type
+      () => provider.recordPressureState("nominal", "1000"),
+      ConfigurationError,
+    );
+  });
+
+  it("detects stale pressure readings via maxSampleAgeMs and reports unavailable with reason stale_pressure_sample", () => {
+    const clock = createFakeClock(1_000_000);
+    const provider = new ComputePressureProvider({
+      maxSampleAgeMs: 2000,
+      clock,
+    });
+
+    // Record sample at t = 1_000_000
+    provider.recordPressureState("nominal");
+    assert.equal(provider.getLastState(), "nominal");
+
+    // Read within maxSampleAgeMs (elapsed = 1500 <= 2000)
+    clock.advance(1500);
+    const freshReadings = provider.read({ now: clock.now(), signal });
+    assert.equal(freshReadings.length, 1);
+    const fresh = freshReadings[0] as AvailableSignalReading;
+    assert.equal(fresh.status, "ok");
+    assert.equal(fresh.value, 0.25);
+
+    // Advance clock past maxSampleAgeMs (elapsed = 2500 > 2000)
+    clock.advance(1000); // now = 1_002_500
+    const staleReadings = provider.read({ now: clock.now(), signal });
+    assert.equal(staleReadings.length, 1);
+    const stale = staleReadings[0] as unknown as Record<string, unknown>;
+    assert.equal(stale.status, "unavailable");
+    assert.equal(stale.value, null);
+    assert.equal(stale.reason, "stale_pressure_sample");
+    assert.equal(stale.error, "stale_pressure_sample");
+    assert.equal((stale.details as Record<string, unknown>)?.reason, "stale_pressure_sample");
+    assert.equal((stale.details as Record<string, unknown>)?.sampleAgeMs, 2500);
+
+    // getLastState() still returns the last observed state even when stale!
+    assert.equal(provider.getLastState(), "nominal");
+
+    // Recording fresh sample at now restores status ok
+    provider.recordPressureState("critical");
+    const restoredReadings = provider.read({ now: clock.now(), signal });
+    const restored = restoredReadings[0] as AvailableSignalReading;
+    assert.equal(restored.status, "ok");
+    assert.equal(restored.value, 1);
+    assert.equal(provider.getLastState(), "critical");
+  });
+
+  it("reports stale readings when PressureObserver records age past maxSampleAgeMs", async () => {
+    FakePressureObserver.instances.length = 0;
+    const provider = new ComputePressureProvider({
+      maxSampleAgeMs: 500,
+      pressureObserverFactory: FakePressureObserver,
+    });
+
+    await provider.start();
+    const observer = FakePressureObserver.instances[0];
+    assert.ok(observer);
+
+    // Observer emits record with time = NOW
+    observer.emit([{ source: "cpu", state: "fair", time: NOW }]);
+
+    // Read at NOW + 300 (age = 300 <= 500) -> fresh ok
+    const fresh = provider.read({ now: NOW + 300, signal })[0] as AvailableSignalReading;
+    assert.equal(fresh.status, "ok");
+    assert.equal(fresh.value, 0.5);
+
+    // Read at NOW + 600 (age = 600 > 500) -> stale unavailable
+    const stale = provider.read({ now: NOW + 600, signal })[0] as unknown as Record<
+      string,
+      unknown
+    >;
+    assert.equal(stale.status, "unavailable");
+    assert.equal(stale.value, null);
+    assert.equal(stale.reason, "stale_pressure_sample");
+  });
+
+  it("does not enforce staleness when maxSampleAgeMs is not configured", () => {
+    const clock = createFakeClock(1_000_000);
+    const provider = new ComputePressureProvider({ clock });
+
+    provider.recordPressureState("serious");
+    clock.advance(100_000); // 100 seconds later!
+
+    const reading = provider.read({ now: clock.now(), signal })[0] as AvailableSignalReading;
+    assert.equal(reading.status, "ok");
+    assert.equal(reading.value, 0.75);
   });
 });

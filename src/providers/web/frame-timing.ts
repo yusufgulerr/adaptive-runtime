@@ -12,8 +12,17 @@ export const WEB_FRAME_DROPPED_RATIO = "web.frame.droppedRatio";
 export interface FrameTimingProviderOptions {
   readonly id?: string;
   readonly targetFrameBudgetMs?: number;
+  readonly targetFrameDurationMs?: number;
+  readonly droppedFrameThresholdMs?: number;
   readonly windowSize?: number;
   readonly minSamples?: number;
+}
+
+export interface FrameTimingStats {
+  readonly sampleCount: number;
+  readonly droppedFrames: number;
+  readonly maxFrameDurationMs: number | null;
+  readonly running: boolean;
 }
 
 function validateId(id: string | undefined, defaultId: string): string {
@@ -37,6 +46,7 @@ export class FrameTimingProvider implements SignalProvider {
   readonly id: string;
   readonly signals: readonly SignalDescriptor[];
   readonly #targetFrameBudgetMs: number;
+  readonly #droppedFrameThresholdMs: number;
   readonly #windowSize: number;
   readonly #minSamples: number;
   #samples: number[] = [];
@@ -45,15 +55,47 @@ export class FrameTimingProvider implements SignalProvider {
   constructor(options: FrameTimingProviderOptions = {}) {
     this.id = validateId(options.id, "web-frame-timing");
 
-    const targetFrameBudgetMs = options.targetFrameBudgetMs ?? 16.67;
     if (
-      typeof targetFrameBudgetMs !== "number" ||
-      !Number.isFinite(targetFrameBudgetMs) ||
-      targetFrameBudgetMs <= 0
+      options.targetFrameBudgetMs !== undefined &&
+      (typeof options.targetFrameBudgetMs !== "number" ||
+        !Number.isFinite(options.targetFrameBudgetMs) ||
+        options.targetFrameBudgetMs <= 0)
     ) {
       throw new ConfigurationError("targetFrameBudgetMs must be a positive finite number.");
     }
+    if (
+      options.targetFrameDurationMs !== undefined &&
+      (typeof options.targetFrameDurationMs !== "number" ||
+        !Number.isFinite(options.targetFrameDurationMs) ||
+        options.targetFrameDurationMs <= 0)
+    ) {
+      throw new ConfigurationError("targetFrameDurationMs must be a positive finite number.");
+    }
+    if (
+      options.targetFrameBudgetMs !== undefined &&
+      options.targetFrameDurationMs !== undefined &&
+      options.targetFrameBudgetMs !== options.targetFrameDurationMs
+    ) {
+      throw new ConfigurationError(
+        "targetFrameBudgetMs and targetFrameDurationMs must match when both are provided.",
+      );
+    }
+
+    const targetFrameBudgetMs =
+      options.targetFrameDurationMs ?? options.targetFrameBudgetMs ?? 16.67;
     this.#targetFrameBudgetMs = targetFrameBudgetMs;
+
+    const droppedFrameThresholdMs = options.droppedFrameThresholdMs ?? 50;
+    if (
+      typeof droppedFrameThresholdMs !== "number" ||
+      !Number.isFinite(droppedFrameThresholdMs) ||
+      droppedFrameThresholdMs <= this.#targetFrameBudgetMs
+    ) {
+      throw new ConfigurationError(
+        `droppedFrameThresholdMs must be a finite number greater than targetFrameDurationMs (${this.#targetFrameBudgetMs}).`,
+      );
+    }
+    this.#droppedFrameThresholdMs = droppedFrameThresholdMs;
 
     const windowSize = options.windowSize ?? 60;
     if (typeof windowSize !== "number" || !Number.isInteger(windowSize) || windowSize < 5) {
@@ -99,6 +141,29 @@ export class FrameTimingProvider implements SignalProvider {
     if (this.#samples.length > this.#windowSize) {
       this.#samples.shift();
     }
+  }
+
+  getFrameStats(): FrameTimingStats {
+    let droppedFrames = 0;
+    let maxFrameDurationMs: number | null = null;
+    for (const d of this.#samples) {
+      if (d > this.#droppedFrameThresholdMs) {
+        droppedFrames += 1;
+      }
+      if (maxFrameDurationMs === null || d > maxFrameDurationMs) {
+        maxFrameDurationMs = d;
+      }
+    }
+    return Object.freeze({
+      sampleCount: this.#samples.length,
+      droppedFrames,
+      maxFrameDurationMs,
+      running: !this.#closed,
+    });
+  }
+
+  resetSamples(): void {
+    this.#samples = [];
   }
 
   clearSamples(): void {
