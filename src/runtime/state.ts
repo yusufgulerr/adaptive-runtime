@@ -10,7 +10,15 @@ import type {
 } from "../types/decision.js";
 import type { RuntimeStats, StrategyStats } from "../types/run.js";
 import type { SignalStatus, SignalUnit } from "../types/signals.js";
-import type { OperationRuntimeState, RuntimeStateSnapshot } from "../types/state.js";
+import type {
+  OperationRuntimeState,
+  OperationStateSnapshot,
+  OperationStateTransition,
+  RuntimeStateSnapshot,
+  SerializedOperationState,
+  StateSnapshotDiff,
+  StateSnapshotInspection,
+} from "../types/state.js";
 import { validateOperationId, validateStrategyId } from "./validate.js";
 
 const DECISION_KINDS: readonly DecisionKind[] = [
@@ -647,3 +655,176 @@ export function validateRuntimeStateSnapshot(input: unknown): RuntimeStateSnapsh
     operations,
   });
 }
+
+/**
+ * Validates and deeply clones a runtime state snapshot. Alias for
+ * `validateRuntimeStateSnapshot`.
+ */
+export const validateStateSnapshot = validateRuntimeStateSnapshot;
+
+/**
+ * Produces a deterministic summary inspection of a runtime state snapshot.
+ * Validates the snapshot before generating the summary.
+ */
+export function inspectStateSnapshot(snapshot: unknown): StateSnapshotInspection {
+  const validated = validateRuntimeStateSnapshot(snapshot);
+  const operationIds = validated.operations
+    .map((op) => op.operationId)
+    .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+
+  let totalStrategyRecords = 0;
+  const activeStrategiesByOperation: Record<string, string | null> = {};
+
+  const sortedOps = [...validated.operations].sort((a, b) =>
+    a.operationId < b.operationId ? -1 : a.operationId > b.operationId ? 1 : 0,
+  );
+
+  for (const op of sortedOps) {
+    totalStrategyRecords += Object.keys(op.state.stats.strategies).length;
+    activeStrategiesByOperation[op.operationId] = op.state.policyState.currentStrategyId;
+  }
+
+  return deepFreeze({
+    version: 1 as const,
+    exportedAtMs: validated.exportedAt,
+    operationCount: validated.operations.length,
+    operationIds: Object.freeze(operationIds),
+    totalStrategyRecords,
+    activeStrategiesByOperation: Object.freeze(activeStrategiesByOperation),
+  });
+}
+
+/**
+ * Computes a deterministic diff between two runtime state snapshots.
+ * Validates both snapshots before computing the diff.
+ */
+export function diffStateSnapshots(
+  before: RuntimeStateSnapshot,
+  after: RuntimeStateSnapshot,
+): StateSnapshotDiff;
+export function diffStateSnapshots(before: unknown, after: unknown): StateSnapshotDiff;
+export function diffStateSnapshots(before: unknown, after: unknown): StateSnapshotDiff {
+  const validBefore = validateRuntimeStateSnapshot(before);
+  const validAfter = validateRuntimeStateSnapshot(after);
+
+  const beforeMap = new Map<string, OperationStateSnapshot>();
+  for (const op of validBefore.operations) {
+    beforeMap.set(op.operationId, op);
+  }
+
+  const afterMap = new Map<string, OperationStateSnapshot>();
+  for (const op of validAfter.operations) {
+    afterMap.set(op.operationId, op);
+  }
+
+  const addedOperations: string[] = [];
+  const removedOperations: string[] = [];
+  const strategyTransitions: OperationStateTransition[] = [];
+  const unchangedOperations: string[] = [];
+
+  for (const opId of afterMap.keys()) {
+    if (!beforeMap.has(opId)) {
+      addedOperations.push(opId);
+    }
+  }
+
+  for (const opId of beforeMap.keys()) {
+    if (!afterMap.has(opId)) {
+      removedOperations.push(opId);
+    }
+  }
+
+  for (const [opId, beforeOp] of beforeMap.entries()) {
+    const afterOp = afterMap.get(opId);
+    if (afterOp === undefined) {
+      continue;
+    }
+    const previousStrategyId = beforeOp.state.policyState.currentStrategyId;
+    const currentStrategyId = afterOp.state.policyState.currentStrategyId;
+
+    if (previousStrategyId !== currentStrategyId) {
+      strategyTransitions.push(
+        Object.freeze({
+          operationId: opId,
+          previousStrategyId,
+          currentStrategyId,
+          switchCountDelta: 1,
+        }),
+      );
+    } else {
+      unchangedOperations.push(opId);
+    }
+  }
+
+  addedOperations.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  removedOperations.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  unchangedOperations.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  strategyTransitions.sort((a, b) =>
+    a.operationId < b.operationId ? -1 : a.operationId > b.operationId ? 1 : 0,
+  );
+
+  return deepFreeze({
+    addedOperations: Object.freeze(addedOperations),
+    removedOperations: Object.freeze(removedOperations),
+    strategyTransitions: Object.freeze(strategyTransitions),
+    unchangedOperations: Object.freeze(unchangedOperations),
+  });
+}
+
+/**
+ * Filters a runtime state snapshot to include only operations matching the
+ * specified allowed IDs list or predicate function. Validates the input snapshot
+ * and returns a deeply frozen RuntimeStateSnapshot.
+ */
+export function filterStateSnapshot(
+  snapshot: RuntimeStateSnapshot,
+  predicateOrIds:
+    | readonly string[]
+    | ((operationId: string, state: SerializedOperationState) => boolean),
+): RuntimeStateSnapshot;
+export function filterStateSnapshot(
+  snapshot: unknown,
+  predicateOrIds: unknown,
+): RuntimeStateSnapshot;
+export function filterStateSnapshot(
+  snapshot: unknown,
+  predicateOrIds: unknown,
+): RuntimeStateSnapshot {
+  const validated = validateRuntimeStateSnapshot(snapshot);
+
+  let predicate: (operationId: string, state: SerializedOperationState) => boolean;
+
+  if (typeof predicateOrIds === "function") {
+    predicate = predicateOrIds as (operationId: string, state: SerializedOperationState) => boolean;
+  } else if (Array.isArray(predicateOrIds)) {
+    const allowed = new Set<string>();
+    for (const [index, id] of predicateOrIds.entries()) {
+      if (typeof id !== "string") {
+        throw new ConfigurationError(`predicateOrIds[${index}] must be a string operation ID.`);
+      }
+      allowed.add(id);
+    }
+    predicate = (operationId: string) => allowed.has(operationId);
+  } else {
+    throw new ConfigurationError(
+      "predicateOrIds must be an array of operation IDs or a predicate function.",
+    );
+  }
+
+  const operations = validated.operations.filter((entry) =>
+    predicate(entry.operationId, entry.state),
+  );
+
+  return deepFreeze({
+    version: 1 as const,
+    exportedAt: validated.exportedAt,
+    operations,
+  });
+}
+
+export type {
+  OperationStateTransition,
+  SerializedOperationState,
+  StateSnapshotDiff,
+  StateSnapshotInspection,
+};
