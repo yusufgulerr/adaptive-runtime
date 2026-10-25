@@ -2023,6 +2023,281 @@ describe("AdaptiveRuntime", () => {
       ConfigurationError,
     );
   });
+
+  it("queries in-flight operation status during selection, execution, after completion, after abort, and rejects invalid IDs", async () => {
+    function deferred<T = void>() {
+      let resolve!: (value: T | PromiseLike<T>) => void;
+      let reject!: (reason?: unknown) => void;
+      const promise = new Promise<T>((res, rej) => {
+        resolve = res;
+        reject = rej;
+      });
+      return { promise, resolve, reject };
+    }
+
+    const selectGate = deferred<void>();
+    const execGate = deferred<void>();
+
+    const slowProvider = new FunctionSignalProvider({
+      id: "select-gate-provider",
+      signalName: "test.select",
+      unit: "count",
+      read: async (context) => {
+        await selectGate.promise;
+        return [
+          {
+            name: "test.select",
+            unit: "count",
+            status: "ok",
+            value: 1,
+            observedAt: context.now,
+          },
+        ];
+      },
+    });
+
+    const runtime = createAdaptiveRuntime({
+      providers: [slowProvider],
+      policy: { evaluationIntervalMs: 0 },
+    });
+
+    // 1. Initial state: nothing in-flight
+    assert.equal(runtime.hasInFlight("op-flight-test"), false);
+    assert.equal(runtime.hasInFlight(), false);
+    assert.deepEqual(runtime.getActiveOperations(), []);
+
+    const runPromise = runtime.run({
+      operationId: "op-flight-test",
+      input: 1,
+      strategies: [
+        strategy("async-flight", 1, async () => {
+          await execGate.promise;
+          return "done";
+        }),
+      ],
+    });
+
+    // 2. Selection phase: selection lock held while provider read is pending
+    await Promise.resolve();
+    assert.equal(runtime.hasInFlight("op-flight-test"), true);
+    assert.equal(runtime.hasInFlight(), true);
+    assert.deepEqual(runtime.getActiveOperations(), ["op-flight-test"]);
+
+    // Selection lock released, entering strategy execution phase
+    selectGate.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // 3. Execution phase: activeRuns > 0 while strategy is running
+    assert.equal(runtime.hasInFlight("op-flight-test"), true);
+    assert.equal(runtime.hasInFlight(), true);
+    assert.deepEqual(runtime.getActiveOperations(), ["op-flight-test"]);
+
+    // 4. Completion phase: active runs decremented and cleared
+    execGate.resolve();
+    const result = await runPromise;
+    assert.equal(result.value, "done");
+    assert.equal(runtime.hasInFlight("op-flight-test"), false);
+    assert.equal(runtime.hasInFlight(), false);
+    assert.deepEqual(runtime.getActiveOperations(), []);
+
+    // 5. Aborted run phase
+    const abortController = new AbortController();
+    const abortGate = deferred<void>();
+    const abortPromise = runtime.run({
+      operationId: "op-abort-test",
+      input: 1,
+      signal: abortController.signal,
+      strategies: [
+        strategy("abort-strat", 1, async ({ signal }) => {
+          abortGate.resolve();
+          return new Promise<string>((_, reject) => {
+            signal?.addEventListener(
+              "abort",
+              () => reject(new OperationAbortedError("op-abort-test", signal.reason)),
+              { once: true },
+            );
+          });
+        }),
+      ],
+    });
+
+    await abortGate.promise;
+    assert.equal(runtime.hasInFlight("op-abort-test"), true);
+    assert.equal(runtime.hasInFlight(), true);
+
+    abortController.abort(new Error("aborted-by-caller"));
+    await assert.rejects(abortPromise, OperationAbortedError);
+    assert.equal(runtime.hasInFlight("op-abort-test"), false);
+    assert.equal(runtime.hasInFlight(), false);
+
+    // 6. Invalid operationId inputs
+    for (const invalid of ["", "   ", null, 456, true, {}, []]) {
+      assert.throws(() => runtime.hasInFlight(invalid as unknown as string), ConfigurationError);
+    }
+
+    // 7. Non-disturbing: verify LRU tracking is not refreshed
+    runtime.setOperationPolicy("tenant-1", { minQualityTier: 1 });
+    runtime.setOperationPolicy("tenant-2", { minQualityTier: 1 });
+    const trackedOrder = runtime.getTrackedOperations();
+    assert.deepEqual(trackedOrder, ["op-flight-test", "op-abort-test", "tenant-1", "tenant-2"]);
+
+    runtime.hasInFlight("tenant-1");
+    runtime.hasInFlight("op-flight-test");
+    runtime.hasInFlight();
+    runtime.getActiveOperations();
+    assert.deepEqual(runtime.getTrackedOperations(), trackedOrder);
+
+    // 8. Remains usable after close()
+    await runtime.close();
+    assert.equal(runtime.hasInFlight("tenant-1"), false);
+    assert.equal(runtime.hasInFlight(), false);
+    assert.deepEqual(runtime.getActiveOperations(), []);
+  });
+
+  it("introspects active operations across concurrent runs with code-unit sorting and immutability", async () => {
+    function deferred<T = void>() {
+      let resolve!: (value: T | PromiseLike<T>) => void;
+      let reject!: (reason?: unknown) => void;
+      const promise = new Promise<T>((res, rej) => {
+        resolve = res;
+        reject = rej;
+      });
+      return { promise, resolve, reject };
+    }
+
+    const runtime = createAdaptiveRuntime();
+    const barrier = deferred<void>();
+
+    const makePendingStrategy = (id: string): Strategy<number, string> =>
+      strategy(`s-${id}`, 1, async () => {
+        await barrier.promise;
+        return id;
+      });
+
+    // Run multiple operations concurrently
+    const pZ = runtime.run({
+      operationId: "tenant-z",
+      input: 1,
+      strategies: [makePendingStrategy("z")],
+    });
+    const p10 = runtime.run({
+      operationId: "tenant-10",
+      input: 1,
+      strategies: [makePendingStrategy("10")],
+    });
+    const pA = runtime.run({
+      operationId: "tenant-a",
+      input: 1,
+      strategies: [makePendingStrategy("a")],
+    });
+    const p2 = runtime.run({
+      operationId: "tenant-2",
+      input: 1,
+      strategies: [makePendingStrategy("2")],
+    });
+    const pADup = runtime.run({
+      operationId: "tenant-a",
+      input: 2,
+      strategies: [makePendingStrategy("a-dup")],
+    });
+
+    await Promise.resolve();
+
+    const active = runtime.getActiveOperations();
+    assert.ok(Object.isFrozen(active));
+    // Unique and code-unit ascending sorted: "tenant-10" < "tenant-2" < "tenant-a" < "tenant-z"
+    assert.deepEqual(active, ["tenant-10", "tenant-2", "tenant-a", "tenant-z"]);
+
+    barrier.resolve();
+    await Promise.all([pZ, p10, pA, p2, pADup]);
+
+    const activePost = runtime.getActiveOperations();
+    assert.deepEqual(activePost, []);
+    assert.ok(Object.isFrozen(activePost));
+
+    await runtime.close();
+    assert.deepEqual(runtime.getActiveOperations(), []);
+  });
+
+  it("prunes idle unpinned operations in code-unit order while preserving active and pinned operations", async () => {
+    function deferred<T = void>() {
+      let resolve!: (value: T | PromiseLike<T>) => void;
+      let reject!: (reason?: unknown) => void;
+      const promise = new Promise<T>((res, rej) => {
+        resolve = res;
+        reject = rej;
+      });
+      return { promise, resolve, reject };
+    }
+
+    const runtime = createAdaptiveRuntime();
+    const holdGate = deferred<void>();
+
+    const syncStrat = (name: string): Strategy<number, string> =>
+      strategy(`strat-${name}`, 1, () => name);
+
+    // Setup completed unpinned operations
+    await runtime.run({ operationId: "op-idle-beta", input: 1, strategies: [syncStrat("b")] });
+    await runtime.run({ operationId: "op-idle-alpha", input: 1, strategies: [syncStrat("a")] });
+    // Setup pinned operation
+    await runtime.run({ operationId: "op-pinned", input: 1, strategies: [syncStrat("p")] });
+    runtime.pinStrategy("op-pinned", "strat-p");
+
+    // Setup active in-flight operation
+    const activeRun = runtime.run({
+      operationId: "op-active",
+      input: 1,
+      strategies: [
+        strategy("active-s", 1, async () => {
+          await holdGate.promise;
+          return "active-done";
+        }),
+      ],
+    });
+
+    await Promise.resolve();
+    assert.equal(runtime.hasInFlight("op-active"), true);
+
+    // Prune: only completed unpinned operations should be removed
+    const pruned = runtime.pruneIdleOperations();
+    assert.ok(Object.isFrozen(pruned));
+    // Deterministically code-unit sorted
+    assert.deepEqual(pruned, ["op-idle-alpha", "op-idle-beta"]);
+
+    // Active and pinned operations remain tracked
+    const tracked = runtime.getTrackedOperations();
+    assert.ok(tracked.includes("op-pinned"));
+    assert.ok(tracked.includes("op-active"));
+    assert.ok(!tracked.includes("op-idle-alpha"));
+    assert.ok(!tracked.includes("op-idle-beta"));
+
+    // Complete the active run and prune again
+    holdGate.resolve();
+    await activeRun;
+    assert.equal(runtime.hasInFlight("op-active"), false);
+
+    const prunedSecond = runtime.pruneIdleOperations();
+    assert.ok(Object.isFrozen(prunedSecond));
+    assert.deepEqual(prunedSecond, ["op-active"]);
+    assert.deepEqual(runtime.getTrackedOperations(), ["op-pinned"]);
+
+    // Calling pruneIdleOperations when no idle operations exist returns empty frozen array
+    const prunedThird = runtime.pruneIdleOperations();
+    assert.deepEqual(prunedThird, []);
+    assert.ok(Object.isFrozen(prunedThird));
+
+    // Test pruning after close()
+    await runtime.run({ operationId: "op-close-test", input: 1, strategies: [syncStrat("c")] });
+    assert.ok(runtime.getTrackedOperations().includes("op-close-test"));
+
+    await runtime.close();
+    // Must not throw RuntimeClosedError
+    const prunedPostClose = runtime.pruneIdleOperations();
+    assert.ok(Object.isFrozen(prunedPostClose));
+    assert.deepEqual(prunedPostClose, ["op-close-test"]);
+    assert.deepEqual(runtime.getTrackedOperations(), ["op-pinned"]);
+  });
 });
 
 describe("operation validation", () => {
