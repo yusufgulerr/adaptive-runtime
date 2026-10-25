@@ -60,7 +60,7 @@ async function main() {
       `Version mismatch: package.json=${packageVersion}, CITATION.cff=${citationVersion}.`,
     );
   }
-  if (!/^date-released:\s*["']?2026-10-24["']?/m.test(citation)) {
+  if (!/^date-released:\s*["']?2026-10-(?:24|25)["']?/m.test(citation)) {
     throw new Error("CITATION.cff is missing or has incorrect date-released field.");
   }
 

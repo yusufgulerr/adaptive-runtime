@@ -6,6 +6,54 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) after 1.0.
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-10-25
+
+### Added
+
+- **Cost-aware policy selector & safe selector boundary (PR #36):**
+  - `createCostBudgetSelector(options)`: Cost-aware strategy selector that evaluates candidate resource costs against configured budget limits, selecting the highest-quality candidate within budget limits or minimizing cost overshoot.
+  - `createSafeSelector(options)`: Resilient selector wrapper providing fallback strategy selection, error isolation, and graceful degradation when custom selectors encounter exceptions or unexpected null outputs.
+  - First-class candidate sample wiring for enriched custom selector decisions.
+- **Observability timeline simulation samples & provider conformance (PR #37):**
+  - `simulatePolicyTimeline` enriched with candidate samples and expanded timeline telemetry.
+  - Conformance test hardening across provider lifecycle hooks (`start`, `read`, `close`).
+  - Added `.reset()` metric method to `MetricsCollector` for isolated lifecycle testing and Prometheus metric resets.
+- **Runtime in-flight operation queries & idle pruning (PR #38):**
+  - `runtime.getInFlightOperations()`: Non-disturbing introspection API returning all active, concurrent in-flight operation IDs and counts.
+  - `runtime.pruneIdleOperations(maxIdleAgeMs)`: Explicit pruning of idle operation states exceeding the maximum idle age.
+  - Wired live samples directly into candidate views during concurrent policy evaluation.
+- **Concurrency benchmarks, JSON telemetry & 1.0-RC stability specification (PR #39):**
+  - High-concurrency benchmark harness with `--json` telemetry reporting (`npm run benchmark:concurrency -- --json`).
+  - `scripts/compare-benchmarks.mjs`: Automated regression comparison utility for throughput and latency percentiles across benchmark runs.
+  - Added `docs/DEPRECATION_AND_STABILITY.md`: Formal stability, semantic versioning, and deprecation lifecycle specification for the 1.0-RC roadmap.
+- **Deterministic state snapshot inspection, diffing & filtering (PR #40):**
+  - `inspectStateSnapshot(snapshot)`: Summary inspection extracting version, exported timestamp, operation counts, operation IDs, and active strategy mappings.
+  - `diffStateSnapshots(before, after)`: Deterministic diffing utility reporting added, removed, unchanged operations, and strategy transitions with switch count deltas.
+  - `filterStateSnapshot(snapshot, predicateOrIds)`: Pure functional filtering of state snapshots by operation IDs or predicate.
+  - `validateStateSnapshot` / `validateRuntimeStateSnapshot`: Strict validation ensuring snapshot structural integrity and schema conformity.
+- **Web provider resilience, frame timing & compute pressure guards (PR #41):**
+  - `FrameTimingProvider`: Added frame dropped ratio calculation (`WEB_FRAME_DROPPED_RATIO`) and p95 frame duration stats (`WEB_FRAME_DURATION_P95_MS`).
+  - `ComputePressureProvider`: Added pressure observation staleness guard to invalidate obsolete records past configured staleness thresholds.
+  - `NetworkInformationProvider`: Factored Save-Data headers and flags into network RTT calculations (`WEB_NETWORK_SAVE_DATA`).
+- **Property testing expansion & adversarial concurrency soak suite (PR #42):**
+  - Property test suites in `tests/property/` verifying invariant preservation across state serialization round-trips and custom policy selection.
+  - Tier-5 adversarial soak suite (`tests/e2e/tier5-adversarial-soak.test.ts`) exercising high-throughput concurrent load, random cancellations, and unexpected errors.
+- **Edge execution budget headroom & window reset (PR #43):**
+  - `EdgeExecutionBudgetProvider` / `ExecutionBudgetProvider`: Configurable wall-clock and CPU reserve headroom (`reserveWallClockMs`, `reserveCpuMs`).
+  - Added `getBudgetSnapshot()` inspection method and window reset capabilities for serverless worker reuse.
+  - WinterCG execution budget signals: `EDGE_EXECUTION_REMAINING_MS`, `EDGE_EXECUTION_USED_RATIO`, and `EDGE_CONCURRENCY_SATURATION`.
+- **Composite signal median/spread operators & quorum guards (PR #44):**
+  - Added `median` and `spread` combiner modes to `CompositeSignalProvider` for robust multi-signal aggregation.
+  - Added `minAvailableSources` quorum guard ensuring composite calculations only run when minimum quorum thresholds are satisfied.
+  - Added `onSourceUnavailable` diagnostic notification callback and exported `createCompositeSignalProvider` factory.
+
+### Changed
+
+- Re-exported `inspectStateSnapshot`, `diffStateSnapshots`, `filterStateSnapshot`, `validateStateSnapshot`, and related types in `src/core.ts`, `src/node.ts`, and `src/index.ts`.
+- Re-exported `createCompositeSignalProvider`, `CompositeCombinerMode`, `createEdgeExecutionBudgetProvider`, `EdgeExecutionBudgetProvider`, and `EdgeBudgetSnapshot` in `src/providers/index.ts` and root barrels.
+- Updated `scripts/verify-package-exports.mjs` and `tests/integration/public-api.test.ts` to assert all v0.8.0 public runtime symbols.
+
+
 ## [0.7.0] — 2026-10-24
 
 ### Added

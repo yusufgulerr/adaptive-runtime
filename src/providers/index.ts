@@ -5,9 +5,11 @@
  */
 
 export {
+  type CompositeCombinerMode,
   CompositeSignalProvider,
   type CompositeSignalProviderOptions,
   type CompositeSignalRule,
+  createCompositeSignalProvider,
 } from "./composite.js";
 export {
   type CpuUsageSnapshot,
@@ -16,9 +18,13 @@ export {
   PROCESS_CPU_UTILIZATION,
 } from "./cpu-utilization.js";
 export {
+  createEdgeExecutionBudgetProvider,
   EDGE_CONCURRENCY_SATURATION,
   EDGE_EXECUTION_REMAINING_MS,
   EDGE_EXECUTION_USED_RATIO,
+  type EdgeBudgetSnapshot,
+  EdgeExecutionBudgetProvider,
+  type EdgeExecutionBudgetProviderOptions,
   ExecutionBudgetProvider,
   type ExecutionBudgetProviderOptions,
   type ExecutionBudgetSnapshot,
