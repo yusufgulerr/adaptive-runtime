@@ -25,21 +25,22 @@ strategies with declared quality and cost tiers. The runtime reads the signals
 you supply, applies a deterministic policy, and runs exactly one strategy with
 inspectable metadata explaining the choice.
 
-> **Status: v0.7.0 (1.0-RC preparation).** The public repository is live and the
-> v0.7.0 tree passes CI on Node.js 22, 24, and 26, plus CodeQL and OpenSSF
+> **Status: v0.8.0 (1.0-RC preparation).** The public repository is live and the
+> v0.8.0 tree passes CI on Node.js 22, 24, and 26, plus CodeQL and OpenSSF
 > Scorecard on `main`. The release keeps the verified multi-runtime core for
 > Node.js, browsers, and WinterCG edge runtimes with **zero runtime dependencies**
-> and a fully typed ESM surface, and adds composable policy selectors
-> (`composeSelectors`, `minSamples` cold-start guards, `fallbackSelector`
-> delegation, `useEwma` mode), non-disturbing runtime introspection
-> (`getEffectivePolicy`, `getProviderDescriptors`, `getTrackedOperations`,
-> `getAllStats`), exact stats hydration (`totalDurationMs`), coalesced in-flight
-> signal reads, configurable quality detail bounds
-> (`maxQualityCheckDetailLength`), and high-fidelity timeline simulation. The
-> public API follows semantic versioning; the 0.x series may still make
-> documented breaking changes. GitHub releases are tag-driven; npm publication
-> is a separate owner-approved OIDC/provenance dispatch and is pending. See
-> [Architectural boundaries](#architectural-boundaries-and-operational-notes).
+> and a fully typed ESM surface. v0.8.0 delivers cost-aware strategy selection
+> (`createCostBudgetSelector`), safe selector boundaries (`createSafeSelector`),
+> non-disturbing in-flight operation queries (`hasInFlight`, `getActiveOperations`),
+> idle operation pruning (`pruneIdleOperations`), deterministic state snapshot
+> inspection, diffing, and selective filtering (`inspectStateSnapshot`,
+> `diffStateSnapshots`, `filterStateSnapshot`, `validateStateSnapshot`), web frame timing
+> stats and compute pressure staleness guards, edge execution budget reserve headroom
+> (`reserveWallClockMs`, `reserveCpuMs`), composite signal aggregation operators
+> (`median`, `spread`) with quorum guards (`minAvailableSources`), and an adversarial
+> soak test suite. The public API follows semantic versioning; GitHub releases are
+> tag-driven; npm publication is a separate owner-approved OIDC/provenance dispatch.
+> See [Architectural boundaries](#architectural-boundaries-and-operational-notes).
 
 ## Why
 
@@ -278,8 +279,8 @@ bundler never pulls Node.js built-ins into a browser or worker build.
 | `NetworkInformationProvider` | `/web` | `web.network.rttMs`, `web.network.downlinkMbps`, `web.network.saveData` | W3C Network Information API; `saveData` is `1`/`0` |
 | `FrameTimingProvider` | `/web` | `web.frame.durationP95Ms`, `web.frame.droppedRatio` | Sliding frame window; call `recordFrameDuration()` from your render loop |
 | `ComputePressureProvider` | `/web` | `web.computePressure` | W3C Compute Pressure; maps `nominal`/`fair`/`serious`/`critical` to `0.25`/`0.5`/`0.75`/`1`; `unknown` until the first record |
-| `ExecutionBudgetProvider` | `/edge` | `edge.execution.remainingMs`, `edge.execution.usedRatio`, `edge.concurrency.saturation` | App-supplied wall-clock and concurrency snapshot; ideal for serverless deadlines |
-| `CompositeSignalProvider` | root, `/core`, `/edge` | Derived names and units from rules | Combines child provider readings; propagates `error` > `stale` > `unsupported` > `unknown` and never coerces unavailable inputs |
+| `ExecutionBudgetProvider` | `/edge` | `edge.execution.remainingMs`, `edge.execution.usedRatio`, `edge.concurrency.saturation` | App-supplied wall-clock/CPU budget snapshot with reserve headroom (`reserveWallClockMs`, `reserveCpuMs`) and window reset |
+| `CompositeSignalProvider` | root, `/core`, `/edge` | Derived names and units from rules | Combines child provider readings via `mean`, `median`, `spread`, `min`, `max`, `sum`, `p95`, with `minAvailableSources` quorum guard |
 
 You may implement `SignalProvider` directly. Providers are started lazily before
 their first read and closed by `runtime.close()`. See
@@ -318,6 +319,9 @@ const runtime = createAdaptiveRuntime({
 | `getAllStats()` | Snapshot mapping of runtime stats across all tracked operations (does not alter LRU order) |
 | `getDecision(operationId)` | Last decision, or `null` |
 | `getStats(operationId)` | Run/success/failure counts, exact totalDurationMs, latency, strategy counts, EWMA latency, and error rate |
+| `hasInFlight(operationId)` | Whether an operation is currently selecting or executing strategies (does not alter LRU order) |
+| `getActiveOperations()` | Array of all operation IDs with active in-flight executions (does not alter LRU order) |
+| `pruneIdleOperations(maxAgeMs?)` | Evicts unpinned, idle operations with no in-flight work older than threshold |
 | `exportState(operationId?)` | Versioned, deeply frozen JSON snapshot of policy state, decisions, pins, overrides, and stats |
 | `importState(snapshot)` | Validate and atomically restore a snapshot; rejected while an operation has in-flight work |
 | `removeOperation(operationId)` | Remove retained state, pins, overrides, and stats; returns `false` while a selection/run is active |
@@ -381,19 +385,45 @@ applicability, quality bounds, or the stability gates:
 ```ts
 import {
   composeSelectors,
+  createCostBudgetSelector,
   createErrorRateGuardSelector,
   createLatencyBudgetSelector,
+  createSafeSelector,
 } from "adaptive-runtime";
 
 const runtime = createAdaptiveRuntime({
   policy: definePolicy({
     budgets: [/* ... */],
-    customSelector: composeSelectors([
-      createErrorRateGuardSelector({ maxErrorRate: 0.05, minSamples: 5 }),
-      createLatencyBudgetSelector({ maxLatencyMs: 150, useEwma: true }),
-    ]),
+    customSelector: createSafeSelector(
+      composeSelectors([
+        createErrorRateGuardSelector({ maxErrorRate: 0.05, minSamples: 5 }),
+        createLatencyBudgetSelector({ maxLatencyMs: 150, useEwma: true }),
+        createCostBudgetSelector({ maxCostTier: 2 }),
+      ]),
+      { fallbackSelector: () => "economy" },
+    ),
   }),
 });
+```
+
+### State snapshot inspection and diffing
+
+Exported state snapshots can be inspected, diffed, and filtered deterministically without instantiating a runtime:
+
+```ts
+import {
+  inspectStateSnapshot,
+  diffStateSnapshots,
+  filterStateSnapshot,
+} from "adaptive-runtime";
+
+const snapshot = runtime.exportState();
+const inspection = inspectStateSnapshot(snapshot);
+// inspection.operationCount, inspection.operationIds, inspection.activeStrategiesByOperation
+
+const filtered = filterStateSnapshot(snapshot, ["search", "planner"]);
+const diff = diffStateSnapshots(beforeSnapshot, afterSnapshot);
+// diff.addedOperations, diff.removedOperations, diff.strategyTransitions, diff.unchangedOperations
 ```
 
 The full type and error reference is in [docs/API.md](docs/API.md). Design

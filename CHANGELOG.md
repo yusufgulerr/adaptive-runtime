@@ -356,6 +356,7 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) after 1.0.
 - Version 0.3.0 uses a two-phase release: the tag and GitHub release are created
   from the release commit, and npm publication remains a separate owner-approved
   `workflow_dispatch`.
+- Version 0.2.0 (Phase 2 bounded operation state, commit `184f7ca`) was consolidated directly into the 0.3.0 public milestone so the version timeline is 100% transparent and contiguous.
 - The portable `/core`, `/web`, `/edge`, `/policy`, `/observability`, and
   `/testing` modules contain no Node.js built-in imports and do not read the
   Node.js `process` object.
@@ -411,3 +412,13 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) after 1.0.
   registry publication is still pending.
 - The runtime is not a sandbox and does not enforce OS resource limits.
 - Public API and decision reason codes may change during 0.x.
+
+[Unreleased]: https://github.com/yusufgulerr/adaptive-runtime/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/yusufgulerr/adaptive-runtime/compare/v0.7.0...v0.8.0
+[0.7.0]: https://github.com/yusufgulerr/adaptive-runtime/compare/v0.6.0...v0.7.0
+[0.6.0]: https://github.com/yusufgulerr/adaptive-runtime/compare/v0.5.0...v0.6.0
+[0.5.0]: https://github.com/yusufgulerr/adaptive-runtime/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/yusufgulerr/adaptive-runtime/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/yusufgulerr/adaptive-runtime/compare/v0.1.0...v0.3.0
+[0.1.0]: https://github.com/yusufgulerr/adaptive-runtime/releases/tag/v0.1.0
+
