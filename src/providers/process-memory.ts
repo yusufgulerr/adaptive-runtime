@@ -11,12 +11,23 @@ export const PROCESS_MEMORY_RSS = "process.memory.rss";
 
 export type MemoryUsageSnapshot = Pick<NodeJS.MemoryUsage, "heapUsed" | "rss">;
 
+export interface ProcessMemoryStats {
+  readonly lastRssBytes: number | null;
+  readonly lastHeapUsedBytes: number | null;
+  readonly peakRssBytes: number | null;
+  readonly peakHeapUsedBytes: number | null;
+  readonly heapUtilizationRatio: number | null;
+  readonly remainingHeapBytes: number | null;
+}
+
 export interface ProcessMemoryProviderOptions {
   readonly id?: string;
   readonly heapSignalName?: string;
   readonly rssSignalName?: string;
   /** Injection point for tests. Defaults to process.memoryUsage(). */
   readonly memoryUsage?: () => MemoryUsageSnapshot;
+  /** Optional heap limit in bytes to calculate heap utilization ratio and headroom. */
+  readonly heapLimitBytes?: number;
 }
 
 function validateId(id: string | undefined, defaultId: string): string {
@@ -55,6 +66,11 @@ export class ProcessMemoryProvider implements SignalProvider {
   readonly #heapSignalName: string;
   readonly #rssSignalName: string;
   readonly #memoryUsage: () => MemoryUsageSnapshot;
+  readonly #heapLimitBytes?: number;
+  #lastRssBytes: number | null = null;
+  #lastHeapUsedBytes: number | null = null;
+  #peakRssBytes: number | null = null;
+  #peakHeapUsedBytes: number | null = null;
   #closed = false;
 
   constructor(options: ProcessMemoryProviderOptions = {}) {
@@ -70,6 +86,15 @@ export class ProcessMemoryProvider implements SignalProvider {
     if (options.memoryUsage !== undefined && typeof options.memoryUsage !== "function") {
       throw new ConfigurationError("ProcessMemoryProvider memoryUsage must be a function.");
     }
+    if (
+      options.heapLimitBytes !== undefined &&
+      (typeof options.heapLimitBytes !== "number" ||
+        !Number.isFinite(options.heapLimitBytes) ||
+        options.heapLimitBytes <= 0)
+    ) {
+      throw new ConfigurationError("heapLimitBytes must be a positive finite number.");
+    }
+    this.#heapLimitBytes = options.heapLimitBytes;
     this.#memoryUsage = options.memoryUsage ?? (() => process.memoryUsage());
     this.signals = [
       {
@@ -83,6 +108,26 @@ export class ProcessMemoryProvider implements SignalProvider {
         description: "Resident set size of this process (process.memoryUsage().rss).",
       },
     ];
+  }
+
+  getMemoryStats(): ProcessMemoryStats {
+    const heapUtilizationRatio =
+      this.#heapLimitBytes !== undefined && this.#lastHeapUsedBytes !== null
+        ? Math.min(1, this.#lastHeapUsedBytes / this.#heapLimitBytes)
+        : null;
+    const remainingHeapBytes =
+      this.#heapLimitBytes !== undefined && this.#lastHeapUsedBytes !== null
+        ? Math.max(0, this.#heapLimitBytes - this.#lastHeapUsedBytes)
+        : null;
+
+    return Object.freeze({
+      lastRssBytes: this.#lastRssBytes,
+      lastHeapUsedBytes: this.#lastHeapUsedBytes,
+      peakRssBytes: this.#peakRssBytes,
+      peakHeapUsedBytes: this.#peakHeapUsedBytes,
+      heapUtilizationRatio,
+      remainingHeapBytes,
+    });
   }
 
   close(): void {
@@ -109,6 +154,22 @@ export class ProcessMemoryProvider implements SignalProvider {
       ];
     }
     const usage = this.#memoryUsage();
+    this.#lastHeapUsedBytes = usage.heapUsed;
+    this.#lastRssBytes = usage.rss;
+    if (this.#peakHeapUsedBytes === null || usage.heapUsed > this.#peakHeapUsedBytes) {
+      this.#peakHeapUsedBytes = usage.heapUsed;
+    }
+    if (this.#peakRssBytes === null || usage.rss > this.#peakRssBytes) {
+      this.#peakRssBytes = usage.rss;
+    }
+
+    const heapDetails: Record<string, unknown> = {};
+    if (this.#heapLimitBytes !== undefined) {
+      heapDetails.heapLimitBytes = this.#heapLimitBytes;
+      heapDetails.heapUtilizationRatio = Math.min(1, usage.heapUsed / this.#heapLimitBytes);
+      heapDetails.remainingHeapBytes = Math.max(0, this.#heapLimitBytes - usage.heapUsed);
+    }
+
     return [
       {
         name: this.#heapSignalName,
@@ -117,6 +178,7 @@ export class ProcessMemoryProvider implements SignalProvider {
         value: usage.heapUsed,
         observedAt: context.now,
         confidence: 1,
+        ...(this.#heapLimitBytes !== undefined ? { details: heapDetails } : {}),
       },
       {
         name: this.#rssSignalName,
