@@ -20,7 +20,13 @@ const PROVIDER_SIGNAL = "test.value";
 
 function makeCollector(
   providers: readonly SignalProvider[],
-  options: { evaluationIntervalMs?: number; providerTimeoutMs?: number; clock?: FakeClock } = {},
+  options: {
+    evaluationIntervalMs?: number;
+    providerTimeoutMs?: number;
+    clock?: FakeClock;
+    maxConsecutiveFailures?: number;
+    failureCooldownMs?: number;
+  } = {},
 ): {
   collector: SignalCollector;
   clock: FakeClock;
@@ -34,6 +40,8 @@ function makeCollector(
     providerTimeoutMs: options.providerTimeoutMs ?? 1000,
     clock,
     onProviderError: (providerId, error) => errors.push({ providerId, error }),
+    maxConsecutiveFailures: options.maxConsecutiveFailures,
+    failureCooldownMs: options.failureCooldownMs,
   });
   return { collector, clock, errors };
 }
@@ -1069,6 +1077,482 @@ describe("SignalCollector", () => {
       assert.equal(collector.getDescriptors(), initialDescriptors);
       await collector.close();
       assert.equal(collector.getDescriptors(), initialDescriptors);
+    });
+  });
+
+  describe("circuit breaker and provider health", () => {
+    it("validates maxConsecutiveFailures strictly in constructor", () => {
+      const provider = new FunctionSignalProvider({
+        read: (ctx) => [okSignal(PROVIDER_SIGNAL, 1, ctx.now)],
+      });
+
+      for (const invalid of [
+        0,
+        -1,
+        -10,
+        1.5,
+        Number.NaN,
+        Number.POSITIVE_INFINITY,
+        "2",
+        null,
+        false,
+        {},
+      ]) {
+        assert.throws(
+          () =>
+            makeCollector([provider], {
+              maxConsecutiveFailures: invalid as unknown as number,
+            }),
+          ConfigurationError,
+        );
+      }
+
+      for (const valid of [1, 2, 5, 100]) {
+        const { collector } = makeCollector([provider], { maxConsecutiveFailures: valid });
+        assert.ok(collector);
+      }
+    });
+
+    it("validates failureCooldownMs strictly in constructor", () => {
+      const provider = new FunctionSignalProvider({
+        read: (ctx) => [okSignal(PROVIDER_SIGNAL, 1, ctx.now)],
+      });
+
+      for (const invalid of [
+        0,
+        -1,
+        -500,
+        Number.NaN,
+        Number.POSITIVE_INFINITY,
+        Number.NEGATIVE_INFINITY,
+        "500",
+        null,
+        false,
+        {},
+      ]) {
+        assert.throws(
+          () =>
+            makeCollector([provider], {
+              failureCooldownMs: invalid as unknown as number,
+            }),
+          ConfigurationError,
+        );
+      }
+
+      for (const valid of [0.5, 1, 500, 10_000]) {
+        const { collector } = makeCollector([provider], { failureCooldownMs: valid });
+        assert.ok(collector);
+      }
+    });
+
+    it("opens circuit after maxConsecutiveFailures consecutive failures and fast-fails during cooldown", async () => {
+      let readCount = 0;
+      let shouldFail = true;
+      const provider = new FunctionSignalProvider({
+        id: "flaky-provider",
+        signalName: PROVIDER_SIGNAL,
+        read: (ctx) => {
+          readCount += 1;
+          if (shouldFail) {
+            throw new Error(`failure-${readCount}`);
+          }
+          return [okSignal(PROVIDER_SIGNAL, 42, ctx.now)];
+        },
+      });
+
+      const { collector, clock, errors } = makeCollector([provider], {
+        evaluationIntervalMs: 1000,
+        maxConsecutiveFailures: 2,
+        failureCooldownMs: 5000,
+      });
+
+      // Read 1: first failure
+      const snap1 = await collector.collect(clock.now(), new AbortController().signal);
+      assert.equal(snap1.readings[0]?.status, "error");
+      assert.equal(readCount, 1);
+      assert.equal(errors.length, 1);
+
+      let health = collector.getProviderHealth();
+      assert.equal(health[0]?.consecutiveFailures, 1);
+      assert.equal(health[0]?.totalFailures, 1);
+      assert.equal(health[0]?.totalReads, 1);
+      assert.equal(health[0]?.circuitOpen, false);
+      assert.equal(health[0]?.cooldownUntilMs, null);
+
+      // Read 2: second consecutive failure -> opens circuit!
+      clock.advance(1000);
+      const snap2 = await collector.collect(clock.now(), new AbortController().signal);
+      assert.equal(snap2.readings[0]?.status, "error");
+      assert.equal(readCount, 2);
+      assert.equal(errors.length, 2);
+
+      const expectedCooldownUntil = clock.now() + 5000;
+      health = collector.getProviderHealth();
+      assert.equal(health[0]?.consecutiveFailures, 2);
+      assert.equal(health[0]?.totalFailures, 2);
+      assert.equal(health[0]?.totalReads, 2);
+      assert.equal(health[0]?.circuitOpen, true);
+      assert.equal(health[0]?.cooldownUntilMs, expectedCooldownUntil);
+
+      // Read 3: within cooldown (now + 1000 < cooldownUntil) -> fast-fail, read() skipped!
+      clock.advance(1000);
+      const snap3 = await collector.collect(clock.now(), new AbortController().signal);
+      assert.equal(readCount, 2); // Provider read() was NOT called!
+      assert.equal(errors.length, 2); // No new error reported!
+      const reading3 = snap3.readings[0] as unknown as Record<string, unknown>;
+      assert.equal(reading3.status, "unavailable");
+      assert.equal(reading3.reason, "provider_circuit_open");
+      assert.equal(reading3.error, "provider_circuit_open");
+      assert.equal(reading3.value, null);
+      assert.equal((reading3.details as Record<string, unknown>)?.reason, "provider_circuit_open");
+
+      // Read 4: still within cooldown (now + 2000 < cooldownUntil) -> fast-fail
+      clock.advance(2000);
+      const snap4 = await collector.collect(clock.now(), new AbortController().signal);
+      assert.equal(readCount, 2);
+      assert.equal(snap4.readings[0]?.status, "unavailable");
+
+      // Read 5: half-open probe at now >= cooldownUntil (advance remaining 2000ms)
+      clock.advance(2000);
+      assert.equal(clock.now(), expectedCooldownUntil);
+      // Health shows circuitOpen = false at probe time
+      health = collector.getProviderHealth();
+      assert.equal(health[0]?.circuitOpen, false);
+
+      // Provider recovers
+      shouldFail = false;
+      const snap5 = await collector.collect(clock.now(), new AbortController().signal);
+      assert.equal(readCount, 3); // Half-open probe invoked read()!
+      assert.equal(snap5.readings[0]?.status, "ok");
+      assert.equal(requireOk(snap5.readings[0]).value, 42);
+
+      // Circuit is closed, consecutiveFailures reset
+      health = collector.getProviderHealth();
+      assert.equal(health[0]?.consecutiveFailures, 0);
+      assert.equal(health[0]?.totalFailures, 2);
+      assert.equal(health[0]?.totalReads, 3);
+      assert.equal(health[0]?.circuitOpen, false);
+      assert.equal(health[0]?.cooldownUntilMs, null);
+
+      await collector.close();
+    });
+
+    it("half-open probe re-opens circuit for another failureCooldownMs upon failure", async () => {
+      let readCount = 0;
+      const provider = new FunctionSignalProvider({
+        id: "always-broken",
+        signalName: PROVIDER_SIGNAL,
+        read: () => {
+          readCount += 1;
+          throw new Error("still broken");
+        },
+      });
+
+      const { collector, clock } = makeCollector([provider], {
+        evaluationIntervalMs: 100,
+        maxConsecutiveFailures: 1,
+        failureCooldownMs: 2000,
+      });
+
+      // Read 1: fails and immediately opens circuit (maxConsecutiveFailures = 1)
+      await collector.collect(clock.now(), new AbortController().signal);
+      assert.equal(readCount, 1);
+      const firstCooldownUntil = clock.now() + 2000;
+      assert.equal(collector.getProviderHealth()[0]?.cooldownUntilMs, firstCooldownUntil);
+      assert.equal(collector.getProviderHealth()[0]?.circuitOpen, true);
+
+      // Read 2: during cooldown -> skipped
+      clock.advance(500);
+      const snap2 = await collector.collect(clock.now(), new AbortController().signal);
+      assert.equal(readCount, 1);
+      assert.equal(snap2.readings[0]?.status, "unavailable");
+
+      // Read 3: half-open probe (advance past 2000ms)
+      clock.advance(1600); // clock.now() = 2100 > 2000
+      const snap3 = await collector.collect(clock.now(), new AbortController().signal);
+      assert.equal(readCount, 2); // Probe executed!
+      assert.equal(snap3.readings[0]?.status, "error");
+
+      // Circuit re-opened for another 2000ms from 2100 -> cooldown until 4100!
+      const secondCooldownUntil = clock.now() + 2000;
+      assert.equal(collector.getProviderHealth()[0]?.cooldownUntilMs, secondCooldownUntil);
+      assert.equal(collector.getProviderHealth()[0]?.circuitOpen, true);
+      assert.equal(collector.getProviderHealth()[0]?.consecutiveFailures, 2);
+
+      // Read 4: skipped during second cooldown
+      clock.advance(500);
+      const snap4 = await collector.collect(clock.now(), new AbortController().signal);
+      assert.equal(readCount, 2);
+      assert.equal(snap4.readings[0]?.status, "unavailable");
+
+      await collector.close();
+    });
+
+    it("resets consecutiveFailures on intermediate success before reaching threshold", async () => {
+      let failNext = true;
+      let readCount = 0;
+      const provider = new FunctionSignalProvider({
+        id: "intermittent",
+        signalName: PROVIDER_SIGNAL,
+        read: (ctx) => {
+          readCount += 1;
+          if (failNext) {
+            throw new Error("intermittent failure");
+          }
+          return [okSignal(PROVIDER_SIGNAL, 99, ctx.now)];
+        },
+      });
+
+      const { collector, clock } = makeCollector([provider], {
+        evaluationIntervalMs: 100,
+        maxConsecutiveFailures: 2,
+        failureCooldownMs: 5000,
+      });
+
+      // Call 1: fails (1 failure)
+      await collector.collect(clock.now(), new AbortController().signal);
+      assert.equal(collector.getProviderHealth()[0]?.consecutiveFailures, 1);
+      assert.equal(collector.getProviderHealth()[0]?.circuitOpen, false);
+
+      // Call 2: succeeds -> resets consecutiveFailures to 0
+      clock.advance(200);
+      failNext = false;
+      await collector.collect(clock.now(), new AbortController().signal);
+      assert.equal(collector.getProviderHealth()[0]?.consecutiveFailures, 0);
+      assert.equal(collector.getProviderHealth()[0]?.circuitOpen, false);
+
+      // Call 3: fails again -> consecutiveFailures is 1, NOT 2! Circuit stays closed
+      clock.advance(200);
+      failNext = true;
+      await collector.collect(clock.now(), new AbortController().signal);
+      assert.equal(collector.getProviderHealth()[0]?.consecutiveFailures, 1);
+      assert.equal(collector.getProviderHealth()[0]?.circuitOpen, false);
+      assert.equal(collector.getProviderHealth()[0]?.totalFailures, 2);
+      assert.equal(collector.getProviderHealth()[0]?.totalReads, 3);
+      assert.equal(readCount, 3);
+
+      await collector.close();
+    });
+
+    it("opens circuit on async rejection and timeouts, eliminating latency spikes during cooldown", async () => {
+      let readCount = 0;
+      const provider: SignalProvider = {
+        id: "hanging-provider",
+        signals: [{ name: PROVIDER_SIGNAL, unit: "bytes" }],
+        read: () => {
+          readCount += 1;
+          // Hangs forever
+          return new Promise<readonly ResourceSignal[]>(() => undefined);
+        },
+      };
+
+      const { collector, clock } = makeCollector([provider], {
+        evaluationIntervalMs: 100,
+        providerTimeoutMs: 500,
+        maxConsecutiveFailures: 1,
+        failureCooldownMs: 10_000,
+      });
+
+      // Call 1: hangs, times out after 500ms
+      const pending1 = collector.collect(clock.now(), new AbortController().signal);
+      clock.advance(500);
+      const snap1 = await pending1;
+      assert.equal(snap1.readings[0]?.status, "error");
+      assert.equal(readCount, 1);
+      assert.equal(collector.getProviderHealth()[0]?.circuitOpen, true);
+
+      // Call 2: during cooldown -> returns immediately without waiting for provider timeout!
+      clock.advance(1000);
+      const snap2 = await collector.collect(clock.now(), new AbortController().signal);
+      assert.equal(readCount, 1); // read() was NOT called
+      assert.equal(snap2.readings[0]?.status, "unavailable");
+      assert.equal(
+        (snap2.readings[0] as unknown as Record<string, unknown>).reason,
+        "provider_circuit_open",
+      );
+
+      await collector.close();
+    });
+
+    it("isolates circuit breakers between multiple providers", async () => {
+      let healthyReads = 0;
+      let failingReads = 0;
+
+      const failingProvider = new FunctionSignalProvider({
+        id: "failing-provider",
+        signalName: "fail.signal",
+        read: () => {
+          failingReads += 1;
+          throw new Error("provider A down");
+        },
+      });
+
+      const healthyProvider = new FunctionSignalProvider({
+        id: "healthy-provider",
+        signalName: "ok.signal",
+        read: (ctx) => {
+          healthyReads += 1;
+          return [okSignal("ok.signal", 100, ctx.now)];
+        },
+      });
+
+      const { collector, clock } = makeCollector([failingProvider, healthyProvider], {
+        evaluationIntervalMs: 100,
+        maxConsecutiveFailures: 1,
+        failureCooldownMs: 5000,
+      });
+
+      // Cycle 1: failing provider trips circuit; healthy provider succeeds
+      const snap1 = await collector.collect(clock.now(), new AbortController().signal);
+      assert.equal(snap1.readings.length, 2);
+      assert.equal(failingReads, 1);
+      assert.equal(healthyReads, 1);
+
+      const health = collector.getProviderHealth();
+      const failHealth = health.find((h) => h.id === "failing-provider");
+      const okHealth = health.find((h) => h.id === "healthy-provider");
+      assert.equal(failHealth?.circuitOpen, true);
+      assert.equal(okHealth?.circuitOpen, false);
+
+      // Cycle 2: failing provider is skipped; healthy provider is still read!
+      clock.advance(500);
+      const snap2 = await collector.collect(clock.now(), new AbortController().signal);
+      assert.equal(failingReads, 1); // Skipped!
+      assert.equal(healthyReads, 2); // Read!
+
+      const failReading = snap2.readings.find((r) => r.name === "fail.signal");
+      const okReading = snap2.readings.find((r) => r.name === "ok.signal");
+      assert.equal(failReading?.status, "unavailable");
+      assert.equal(okReading?.status, "ok");
+
+      await collector.close();
+    });
+
+    it("getProviderHealth returns deeply frozen status array with dynamic circuitOpen evaluation", async () => {
+      const provider: SignalProvider = {
+        id: "telemetry-provider",
+        signals: [
+          { name: "telemetry.a", unit: "bytes" },
+          { name: "telemetry.b", unit: "count" },
+        ],
+        read: (ctx) => [
+          okSignal("telemetry.a", 1, ctx.now),
+          { name: "telemetry.b", unit: "count", status: "ok", value: 2, observedAt: ctx.now },
+        ],
+      };
+
+      const { collector } = makeCollector([provider], {
+        maxConsecutiveFailures: 2,
+        failureCooldownMs: 5000,
+      });
+
+      const health = collector.getProviderHealth();
+      assert.equal(health.length, 1);
+      assert.equal(Object.isFrozen(health), true);
+      assert.equal(Object.isFrozen(health[0]), true);
+      assert.equal(Object.isFrozen(health[0]?.signals), true);
+      assert.deepEqual(health[0]?.signals, ["telemetry.a", "telemetry.b"]);
+      assert.equal(health[0]?.consecutiveFailures, 0);
+      assert.equal(health[0]?.totalFailures, 0);
+      assert.equal(health[0]?.totalReads, 0);
+      assert.equal(health[0]?.circuitOpen, false);
+      assert.equal(health[0]?.cooldownUntilMs, null);
+
+      const firstHealth = health[0];
+      assert.ok(firstHealth);
+
+      assert.throws(() => {
+        (health as unknown as unknown[]).push({});
+      }, TypeError);
+      assert.throws(() => {
+        (firstHealth as unknown as Record<string, unknown>).consecutiveFailures = 99;
+      }, TypeError);
+      assert.throws(() => {
+        (firstHealth.signals as unknown as unknown[]).push("bad");
+      }, TypeError);
+
+      await collector.close();
+    });
+
+    it("resetProviderHealth resets single provider or all providers and validates providerId", async () => {
+      let p1Fails = true;
+      let p2Fails = true;
+
+      const provider1 = new FunctionSignalProvider({
+        id: "p1",
+        signalName: "p1.signal",
+        read: (ctx) => {
+          if (p1Fails) throw new Error("p1 error");
+          return [okSignal("p1.signal", 1, ctx.now)];
+        },
+      });
+
+      const provider2 = new FunctionSignalProvider({
+        id: "p2",
+        signalName: "p2.signal",
+        read: (ctx) => {
+          if (p2Fails) throw new Error("p2 error");
+          return [okSignal("p2.signal", 2, ctx.now)];
+        },
+      });
+
+      const { collector, clock } = makeCollector([provider1, provider2], {
+        evaluationIntervalMs: 100,
+        maxConsecutiveFailures: 1,
+        failureCooldownMs: 10_000,
+      });
+
+      // Trip both circuits
+      await collector.collect(clock.now(), new AbortController().signal);
+      let health = collector.getProviderHealth();
+      assert.equal(health.find((h) => h.id === "p1")?.circuitOpen, true);
+      assert.equal(health.find((h) => h.id === "p2")?.circuitOpen, true);
+      assert.equal(health.find((h) => h.id === "p1")?.totalFailures, 1);
+      assert.equal(health.find((h) => h.id === "p2")?.totalFailures, 1);
+
+      // Validation for resetProviderHealth(providerId)
+      for (const invalid of ["", "   ", " leading", "trailing ", 123, null, false, {}]) {
+        assert.throws(
+          () => collector.resetProviderHealth(invalid as unknown as string),
+          ConfigurationError,
+        );
+      }
+
+      // Reset single provider: "p1"
+      p1Fails = false;
+      collector.resetProviderHealth("p1");
+      health = collector.getProviderHealth();
+      const p1Health = health.find((h) => h.id === "p1");
+      const p2Health = health.find((h) => h.id === "p2");
+      assert.equal(p1Health?.circuitOpen, false);
+      assert.equal(p1Health?.consecutiveFailures, 0);
+      assert.equal(p1Health?.totalFailures, 0);
+      assert.equal(p1Health?.totalReads, 0);
+      assert.equal(p1Health?.cooldownUntilMs, null);
+      // p2 is still open!
+      assert.equal(p2Health?.circuitOpen, true);
+      assert.equal(p2Health?.totalFailures, 1);
+
+      // Now reset all providers
+      p2Fails = false;
+      collector.resetProviderHealth();
+      health = collector.getProviderHealth();
+      for (const entry of health) {
+        assert.equal(entry.circuitOpen, false);
+        assert.equal(entry.consecutiveFailures, 0);
+        assert.equal(entry.totalFailures, 0);
+        assert.equal(entry.totalReads, 0);
+        assert.equal(entry.cooldownUntilMs, null);
+      }
+
+      // Next collect executes both reads normally
+      clock.advance(200);
+      const snap = await collector.collect(clock.now(), new AbortController().signal);
+      assert.equal(snap.readings.length, 2);
+      assert.equal(snap.readings[0]?.status, "ok");
+      assert.equal(snap.readings[1]?.status, "ok");
+
+      await collector.close();
     });
   });
 });

@@ -501,4 +501,139 @@ describe("SignalCollector shared read stress", () => {
 
     await collector.close();
   });
+
+  it("eliminates timeout latency for 50 concurrent callers when circuit is open", async () => {
+    const fakeClock = new FakeClock(1_000_000);
+    const errors: Array<{ providerId: string; error: Error }> = [];
+    let reads = 0;
+    const provider = makeProvider(() => {
+      reads += 1;
+      // Hangs forever
+      return new Promise<readonly ResourceSignal[]>(() => undefined);
+    });
+    const collector = new SignalCollector({
+      providers: [provider],
+      evaluationIntervalMs: 1000,
+      providerTimeoutMs: 500,
+      maxConsecutiveFailures: 1,
+      failureCooldownMs: 5000,
+      clock: fakeClock,
+      onProviderError: (providerId, error) => errors.push({ providerId, error }),
+    });
+
+    // Cycle 1: 50 concurrent callers await hanging read
+    const cycle1Promises = Array.from({ length: 50 }, () =>
+      collector.collect(fakeClock.now(), new AbortController().signal),
+    );
+
+    // Timeout fires at 500ms
+    fakeClock.advance(500);
+    const cycle1Snapshots = await Promise.all(cycle1Promises);
+    assert.equal(reads, 1);
+    assert.equal(cycle1Snapshots.length, 50);
+    for (const [index, snapshot] of cycle1Snapshots.entries()) {
+      assert.equal(snapshot.readings[0]?.status, "error");
+      assert.equal(snapshot.cached, false);
+      assert.equal(snapshot.coalesced, index !== 0);
+    }
+    assert.equal(errors.length, 1);
+
+    // Circuit is now open
+    let health = collector.getProviderHealth();
+    assert.equal(health[0]?.circuitOpen, true);
+    assert.equal(health[0]?.consecutiveFailures, 1);
+    assert.equal(health[0]?.totalFailures, 1);
+    assert.equal(health[0]?.totalReads, 1);
+
+    // Cycle 2: advance past evaluationIntervalMs (total elapsed 1500 < 5000 cooldown)
+    // 50 concurrent callers request collection
+    fakeClock.advance(1000);
+    const cycle2Promises = Array.from({ length: 50 }, () =>
+      collector.collect(fakeClock.now(), new AbortController().signal),
+    );
+
+    // Resolves immediately without advancing clock or waiting for providerTimeoutMs!
+    const cycle2Snapshots = await Promise.all(cycle2Promises);
+    assert.equal(cycle2Snapshots.length, 50);
+    for (const [index, snapshot] of cycle2Snapshots.entries()) {
+      assert.equal(snapshot.cached, false);
+      assert.equal(snapshot.coalesced, index !== 0);
+      const reading = snapshot.readings[0] as unknown as Record<string, unknown>;
+      assert.equal(reading.status, "unavailable");
+      assert.equal(reading.reason, "provider_circuit_open");
+      assert.equal(reading.error, "provider_circuit_open");
+      assert.equal((reading.details as Record<string, unknown>)?.reason, "provider_circuit_open");
+    }
+
+    // Provider read() was completely skipped: reads count remains 1!
+    assert.equal(reads, 1);
+    assert.equal(errors.length, 1);
+
+    health = collector.getProviderHealth();
+    assert.equal(health[0]?.circuitOpen, true);
+    assert.equal(health[0]?.totalReads, 1);
+    assert.equal(health[0]?.totalFailures, 1);
+
+    await collector.close();
+  });
+
+  it("coalesces 30 concurrent callers on half-open probe and cleanly recovers", async () => {
+    const fakeClock = new FakeClock(10_000);
+    const errors: Array<{ providerId: string; error: Error }> = [];
+    let reads = 0;
+    const provider = makeProvider((ctx) => {
+      reads += 1;
+      if (reads === 1) {
+        return new Promise<readonly ResourceSignal[]>(() => undefined);
+      }
+      return [okReading(77, ctx.now)];
+    });
+    const collector = new SignalCollector({
+      providers: [provider],
+      evaluationIntervalMs: 1000,
+      providerTimeoutMs: 200,
+      maxConsecutiveFailures: 1,
+      failureCooldownMs: 2000,
+      clock: fakeClock,
+      onProviderError: (providerId, error) => errors.push({ providerId, error }),
+    });
+
+    // Cycle 1: initial hanging read times out and trips circuit
+    const cycle1Promise = collector.collect(fakeClock.now(), new AbortController().signal);
+    fakeClock.advance(200);
+    await cycle1Promise;
+    assert.equal(reads, 1);
+    assert.equal(collector.getProviderHealth()[0]?.circuitOpen, true);
+
+    // Advance clock past cooldown: now = 10_000 + 200 + 2000 = 12_200
+    fakeClock.advance(2000);
+    assert.equal(collector.getProviderHealth()[0]?.circuitOpen, false);
+
+    // Cycle 2: 30 concurrent callers trigger the half-open probe simultaneously
+    const probeCallers = Array.from({ length: 30 }, () =>
+      collector.collect(fakeClock.now(), new AbortController().signal),
+    );
+
+    const probeSnapshots = await Promise.all(probeCallers);
+    assert.equal(probeSnapshots.length, 30);
+    // Coalesced into a single probe read: reads count is 2
+    assert.equal(reads, 2);
+
+    for (const [index, snapshot] of probeSnapshots.entries()) {
+      assert.equal(snapshot.readings[0]?.status, "ok");
+      assert.equal(snapshot.readings[0]?.value, 77);
+      assert.equal(snapshot.cached, false);
+      assert.equal(snapshot.coalesced, index !== 0);
+    }
+
+    // Circuit is closed and consecutiveFailures is reset
+    const health = collector.getProviderHealth()[0];
+    assert.equal(health?.circuitOpen, false);
+    assert.equal(health?.consecutiveFailures, 0);
+    assert.equal(health?.totalFailures, 1);
+    assert.equal(health?.totalReads, 2);
+    assert.equal(health?.cooldownUntilMs, null);
+
+    await collector.close();
+  });
 });

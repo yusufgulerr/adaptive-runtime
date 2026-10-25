@@ -24,6 +24,18 @@ export interface SignalCollectorOptions {
   readonly providerTimeoutMs: number;
   readonly clock: Clock;
   readonly onProviderError: (providerId: string, error: Error) => void;
+  readonly maxConsecutiveFailures?: number;
+  readonly failureCooldownMs?: number;
+}
+
+export interface ProviderHealthStatus {
+  readonly id: string;
+  readonly signals: readonly string[];
+  readonly consecutiveFailures: number;
+  readonly totalFailures: number;
+  readonly totalReads: number;
+  readonly circuitOpen: boolean;
+  readonly cooldownUntilMs: number | null;
 }
 
 interface ProviderEntry {
@@ -33,6 +45,10 @@ interface ProviderEntry {
   startPromise: Promise<void> | null;
   started: boolean;
   startError: Error | null;
+  consecutiveFailures: number;
+  totalFailures: number;
+  totalReads: number;
+  cooldownUntilMs: number | null;
 }
 
 type ProviderWaitResult<T> =
@@ -47,7 +63,14 @@ interface SharedRead {
 }
 
 const SIGNAL_UNITS: readonly SignalUnit[] = ["bytes", "milliseconds", "ratio", "count", "custom"];
-const SIGNAL_STATUSES: readonly SignalStatus[] = ["ok", "unknown", "unsupported", "stale", "error"];
+const SIGNAL_STATUSES: readonly string[] = [
+  "ok",
+  "unknown",
+  "unsupported",
+  "stale",
+  "error",
+  "unavailable",
+];
 
 function requireNonEmpty(value: unknown, label: string): string {
   if (typeof value !== "string" || value.trim().length === 0) {
@@ -103,6 +126,8 @@ export class SignalCollector {
   readonly #providerTimeoutMs: number;
   readonly #clock: Clock;
   readonly #onProviderError: (providerId: string, error: Error) => void;
+  readonly #maxConsecutiveFailures: number | undefined;
+  readonly #failureCooldownMs: number | undefined;
   #snapshot: SignalSnapshot | null = null;
   #inflight: SharedRead | null = null;
   #sequence = 0;
@@ -114,6 +139,30 @@ export class SignalCollector {
     this.#providerTimeoutMs = options.providerTimeoutMs;
     this.#clock = options.clock;
     this.#onProviderError = options.onProviderError;
+
+    if (options.maxConsecutiveFailures !== undefined) {
+      if (
+        typeof options.maxConsecutiveFailures !== "number" ||
+        !Number.isSafeInteger(options.maxConsecutiveFailures) ||
+        options.maxConsecutiveFailures < 1
+      ) {
+        throw new ConfigurationError(
+          "maxConsecutiveFailures must be a safe positive integer greater than or equal to 1.",
+        );
+      }
+    }
+    this.#maxConsecutiveFailures = options.maxConsecutiveFailures;
+
+    if (options.failureCooldownMs !== undefined) {
+      if (
+        typeof options.failureCooldownMs !== "number" ||
+        !Number.isFinite(options.failureCooldownMs) ||
+        options.failureCooldownMs <= 0
+      ) {
+        throw new ConfigurationError("failureCooldownMs must be a finite positive number.");
+      }
+    }
+    this.#failureCooldownMs = options.failureCooldownMs;
 
     const seenProviderIds = new Set<string>();
     const seenSignalNames = new Set<string>();
@@ -146,6 +195,10 @@ export class SignalCollector {
         startPromise: null,
         started: false,
         startError: null,
+        consecutiveFailures: 0,
+        totalFailures: 0,
+        totalReads: 0,
+        cooldownUntilMs: null,
       });
     }
     this.#entries = entries;
@@ -158,6 +211,46 @@ export class SignalCollector {
 
   getDescriptors(): readonly SignalDescriptor[] {
     return this.#descriptors;
+  }
+
+  getProviderHealth(): readonly ProviderHealthStatus[] {
+    const now = this.#clock.now();
+    const statuses = this.#entries.map((entry) => {
+      const signals = Object.freeze([...entry.descriptors.keys()]);
+      const circuitOpen = entry.cooldownUntilMs !== null && now < entry.cooldownUntilMs;
+      return Object.freeze({
+        id: entry.provider.id,
+        signals,
+        consecutiveFailures: entry.consecutiveFailures,
+        totalFailures: entry.totalFailures,
+        totalReads: entry.totalReads,
+        circuitOpen,
+        cooldownUntilMs: entry.cooldownUntilMs,
+      });
+    });
+    return Object.freeze(statuses);
+  }
+
+  resetProviderHealth(providerId?: string): void {
+    if (providerId !== undefined) {
+      const id = requireNonEmpty(providerId, "Provider id");
+      for (const entry of this.#entries) {
+        if (entry.provider.id === id) {
+          entry.consecutiveFailures = 0;
+          entry.totalFailures = 0;
+          entry.totalReads = 0;
+          entry.cooldownUntilMs = null;
+        }
+      }
+      return;
+    }
+
+    for (const entry of this.#entries) {
+      entry.consecutiveFailures = 0;
+      entry.totalFailures = 0;
+      entry.totalReads = 0;
+      entry.cooldownUntilMs = null;
+    }
   }
 
   async collect(
@@ -328,6 +421,10 @@ export class SignalCollector {
     now: number,
     signal: AbortSignal,
   ): Promise<readonly ResourceSignal[]> {
+    if (entry.cooldownUntilMs !== null && now < entry.cooldownUntilMs) {
+      return this.#synthesizeCircuitOpenReadings(entry, now);
+    }
+
     if (entry.startError !== null) {
       return this.#errorReadings(entry, now, entry.startError.message);
     }
@@ -335,11 +432,15 @@ export class SignalCollector {
     if (!entry.started) {
       const start = this.#beginStart(entry, now, signal);
       if (start.errorReadings !== null) {
+        this.#recordProviderFailure(entry, now);
         return start.errorReadings;
       }
       if (start.promise !== null) {
         const startFailure = await this.#awaitStart(entry, now, signal, start.promise);
         if (startFailure !== null) {
+          if (!signal.aborted) {
+            this.#recordProviderFailure(entry, now);
+          }
           return startFailure;
         }
       }
@@ -357,18 +458,63 @@ export class SignalCollector {
       this.#drainProviderErrors(entry, reportedReadError);
     }
     if (!result.ok) {
+      if (!result.aborted) {
+        this.#recordProviderFailure(entry, now);
+      }
       return this.#errorReadings(entry, now, result.error.message);
     }
 
     try {
-      return this.#normalizeReadings(entry, result.value, now);
+      const readings = this.#normalizeReadings(entry, result.value, now);
+      this.#recordProviderSuccess(entry);
+      return readings;
     } catch (error) {
       const failure = toError(error);
       if (!signal.aborted) {
         this.#onProviderError(entry.provider.id, failure);
+        this.#recordProviderFailure(entry, now);
       }
       return this.#errorReadings(entry, now, failure.message);
     }
+  }
+
+  #recordProviderSuccess(entry: ProviderEntry): void {
+    entry.totalReads += 1;
+    entry.consecutiveFailures = 0;
+    entry.cooldownUntilMs = null;
+  }
+
+  #recordProviderFailure(entry: ProviderEntry, now: number): void {
+    entry.totalReads += 1;
+    entry.totalFailures += 1;
+    entry.consecutiveFailures += 1;
+    if (
+      this.#maxConsecutiveFailures !== undefined &&
+      entry.consecutiveFailures >= this.#maxConsecutiveFailures &&
+      this.#failureCooldownMs !== undefined &&
+      this.#failureCooldownMs > 0
+    ) {
+      entry.cooldownUntilMs = now + this.#failureCooldownMs;
+    }
+  }
+
+  #synthesizeCircuitOpenReadings(entry: ProviderEntry, now: number): readonly ResourceSignal[] {
+    return Object.freeze(
+      [...entry.descriptors.values()].map((descriptor) =>
+        Object.freeze({
+          name: descriptor.name,
+          unit: descriptor.unit,
+          status: "unavailable" as unknown as Exclude<SignalStatus, "ok">,
+          value: null as unknown as number,
+          reason: "provider_circuit_open",
+          error: "provider_circuit_open",
+          observedAt: now,
+          details: Object.freeze({
+            reason: "provider_circuit_open",
+          }),
+        }),
+      ),
+    );
   }
 
   /**
