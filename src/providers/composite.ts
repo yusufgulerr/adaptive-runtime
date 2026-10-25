@@ -11,19 +11,65 @@ import type {
 } from "../types/signals.js";
 import { errorMessage, toError } from "../utils/errors.js";
 
+export type CompositeCombinerMode = "median" | "spread" | "min" | "max" | "mean" | "sum" | "p95";
+
+export const VALID_COMPOSITE_COMBINER_MODES: readonly CompositeCombinerMode[] = [
+  "median",
+  "spread",
+  "min",
+  "max",
+  "mean",
+  "sum",
+  "p95",
+];
+
+export interface SourceUnavailableInfo {
+  readonly ruleSignalName: string;
+  readonly sourceSignalName: string;
+  readonly status: string;
+  readonly reason?: string;
+}
+
+export type OnSourceUnavailableListener = (info: SourceUnavailableInfo) => void;
+
 export interface CompositeSignalRule {
   readonly name: string;
   readonly unit: SignalUnit;
   readonly description?: string;
-  readonly inputs: readonly string[];
-  readonly compute: (values: Readonly<Record<string, number>>) => number;
+  readonly inputs?: readonly string[];
+  readonly sources?: readonly string[];
+  readonly compute?: (values: Readonly<Record<string, number>>) => number;
+  readonly mode?: CompositeCombinerMode;
+  readonly minAvailableSources?: number;
 }
 
 export interface CompositeSignalProviderOptions {
   readonly id?: string;
   readonly providers: readonly SignalProvider[];
-  readonly rules: readonly CompositeSignalRule[];
+  readonly rules?: readonly CompositeSignalRule[];
   readonly passthroughInputs?: boolean;
+  readonly onSourceUnavailable?: OnSourceUnavailableListener;
+  readonly name?: string;
+  readonly unit?: SignalUnit;
+  readonly description?: string;
+  readonly sources?: readonly string[];
+  readonly inputs?: readonly string[];
+  readonly mode?: CompositeCombinerMode;
+  readonly compute?: (values: Readonly<Record<string, number>>) => number;
+  readonly minAvailableSources?: number;
+}
+
+export type CreateCompositeSignalProviderOptions = CompositeSignalProviderOptions;
+
+interface NormalizedCompositeSignalRule {
+  readonly name: string;
+  readonly unit: SignalUnit;
+  readonly description?: string;
+  readonly inputs: readonly string[];
+  readonly sources: readonly string[];
+  readonly compute?: (values: Readonly<Record<string, number>>) => number;
+  readonly mode?: CompositeCombinerMode;
+  readonly minAvailableSources?: number;
 }
 
 interface ChildReadResult {
@@ -39,11 +85,12 @@ const VALID_SIGNAL_UNITS: readonly SignalUnit[] = [
   "custom",
 ];
 
-const STATUS_PRIORITY: Record<Exclude<SignalStatus, "ok">, number> = {
+const STATUS_PRIORITY: Record<string, number> = {
   error: 4,
   stale: 3,
   unsupported: 2,
   unknown: 1,
+  unavailable: 1,
 };
 
 function validateId(id: string | undefined, defaultId: string): string {
@@ -63,7 +110,9 @@ function resolvePriority(
   current: Exclude<SignalStatus, "ok">,
   incoming: Exclude<SignalStatus, "ok">,
 ): Exclude<SignalStatus, "ok"> {
-  return STATUS_PRIORITY[incoming] > STATUS_PRIORITY[current] ? incoming : current;
+  const currentPriority = STATUS_PRIORITY[current] ?? 1;
+  const incomingPriority = STATUS_PRIORITY[incoming] ?? 1;
+  return incomingPriority > currentPriority ? incoming : current;
 }
 
 function getInputStatus(reading: ResourceSignal | undefined): SignalStatus {
@@ -87,17 +136,55 @@ function getInputStatus(reading: ResourceSignal | undefined): SignalStatus {
   return "error";
 }
 
+function computeCombinerMode(mode: CompositeCombinerMode, values: readonly number[]): number {
+  switch (mode) {
+    case "min":
+      return Math.min(...values);
+    case "max":
+      return Math.max(...values);
+    case "sum":
+      return values.reduce((acc, v) => acc + v, 0);
+    case "mean":
+      return values.reduce((acc, v) => acc + v, 0) / values.length;
+    case "spread": {
+      if (values.length <= 1) {
+        return 0;
+      }
+      return Math.max(...values) - Math.min(...values);
+    }
+    case "median": {
+      const sorted = [...values].sort((a, b) => a - b);
+      const len = sorted.length;
+      if (len % 2 === 1) {
+        return sorted[Math.floor(len / 2)] ?? 0;
+      }
+      const mid2 = len / 2;
+      const mid1 = mid2 - 1;
+      return ((sorted[mid1] ?? 0) + (sorted[mid2] ?? 0)) / 2;
+    }
+    case "p95": {
+      const sorted = [...values].sort((a, b) => a - b);
+      const idx = Math.min(sorted.length - 1, Math.max(0, Math.ceil(0.95 * sorted.length) - 1));
+      return sorted[idx] ?? 0;
+    }
+    default:
+      throw new ConfigurationError(`Unsupported combiner mode: ${String(mode)}`);
+  }
+}
+
 /**
  * Derives higher-level signals from one or more child SignalProviders by executing
- * user-defined compute rules with strict priority-based status propagation.
+ * user-defined compute rules or multi-signal aggregation operators with strict
+ * priority-based status propagation, quorum guarding, and diagnostics.
  */
 export class CompositeSignalProvider implements SignalProvider {
   readonly id: string;
   readonly signals: readonly SignalDescriptor[];
   readonly #providers: readonly SignalProvider[];
-  readonly #rules: readonly CompositeSignalRule[];
+  readonly #rules: readonly NormalizedCompositeSignalRule[];
   readonly #childDescriptors: readonly SignalDescriptor[];
   readonly #passthroughInputs: boolean;
+  readonly #onSourceUnavailable?: OnSourceUnavailableListener;
   #providerErrors: Error[] = [];
   #closed = false;
 
@@ -112,6 +199,16 @@ export class CompositeSignalProvider implements SignalProvider {
       throw new ConfigurationError("CompositeSignalProvider passthroughInputs must be a boolean.");
     }
     this.#passthroughInputs = options.passthroughInputs ?? true;
+
+    if (
+      options.onSourceUnavailable !== undefined &&
+      typeof options.onSourceUnavailable !== "function"
+    ) {
+      throw new ConfigurationError(
+        "CompositeSignalProvider onSourceUnavailable must be a function.",
+      );
+    }
+    this.#onSourceUnavailable = options.onSourceUnavailable;
 
     if (!Array.isArray(options.providers) || options.providers.length === 0) {
       throw new ConfigurationError(
@@ -165,14 +262,60 @@ export class CompositeSignalProvider implements SignalProvider {
       }
     }
 
-    if (!Array.isArray(options.rules) || options.rules.length === 0) {
+    let rawRules = options.rules;
+    if (rawRules === undefined) {
+      const hasShorthand =
+        options.name !== undefined ||
+        options.mode !== undefined ||
+        options.sources !== undefined ||
+        options.inputs !== undefined ||
+        options.compute !== undefined;
+
+      if (hasShorthand) {
+        if (
+          typeof options.name !== "string" ||
+          options.name.trim().length === 0 ||
+          options.name !== options.name.trim()
+        ) {
+          throw new ConfigurationError(
+            "CompositeSignalRule name must be a non-empty trimmed string.",
+          );
+        }
+        if (options.unit === undefined || !VALID_SIGNAL_UNITS.includes(options.unit)) {
+          throw new ConfigurationError(
+            `CompositeSignalRule "${options.name}" has invalid unit: ${String(options.unit)}.`,
+          );
+        }
+        const sources = options.sources ?? options.inputs;
+        if (!Array.isArray(sources) || sources.length === 0) {
+          throw new ConfigurationError(
+            `CompositeSignalRule "${options.name}" inputs must be a non-empty array.`,
+          );
+        }
+        rawRules = [
+          {
+            name: options.name,
+            unit: options.unit,
+            description: options.description,
+            sources,
+            inputs: sources,
+            mode: options.mode,
+            compute: options.compute,
+            minAvailableSources: options.minAvailableSources,
+          },
+        ];
+      }
+    }
+
+    if (!Array.isArray(rawRules) || rawRules.length === 0) {
       throw new ConfigurationError("CompositeSignalProvider requires a non-empty array of rules.");
     }
 
     const seenRuleNames = new Set<string>();
     const ruleDescriptors: SignalDescriptor[] = [];
+    const normalizedRules: NormalizedCompositeSignalRule[] = [];
 
-    for (const rule of options.rules) {
+    for (const rule of rawRules) {
       if (rule === null || typeof rule !== "object") {
         throw new ConfigurationError("CompositeSignalRule must be an object.");
       }
@@ -210,13 +353,29 @@ export class CompositeSignalProvider implements SignalProvider {
         );
       }
 
-      if (!Array.isArray(rule.inputs) || rule.inputs.length === 0) {
+      if (
+        rule.sources !== undefined &&
+        (!Array.isArray(rule.sources) || rule.sources.length === 0)
+      ) {
+        throw new ConfigurationError(
+          `CompositeSignalRule "${rule.name}" sources must be a non-empty array.`,
+        );
+      }
+
+      if (rule.inputs !== undefined && (!Array.isArray(rule.inputs) || rule.inputs.length === 0)) {
         throw new ConfigurationError(
           `CompositeSignalRule "${rule.name}" inputs must be a non-empty array.`,
         );
       }
 
-      for (const input of rule.inputs) {
+      const ruleSources = rule.sources ?? rule.inputs;
+      if (!Array.isArray(ruleSources) || ruleSources.length === 0) {
+        throw new ConfigurationError(
+          `CompositeSignalRule "${rule.name}" inputs must be a non-empty array.`,
+        );
+      }
+
+      for (const input of ruleSources) {
         if (typeof input !== "string" || input.trim().length === 0 || input !== input.trim()) {
           throw new ConfigurationError(
             `CompositeSignalRule "${rule.name}" input name must be a non-empty trimmed string.`,
@@ -229,10 +388,40 @@ export class CompositeSignalProvider implements SignalProvider {
         }
       }
 
-      if (typeof rule.compute !== "function") {
+      if (rule.compute !== undefined && typeof rule.compute !== "function") {
         throw new ConfigurationError(
           `CompositeSignalRule "${rule.name}" compute must be a function.`,
         );
+      }
+
+      if (rule.mode !== undefined) {
+        if (
+          typeof rule.mode !== "string" ||
+          !VALID_COMPOSITE_COMBINER_MODES.includes(rule.mode as CompositeCombinerMode)
+        ) {
+          throw new ConfigurationError(
+            `CompositeSignalRule "${rule.name}" has invalid combiner mode: ${String(rule.mode)}.`,
+          );
+        }
+      }
+
+      if (rule.compute === undefined && rule.mode === undefined) {
+        throw new ConfigurationError(
+          `CompositeSignalRule "${rule.name}" compute must be a function.`,
+        );
+      }
+
+      if (rule.minAvailableSources !== undefined) {
+        if (
+          typeof rule.minAvailableSources !== "number" ||
+          !Number.isSafeInteger(rule.minAvailableSources) ||
+          rule.minAvailableSources < 1 ||
+          rule.minAvailableSources > ruleSources.length
+        ) {
+          throw new ConfigurationError(
+            `CompositeSignalRule "${rule.name}" minAvailableSources must be a safe integer between 1 and ${ruleSources.length}.`,
+          );
+        }
       }
 
       const descriptor: SignalDescriptor =
@@ -248,10 +437,21 @@ export class CompositeSignalProvider implements SignalProvider {
             };
 
       ruleDescriptors.push(descriptor);
+
+      normalizedRules.push({
+        name: rule.name,
+        unit: rule.unit,
+        description: rule.description,
+        inputs: [...ruleSources],
+        sources: [...ruleSources],
+        compute: rule.compute,
+        mode: rule.mode,
+        minAvailableSources: rule.minAvailableSources,
+      });
     }
 
     this.#providers = [...options.providers];
-    this.#rules = [...options.rules];
+    this.#rules = normalizedRules;
     this.#childDescriptors = [...childDescriptors];
 
     this.signals = Object.freeze(
@@ -404,18 +604,100 @@ export class CompositeSignalProvider implements SignalProvider {
     for (const rule of this.#rules) {
       let dominantStatus: Exclude<SignalStatus, "ok"> | null = null;
       const failedInputs: string[] = [];
+      const availableValues: number[] = [];
+      const values: Record<string, number> = Object.create(null);
 
       for (const input of rule.inputs) {
         const reading = readingsByName.get(input);
         const status = getInputStatus(reading);
-        if (status !== "ok") {
+
+        if (status === "ok") {
+          const okReading = reading as AvailableSignalReading;
+          availableValues.push(okReading.value);
+          values[input] = okReading.value;
+        } else {
           failedInputs.push(`${input} (${status})`);
           dominantStatus =
             dominantStatus === null ? status : resolvePriority(dominantStatus, status);
+
+          if (this.#onSourceUnavailable !== undefined) {
+            let reason: string | undefined;
+            if (reading === undefined) {
+              reason = "missing";
+            } else if ("error" in reading && typeof reading.error === "string") {
+              reason = reading.error;
+            } else if (
+              "reason" in reading &&
+              typeof (reading as Record<string, unknown>).reason === "string"
+            ) {
+              reason = (reading as Record<string, unknown>).reason as string;
+            }
+            try {
+              this.#onSourceUnavailable({
+                ruleSignalName: rule.name,
+                sourceSignalName: input,
+                status,
+                reason,
+              });
+            } catch {
+              // listener errors never crash read()
+            }
+          }
         }
       }
 
-      if (dominantStatus !== null) {
+      // Quorum check: minAvailableSources
+      if (
+        rule.minAvailableSources !== undefined &&
+        availableValues.length < rule.minAvailableSources
+      ) {
+        compositeReadings.push({
+          name: rule.name,
+          unit: rule.unit,
+          status: "unavailable" as unknown as SignalStatus,
+          value: null as unknown as number,
+          reason: "quorum_not_met",
+          observedAt,
+          error: `Composite signal "${rule.name}" quorum not met: ${availableValues.length} available, required ${rule.minAvailableSources}.`,
+          details: {
+            reason: "quorum_not_met",
+            availableSources: availableValues.length,
+            minAvailableSources: rule.minAvailableSources,
+            failedInputs,
+            dominantStatus,
+          },
+        } as unknown as ResourceSignal);
+        continue;
+      }
+
+      // If combiner mode is defined:
+      if (rule.mode !== undefined) {
+        if (availableValues.length === 0) {
+          const effectiveStatus = dominantStatus ?? "unknown";
+          compositeReadings.push({
+            name: rule.name,
+            unit: rule.unit,
+            status: effectiveStatus,
+            observedAt,
+            error: `Composite signal "${rule.name}" input signals unavailable: ${failedInputs.join(", ")} (dominant: "${effectiveStatus}").`,
+            details: { failedInputs, dominantStatus: effectiveStatus },
+          });
+          continue;
+        }
+
+        const computedValue = computeCombinerMode(rule.mode, availableValues);
+        compositeReadings.push({
+          name: rule.name,
+          unit: rule.unit,
+          status: "ok",
+          value: computedValue,
+          observedAt,
+        });
+        continue;
+      }
+
+      // If compute function is defined:
+      if (rule.minAvailableSources === undefined && dominantStatus !== null) {
         compositeReadings.push({
           name: rule.name,
           unit: rule.unit,
@@ -427,16 +709,11 @@ export class CompositeSignalProvider implements SignalProvider {
         continue;
       }
 
-      const values: Record<string, number> = Object.create(null);
-      for (const input of rule.inputs) {
-        const reading = readingsByName.get(input) as AvailableSignalReading;
-        values[input] = reading.value;
-      }
       Object.freeze(values);
 
       let computedValue: number;
       try {
-        computedValue = rule.compute(values);
+        computedValue = rule.compute !== undefined ? rule.compute(values) : 0;
       } catch (error) {
         compositeReadings.push({
           name: rule.name,
@@ -470,4 +747,10 @@ export class CompositeSignalProvider implements SignalProvider {
 
     return this.#passthroughInputs ? [...childReadings, ...compositeReadings] : compositeReadings;
   }
+}
+
+export function createCompositeSignalProvider(
+  options: CompositeSignalProviderOptions,
+): CompositeSignalProvider {
+  return new CompositeSignalProvider(options);
 }

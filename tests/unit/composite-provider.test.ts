@@ -2,9 +2,12 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { ConfigurationError } from "../../src/errors/index.js";
 import {
+  type CompositeCombinerMode,
   CompositeSignalProvider,
   type CompositeSignalProviderOptions,
   type CompositeSignalRule,
+  createCompositeSignalProvider,
+  type SourceUnavailableInfo,
 } from "../../src/providers/composite.js";
 import { createAdaptiveRuntime } from "../../src/runtime/runtime.js";
 import type {
@@ -1810,6 +1813,1195 @@ describe("CompositeSignalProvider", () => {
       assert.equal(signalNames.includes("rogue.undeclared"), false);
 
       await runtime.close();
+    });
+  });
+
+  describe("createCompositeSignalProvider and Combiner Modes", () => {
+    const val = (r: ResourceSignal | undefined): unknown => (r as { value?: unknown })?.value;
+
+    const child1 = createMockProvider({
+      id: "child-1",
+      signals: [
+        { name: "p1.val", unit: "count" },
+        { name: "p1.lat", unit: "milliseconds" },
+      ],
+      read: () => [
+        { name: "p1.val", unit: "count", status: "ok", value: 10, observedAt: 1000 },
+        { name: "p1.lat", unit: "milliseconds", status: "ok", value: 50, observedAt: 1000 },
+      ],
+    });
+
+    const child2 = createMockProvider({
+      id: "child-2",
+      signals: [
+        { name: "p2.val", unit: "count" },
+        { name: "p2.lat", unit: "milliseconds" },
+      ],
+      read: () => [
+        { name: "p2.val", unit: "count", status: "ok", value: 30, observedAt: 1000 },
+        { name: "p2.lat", unit: "milliseconds", status: "ok", value: 20, observedAt: 1000 },
+      ],
+    });
+
+    const child3 = createMockProvider({
+      id: "child-3",
+      signals: [
+        { name: "p3.val", unit: "count" },
+        { name: "p3.lat", unit: "milliseconds" },
+      ],
+      read: () => [
+        { name: "p3.val", unit: "count", status: "ok", value: 20, observedAt: 1000 },
+        { name: "p3.lat", unit: "milliseconds", status: "ok", value: 80, observedAt: 1000 },
+      ],
+    });
+
+    describe("factory validation", () => {
+      it("rejects non-object or null options", () => {
+        assert.throws(
+          () => createCompositeSignalProvider(null as unknown as CompositeSignalProviderOptions),
+          ConfigurationError,
+        );
+        assert.throws(
+          () =>
+            createCompositeSignalProvider(undefined as unknown as CompositeSignalProviderOptions),
+          ConfigurationError,
+        );
+      });
+
+      it("rejects missing or empty providers", () => {
+        assert.throws(
+          () =>
+            createCompositeSignalProvider({
+              providers: [],
+              rules: [{ name: "r", unit: "count", inputs: ["p1.val"], compute: () => 1 }],
+            }),
+          ConfigurationError,
+        );
+      });
+
+      it("rejects when neither rules nor shorthand is provided", () => {
+        assert.throws(
+          () =>
+            createCompositeSignalProvider({
+              providers: [child1],
+            }),
+          ConfigurationError,
+        );
+      });
+
+      it("validates shorthand options thoroughly", () => {
+        // Invalid name
+        assert.throws(
+          () =>
+            createCompositeSignalProvider({
+              providers: [child1],
+              name: " ",
+              unit: "count",
+              sources: ["p1.val"],
+              mode: "median",
+            }),
+          ConfigurationError,
+        );
+        // Invalid unit
+        assert.throws(
+          () =>
+            createCompositeSignalProvider({
+              providers: [child1],
+              name: "r.test",
+              unit: "lightyears" as unknown as SignalUnit,
+              sources: ["p1.val"],
+              mode: "median",
+            }),
+          ConfigurationError,
+        );
+        // Missing sources
+        assert.throws(
+          () =>
+            createCompositeSignalProvider({
+              providers: [child1],
+              name: "r.test",
+              unit: "count",
+              sources: [],
+              mode: "median",
+            }),
+          ConfigurationError,
+        );
+        // Invalid combiner mode
+        assert.throws(
+          () =>
+            createCompositeSignalProvider({
+              providers: [child1],
+              name: "r.test",
+              unit: "count",
+              sources: ["p1.val"],
+              mode: "unsupported_mode" as unknown as CompositeCombinerMode,
+            }),
+          ConfigurationError,
+        );
+        // Shorthand minAvailableSources out of bounds
+        assert.throws(
+          () =>
+            createCompositeSignalProvider({
+              providers: [child1],
+              name: "r.test",
+              unit: "count",
+              sources: ["p1.val"],
+              mode: "median",
+              minAvailableSources: 2,
+            }),
+          ConfigurationError,
+        );
+      });
+
+      it("creates a provider with rules or shorthand", async () => {
+        const fromRules = createCompositeSignalProvider({
+          id: "from-rules",
+          providers: [child1, child2],
+          rules: [
+            {
+              name: "comp.median",
+              unit: "count",
+              sources: ["p1.val", "p2.val"],
+              mode: "median",
+            },
+          ],
+        });
+        assert.equal(fromRules.id, "from-rules");
+        const resRules = await fromRules.read(mockContext);
+        const r1 = resRules.find((r) => r.name === "comp.median");
+        assert.equal(r1?.status, "ok");
+        assert.equal((r1 as { value?: number })?.value, 20);
+
+        const fromShorthand = createCompositeSignalProvider({
+          id: "from-shorthand",
+          providers: [child1, child2],
+          name: "comp.spread",
+          unit: "count",
+          sources: ["p1.val", "p2.val"],
+          mode: "spread",
+        });
+        assert.equal(fromShorthand.id, "from-shorthand");
+        const resShort = await fromShorthand.read(mockContext);
+        const r2 = resShort.find((r) => r.name === "comp.spread");
+        assert.equal(r2?.status, "ok");
+        assert.equal((r2 as { value?: number })?.value, 20);
+      });
+    });
+
+    describe("median aggregation operator", () => {
+      it("computes exact median for odd count (1, 3, 5 sources)", async () => {
+        // 1 source: [42] -> 42
+        const p1 = createMockProvider({
+          id: "m-odd-1",
+          signals: [{ name: "s.single", unit: "count" }],
+          read: () => [
+            { name: "s.single", unit: "count", status: "ok", value: 42, observedAt: 1000 },
+          ],
+        });
+        const comp1 = createCompositeSignalProvider({
+          providers: [p1],
+          name: "med.single",
+          unit: "count",
+          sources: ["s.single"],
+          mode: "median",
+        });
+        const res1 = await comp1.read(mockContext);
+        assert.equal(val(res1.find((r) => r.name === "med.single")), 42);
+
+        // 3 sources: [10, 30, 20] -> sorted [10, 20, 30] -> middle is 20
+        const comp3 = createCompositeSignalProvider({
+          providers: [child1, child2, child3],
+          name: "med.three",
+          unit: "count",
+          sources: ["p1.val", "p2.val", "p3.val"],
+          mode: "median",
+        });
+        const res3 = await comp3.read(mockContext);
+        assert.equal(val(res3.find((r) => r.name === "med.three")), 20);
+
+        // 5 sources: [9, 1, 7, 3, 5] -> sorted [1, 3, 5, 7, 9] -> middle is 5
+        const pFive = createMockProvider({
+          id: "m-five",
+          signals: [
+            { name: "s1", unit: "count" },
+            { name: "s2", unit: "count" },
+            { name: "s3", unit: "count" },
+            { name: "s4", unit: "count" },
+            { name: "s5", unit: "count" },
+          ],
+          read: () => [
+            { name: "s1", unit: "count", status: "ok", value: 9, observedAt: 1000 },
+            { name: "s2", unit: "count", status: "ok", value: 1, observedAt: 1000 },
+            { name: "s3", unit: "count", status: "ok", value: 7, observedAt: 1000 },
+            { name: "s4", unit: "count", status: "ok", value: 3, observedAt: 1000 },
+            { name: "s5", unit: "count", status: "ok", value: 5, observedAt: 1000 },
+          ],
+        });
+        const comp5 = createCompositeSignalProvider({
+          providers: [pFive],
+          name: "med.five",
+          unit: "count",
+          sources: ["s1", "s2", "s3", "s4", "s5"],
+          mode: "median",
+        });
+        const res5 = await comp5.read(mockContext);
+        assert.equal(val(res5.find((r) => r.name === "med.five")), 5);
+      });
+
+      it("computes exact median for even count (2, 4 sources and fractional average)", async () => {
+        // 2 sources: [10, 30] -> average is 20
+        const comp2 = createCompositeSignalProvider({
+          providers: [child1, child2],
+          name: "med.two",
+          unit: "count",
+          sources: ["p1.val", "p2.val"],
+          mode: "median",
+        });
+        const res2 = await comp2.read(mockContext);
+        assert.equal(val(res2.find((r) => r.name === "med.two")), 20);
+
+        // 4 sources: [10, 40, 20, 30] -> sorted [10, 20, 30, 40] -> (20+30)/2 = 25
+        const pFour = createMockProvider({
+          id: "m-four",
+          signals: [
+            { name: "f1", unit: "count" },
+            { name: "f2", unit: "count" },
+            { name: "f3", unit: "count" },
+            { name: "f4", unit: "count" },
+          ],
+          read: () => [
+            { name: "f1", unit: "count", status: "ok", value: 10, observedAt: 1000 },
+            { name: "f2", unit: "count", status: "ok", value: 40, observedAt: 1000 },
+            { name: "f3", unit: "count", status: "ok", value: 20, observedAt: 1000 },
+            { name: "f4", unit: "count", status: "ok", value: 30, observedAt: 1000 },
+          ],
+        });
+        const comp4 = createCompositeSignalProvider({
+          providers: [pFour],
+          name: "med.four",
+          unit: "count",
+          sources: ["f1", "f2", "f3", "f4"],
+          mode: "median",
+        });
+        const res4 = await comp4.read(mockContext);
+        assert.equal(val(res4.find((r) => r.name === "med.four")), 25);
+
+        // Fractional average: [1, 2] -> 1.5
+        const pFrac = createMockProvider({
+          id: "m-frac",
+          signals: [
+            { name: "fr1", unit: "ratio" },
+            { name: "fr2", unit: "ratio" },
+          ],
+          read: () => [
+            { name: "fr1", unit: "ratio", status: "ok", value: 1, observedAt: 1000 },
+            { name: "fr2", unit: "ratio", status: "ok", value: 2, observedAt: 1000 },
+          ],
+        });
+        const compFrac = createCompositeSignalProvider({
+          providers: [pFrac],
+          name: "med.frac",
+          unit: "ratio",
+          sources: ["fr1", "fr2"],
+          mode: "median",
+        });
+        const resFrac = await compFrac.read(mockContext);
+        assert.equal(val(resFrac.find((r) => r.name === "med.frac")), 1.5);
+      });
+
+      it("handles negative numbers and duplicate values", async () => {
+        const pNeg = createMockProvider({
+          id: "m-neg",
+          signals: [
+            { name: "n1", unit: "count" },
+            { name: "n2", unit: "count" },
+            { name: "n3", unit: "count" },
+          ],
+          read: () => [
+            { name: "n1", unit: "count", status: "ok", value: -10, observedAt: 1000 },
+            { name: "n2", unit: "count", status: "ok", value: 0, observedAt: 1000 },
+            { name: "n3", unit: "count", status: "ok", value: 10, observedAt: 1000 },
+          ],
+        });
+        const compNeg = createCompositeSignalProvider({
+          providers: [pNeg],
+          name: "med.neg",
+          unit: "count",
+          sources: ["n1", "n2", "n3"],
+          mode: "median",
+        });
+        const resNeg = await compNeg.read(mockContext);
+        assert.equal(val(resNeg.find((r) => r.name === "med.neg")), 0);
+
+        const pDup = createMockProvider({
+          id: "m-dup",
+          signals: [
+            { name: "d1", unit: "count" },
+            { name: "d2", unit: "count" },
+            { name: "d3", unit: "count" },
+            { name: "d4", unit: "count" },
+          ],
+          read: () => [
+            { name: "d1", unit: "count", status: "ok", value: 5, observedAt: 1000 },
+            { name: "d2", unit: "count", status: "ok", value: 5, observedAt: 1000 },
+            { name: "d3", unit: "count", status: "ok", value: 5, observedAt: 1000 },
+            { name: "d4", unit: "count", status: "ok", value: 5, observedAt: 1000 },
+          ],
+        });
+        const compDup = createCompositeSignalProvider({
+          providers: [pDup],
+          name: "med.dup",
+          unit: "count",
+          sources: ["d1", "d2", "d3", "d4"],
+          mode: "median",
+        });
+        const resDup = await compDup.read(mockContext);
+        assert.equal(val(resDup.find((r) => r.name === "med.dup")), 5);
+      });
+
+      it("computes median over available source values when some sources fail", async () => {
+        const pMixed = createMockProvider({
+          id: "m-mixed",
+          signals: [
+            { name: "m1", unit: "count" },
+            { name: "m2", unit: "count" },
+            { name: "m3", unit: "count" },
+            { name: "m4", unit: "count" },
+          ],
+          read: () => [
+            { name: "m1", unit: "count", status: "ok", value: 10, observedAt: 1000 },
+            { name: "m2", unit: "count", status: "error", error: "fail", observedAt: 1000 },
+            { name: "m3", unit: "count", status: "ok", value: 30, observedAt: 1000 },
+            { name: "m4", unit: "count", status: "ok", value: 50, observedAt: 1000 },
+          ],
+        });
+        const comp = createCompositeSignalProvider({
+          providers: [pMixed],
+          name: "med.mixed",
+          unit: "count",
+          sources: ["m1", "m2", "m3", "m4"],
+          mode: "median",
+        });
+        const res = await comp.read(mockContext);
+        assert.equal(val(res.find((r) => r.name === "med.mixed")), 30);
+        assert.equal(res.find((r) => r.name === "med.mixed")?.status, "ok");
+      });
+    });
+
+    describe("spread aggregation operator", () => {
+      it("computes 0 when only 1 available source", async () => {
+        const p1 = createMockProvider({
+          id: "sp-1",
+          signals: [{ name: "s.single", unit: "count" }],
+          read: () => [
+            { name: "s.single", unit: "count", status: "ok", value: 42, observedAt: 1000 },
+          ],
+        });
+        const comp1 = createCompositeSignalProvider({
+          providers: [p1],
+          name: "spread.single",
+          unit: "count",
+          sources: ["s.single"],
+          mode: "spread",
+        });
+        const res1 = await comp1.read(mockContext);
+        assert.equal(val(res1.find((r) => r.name === "spread.single")), 0);
+      });
+
+      it("computes max - min across multiple sources", async () => {
+        // [10, 30] -> 20
+        const comp2 = createCompositeSignalProvider({
+          providers: [child1, child2],
+          name: "spread.two",
+          unit: "count",
+          sources: ["p1.val", "p2.val"],
+          mode: "spread",
+        });
+        const res2 = await comp2.read(mockContext);
+        assert.equal(val(res2.find((r) => r.name === "spread.two")), 20);
+
+        // [50, 20, 80] -> 80 - 20 = 60
+        const comp3 = createCompositeSignalProvider({
+          providers: [child1, child2, child3],
+          name: "spread.three",
+          unit: "milliseconds",
+          sources: ["p1.lat", "p2.lat", "p3.lat"],
+          mode: "spread",
+        });
+        const res3 = await comp3.read(mockContext);
+        assert.equal(val(res3.find((r) => r.name === "spread.three")), 60);
+      });
+
+      it("computes 0 when all values are equal", async () => {
+        const pEqual = createMockProvider({
+          id: "sp-eq",
+          signals: [
+            { name: "e1", unit: "count" },
+            { name: "e2", unit: "count" },
+          ],
+          read: () => [
+            { name: "e1", unit: "count", status: "ok", value: 7, observedAt: 1000 },
+            { name: "e2", unit: "count", status: "ok", value: 7, observedAt: 1000 },
+          ],
+        });
+        const comp = createCompositeSignalProvider({
+          providers: [pEqual],
+          name: "spread.eq",
+          unit: "count",
+          sources: ["e1", "e2"],
+          mode: "spread",
+        });
+        const res = await comp.read(mockContext);
+        assert.equal(val(res.find((r) => r.name === "spread.eq")), 0);
+      });
+
+      it("handles negative values in spread calculation", async () => {
+        const pNeg = createMockProvider({
+          id: "sp-neg",
+          signals: [
+            { name: "n1", unit: "count" },
+            { name: "n2", unit: "count" },
+          ],
+          read: () => [
+            { name: "n1", unit: "count", status: "ok", value: -20, observedAt: 1000 },
+            { name: "n2", unit: "count", status: "ok", value: 10, observedAt: 1000 },
+          ],
+        });
+        const comp = createCompositeSignalProvider({
+          providers: [pNeg],
+          name: "spread.neg",
+          unit: "count",
+          sources: ["n1", "n2"],
+          mode: "spread",
+        });
+        const res = await comp.read(mockContext);
+        assert.equal(val(res.find((r) => r.name === "spread.neg")), 30);
+      });
+
+      it("computes spread over available source values when some sources fail", async () => {
+        const pMixed = createMockProvider({
+          id: "sp-mixed",
+          signals: [
+            { name: "x1", unit: "count" },
+            { name: "x2", unit: "count" },
+            { name: "x3", unit: "count" },
+          ],
+          read: () => [
+            { name: "x1", unit: "count", status: "ok", value: 100, observedAt: 1000 },
+            {
+              name: "x2",
+              unit: "count",
+              status: "error",
+              error: "hardware err",
+              observedAt: 1000,
+            },
+            { name: "x3", unit: "count", status: "ok", value: 80, observedAt: 1000 },
+          ],
+        });
+        const comp = createCompositeSignalProvider({
+          providers: [pMixed],
+          name: "spread.mixed",
+          unit: "count",
+          sources: ["x1", "x2", "x3"],
+          mode: "spread",
+        });
+        const res = await comp.read(mockContext);
+        assert.equal(val(res.find((r) => r.name === "spread.mixed")), 20);
+        assert.equal(res.find((r) => r.name === "spread.mixed")?.status, "ok");
+
+        const pSingleAvailable = createMockProvider({
+          id: "sp-one-avail",
+          signals: [
+            { name: "y1", unit: "count" },
+            { name: "y2", unit: "count" },
+          ],
+          read: () => [
+            { name: "y1", unit: "count", status: "ok", value: 55, observedAt: 1000 },
+            { name: "y2", unit: "count", status: "unknown", observedAt: 1000 },
+          ],
+        });
+        const compOne = createCompositeSignalProvider({
+          providers: [pSingleAvailable],
+          name: "spread.one",
+          unit: "count",
+          sources: ["y1", "y2"],
+          mode: "spread",
+        });
+        const resOne = await compOne.read(mockContext);
+        assert.equal(val(resOne.find((r) => r.name === "spread.one")), 0);
+      });
+    });
+
+    describe("additional combiner modes (min, max, mean, sum, p95)", () => {
+      it("computes min, max, mean, sum, and p95 across available values", async () => {
+        const pVals = createMockProvider({
+          id: "comb-all",
+          signals: [
+            { name: "v1", unit: "count" },
+            { name: "v2", unit: "count" },
+            { name: "v3", unit: "count" },
+          ],
+          read: () => [
+            { name: "v1", unit: "count", status: "ok", value: 10, observedAt: 1000 },
+            { name: "v2", unit: "count", status: "ok", value: 20, observedAt: 1000 },
+            { name: "v3", unit: "count", status: "ok", value: 30, observedAt: 1000 },
+          ],
+        });
+        const comp = new CompositeSignalProvider({
+          providers: [pVals],
+          rules: [
+            { name: "r.min", unit: "count", sources: ["v1", "v2", "v3"], mode: "min" },
+            { name: "r.max", unit: "count", sources: ["v1", "v2", "v3"], mode: "max" },
+            { name: "r.mean", unit: "count", sources: ["v1", "v2", "v3"], mode: "mean" },
+            { name: "r.sum", unit: "count", sources: ["v1", "v2", "v3"], mode: "sum" },
+            { name: "r.p95", unit: "count", sources: ["v1", "v2", "v3"], mode: "p95" },
+          ],
+        });
+        const readings = await comp.read(mockContext);
+        assert.equal(val(readings.find((r) => r.name === "r.min")), 10);
+        assert.equal(val(readings.find((r) => r.name === "r.max")), 30);
+        assert.equal(val(readings.find((r) => r.name === "r.mean")), 20);
+        assert.equal(val(readings.find((r) => r.name === "r.sum")), 60);
+        assert.equal(val(readings.find((r) => r.name === "r.p95")), 30);
+      });
+
+      it("returns dominantStatus when no sources are available for combiner mode", async () => {
+        const pErr = createMockProvider({
+          id: "all-err",
+          signals: [
+            { name: "e1", unit: "count" },
+            { name: "e2", unit: "count" },
+          ],
+          read: () => [
+            { name: "e1", unit: "count", status: "error", error: "e1 fail", observedAt: 1000 },
+            { name: "e2", unit: "count", status: "stale", error: "e2 stale", observedAt: 1000 },
+          ],
+        });
+        const comp = createCompositeSignalProvider({
+          providers: [pErr],
+          name: "r.fail",
+          unit: "count",
+          sources: ["e1", "e2"],
+          mode: "median",
+        });
+        const readings = await comp.read(mockContext);
+        const r = readings.find((x) => x.name === "r.fail");
+        assert.equal(r?.status, "error");
+      });
+    });
+
+    describe("minAvailableSources quorum option", () => {
+      it("validates minAvailableSources in CompositeSignalRule", () => {
+        // Less than 1
+        assert.throws(
+          () =>
+            new CompositeSignalProvider({
+              providers: [child1],
+              rules: [
+                {
+                  name: "r.q0",
+                  unit: "count",
+                  sources: ["p1.val"],
+                  mode: "median",
+                  minAvailableSources: 0,
+                },
+              ],
+            }),
+          ConfigurationError,
+        );
+        // Negative
+        assert.throws(
+          () =>
+            new CompositeSignalProvider({
+              providers: [child1],
+              rules: [
+                {
+                  name: "r.qneg",
+                  unit: "count",
+                  sources: ["p1.val"],
+                  mode: "median",
+                  minAvailableSources: -1,
+                },
+              ],
+            }),
+          ConfigurationError,
+        );
+        // Non-integer
+        assert.throws(
+          () =>
+            new CompositeSignalProvider({
+              providers: [child1, child2],
+              rules: [
+                {
+                  name: "r.qfrac",
+                  unit: "count",
+                  sources: ["p1.val", "p2.val"],
+                  mode: "median",
+                  minAvailableSources: 1.5,
+                },
+              ],
+            }),
+          ConfigurationError,
+        );
+        // Non-number
+        assert.throws(
+          () =>
+            new CompositeSignalProvider({
+              providers: [child1],
+              rules: [
+                {
+                  name: "r.qstr",
+                  unit: "count",
+                  sources: ["p1.val"],
+                  mode: "median",
+                  minAvailableSources: "1" as unknown as number,
+                },
+              ],
+            }),
+          ConfigurationError,
+        );
+        // Greater than sources.length
+        assert.throws(
+          () =>
+            new CompositeSignalProvider({
+              providers: [child1, child2],
+              rules: [
+                {
+                  name: "r.qhigh",
+                  unit: "count",
+                  sources: ["p1.val", "p2.val"],
+                  mode: "median",
+                  minAvailableSources: 3,
+                },
+              ],
+            }),
+          ConfigurationError,
+        );
+
+        // Valid boundaries: 1 and 2 for 2 sources
+        assert.doesNotThrow(
+          () =>
+            new CompositeSignalProvider({
+              providers: [child1, child2],
+              rules: [
+                {
+                  name: "r.q1",
+                  unit: "count",
+                  sources: ["p1.val", "p2.val"],
+                  mode: "median",
+                  minAvailableSources: 1,
+                },
+                {
+                  name: "r.q2",
+                  unit: "count",
+                  sources: ["p1.val", "p2.val"],
+                  mode: "median",
+                  minAvailableSources: 2,
+                },
+              ],
+            }),
+        );
+      });
+
+      it("enforces quorum: emits unavailable with quorum_not_met when available < minAvailableSources", async () => {
+        const pThree = createMockProvider({
+          id: "p-quorum-test",
+          signals: [
+            { name: "q.s1", unit: "count" },
+            { name: "q.s2", unit: "count" },
+            { name: "q.s3", unit: "count" },
+          ],
+          read: () => [
+            { name: "q.s1", unit: "count", status: "ok", value: 10, observedAt: 1000 },
+            {
+              name: "q.s2",
+              unit: "count",
+              status: "error",
+              error: "failed probe",
+              observedAt: 1000,
+            },
+            {
+              name: "q.s3",
+              unit: "count",
+              status: "stale",
+              error: "expired reading",
+              observedAt: 1000,
+            },
+          ],
+        });
+
+        // 3 sources, only 1 available, requires 2
+        const comp = new CompositeSignalProvider({
+          providers: [pThree],
+          rules: [
+            {
+              name: "r.quorum.strict",
+              unit: "count",
+              sources: ["q.s1", "q.s2", "q.s3"],
+              mode: "median",
+              minAvailableSources: 2,
+            },
+          ],
+        });
+
+        const readings = await comp.read(mockContext);
+        const reading = readings.find((r) => r.name === "r.quorum.strict") as {
+          status: string;
+          value: unknown;
+          reason?: string;
+          details?: { reason?: string; availableSources?: number; minAvailableSources?: number };
+        };
+
+        assert.ok(reading);
+        assert.equal(reading.status, "unavailable");
+        assert.equal(reading.value, null);
+        assert.equal(reading.reason, "quorum_not_met");
+        assert.equal(reading.details?.reason, "quorum_not_met");
+        assert.equal(reading.details?.availableSources, 1);
+        assert.equal(reading.details?.minAvailableSources, 2);
+      });
+
+      it("succeeds when available >= minAvailableSources", async () => {
+        const pThree = createMockProvider({
+          id: "p-quorum-pass",
+          signals: [
+            { name: "qp.s1", unit: "count" },
+            { name: "qp.s2", unit: "count" },
+            { name: "qp.s3", unit: "count" },
+          ],
+          read: () => [
+            { name: "qp.s1", unit: "count", status: "ok", value: 10, observedAt: 1000 },
+            { name: "qp.s2", unit: "count", status: "ok", value: 30, observedAt: 1000 },
+            { name: "qp.s3", unit: "count", status: "error", error: "offline", observedAt: 1000 },
+          ],
+        });
+
+        const comp = new CompositeSignalProvider({
+          providers: [pThree],
+          rules: [
+            {
+              name: "r.quorum.pass.mode",
+              unit: "count",
+              sources: ["qp.s1", "qp.s2", "qp.s3"],
+              mode: "median",
+              minAvailableSources: 2,
+            },
+            {
+              name: "r.quorum.pass.compute",
+              unit: "count",
+              sources: ["qp.s1", "qp.s2", "qp.s3"],
+              compute: (vals) => (vals["qp.s1"] ?? 0) + (vals["qp.s2"] ?? 0),
+              minAvailableSources: 2,
+            },
+          ],
+        });
+
+        const readings = await comp.read(mockContext);
+        const rMode = readings.find((r) => r.name === "r.quorum.pass.mode");
+        assert.equal(rMode?.status, "ok");
+        assert.equal((rMode as { value?: number })?.value, 20);
+
+        const rCompute = readings.find((r) => r.name === "r.quorum.pass.compute");
+        assert.equal(rCompute?.status, "ok");
+        assert.equal((rCompute as { value?: number })?.value, 40);
+      });
+
+      it("enforces quorum not met when 0 sources are available", async () => {
+        const pZero = createMockProvider({
+          id: "p-zero-avail",
+          signals: [{ name: "z1", unit: "count" }],
+          read: () => [
+            { name: "z1", unit: "count", status: "error", error: "bad", observedAt: 1000 },
+          ],
+        });
+
+        const comp = createCompositeSignalProvider({
+          providers: [pZero],
+          name: "r.zero",
+          unit: "count",
+          sources: ["z1"],
+          mode: "median",
+          minAvailableSources: 1,
+        });
+
+        const readings = await comp.read(mockContext);
+        const r = readings.find((x) => x.name === "r.zero");
+        assert.equal(r?.status, "unavailable");
+        assert.equal((r as { value?: unknown })?.value, null);
+        assert.equal((r as { reason?: string })?.reason, "quorum_not_met");
+      });
+    });
+
+    describe("onSourceUnavailable diagnostic callback", () => {
+      it("validates onSourceUnavailable option in constructor", () => {
+        assert.throws(
+          () =>
+            new CompositeSignalProvider({
+              providers: [child1],
+              rules: [{ name: "r", unit: "count", sources: ["p1.val"], compute: () => 1 }],
+              onSourceUnavailable: "not-a-func" as unknown as () => void,
+            }),
+          ConfigurationError,
+        );
+
+        assert.throws(
+          () =>
+            new CompositeSignalProvider({
+              providers: [child1],
+              rules: [{ name: "r", unit: "count", sources: ["p1.val"], compute: () => 1 }],
+              onSourceUnavailable: 123 as unknown as () => void,
+            }),
+          ConfigurationError,
+        );
+
+        assert.doesNotThrow(
+          () =>
+            new CompositeSignalProvider({
+              providers: [child1],
+              rules: [{ name: "r", unit: "count", sources: ["p1.val"], compute: () => 1 }],
+              onSourceUnavailable: () => {},
+            }),
+        );
+      });
+
+      it("invokes onSourceUnavailable when source is missing or not ok", async () => {
+        const calls: SourceUnavailableInfo[] = [];
+
+        const pDiag = createMockProvider({
+          id: "p-diag",
+          signals: [
+            { name: "d.ok", unit: "count" },
+            { name: "d.err", unit: "count" },
+            { name: "d.stale", unit: "count" },
+            { name: "d.missing", unit: "count" },
+            { name: "d.nan", unit: "count" },
+          ],
+          read: () => [
+            { name: "d.ok", unit: "count", status: "ok", value: 100, observedAt: 1000 },
+            {
+              name: "d.err",
+              unit: "count",
+              status: "error",
+              error: "sensor faulty",
+              observedAt: 1000,
+            },
+            {
+              name: "d.stale",
+              unit: "count",
+              status: "stale",
+              error: "cache stale",
+              observedAt: 1000,
+            },
+            { name: "d.nan", unit: "count", status: "ok", value: NaN, observedAt: 1000 },
+          ],
+        });
+
+        const comp = new CompositeSignalProvider({
+          providers: [pDiag],
+          rules: [
+            {
+              name: "rule.diag",
+              unit: "count",
+              sources: ["d.ok", "d.err", "d.stale", "d.missing", "d.nan"],
+              mode: "median",
+            },
+          ],
+          onSourceUnavailable: (info) => {
+            calls.push(info);
+          },
+        });
+
+        await comp.read(mockContext);
+
+        assert.equal(calls.length, 4);
+
+        const errCall = calls.find((c) => c.sourceSignalName === "d.err");
+        assert.ok(errCall);
+        assert.equal(errCall.ruleSignalName, "rule.diag");
+        assert.equal(errCall.status, "error");
+        assert.equal(errCall.reason, "sensor faulty");
+
+        const staleCall = calls.find((c) => c.sourceSignalName === "d.stale");
+        assert.ok(staleCall);
+        assert.equal(staleCall.ruleSignalName, "rule.diag");
+        assert.equal(staleCall.status, "stale");
+        assert.equal(staleCall.reason, "cache stale");
+
+        const missingCall = calls.find((c) => c.sourceSignalName === "d.missing");
+        assert.ok(missingCall);
+        assert.equal(missingCall.ruleSignalName, "rule.diag");
+        assert.equal(missingCall.status, "unknown");
+        assert.equal(missingCall.reason, "missing");
+
+        const nanCall = calls.find((c) => c.sourceSignalName === "d.nan");
+        assert.ok(nanCall);
+        assert.equal(nanCall.ruleSignalName, "rule.diag");
+        assert.equal(nanCall.status, "error");
+      });
+
+      it("does not invoke onSourceUnavailable when all sources are ok", async () => {
+        let called = false;
+        const comp = new CompositeSignalProvider({
+          providers: [child1],
+          rules: [{ name: "r.clean", unit: "count", sources: ["p1.val"], mode: "median" }],
+          onSourceUnavailable: () => {
+            called = true;
+          },
+        });
+
+        await comp.read(mockContext);
+        assert.equal(called, false);
+      });
+
+      it("never crashes read() when onSourceUnavailable listener throws an error", async () => {
+        const pErr = createMockProvider({
+          id: "p-throwing-listener",
+          signals: [{ name: "t.err", unit: "count" }],
+          read: () => [
+            { name: "t.err", unit: "count", status: "error", error: "bad", observedAt: 1000 },
+          ],
+        });
+
+        let listenerExecuted = false;
+        const comp = new CompositeSignalProvider({
+          providers: [pErr],
+          rules: [
+            {
+              name: "r.tolerant",
+              unit: "count",
+              sources: ["t.err"],
+              mode: "median",
+              minAvailableSources: 1,
+            },
+          ],
+          onSourceUnavailable: () => {
+            listenerExecuted = true;
+            throw new Error("Crashing listener inside diagnostic subscriber!");
+          },
+        });
+
+        const readings = await comp.read(mockContext);
+        assert.equal(listenerExecuted, true);
+        assert.ok(Array.isArray(readings));
+        const r = readings.find((x) => x.name === "r.tolerant");
+        assert.equal(r?.status, "unavailable");
+
+        // Non-Error thrown
+        const compNonError = new CompositeSignalProvider({
+          providers: [pErr],
+          rules: [
+            {
+              name: "r.tolerant2",
+              unit: "count",
+              sources: ["t.err"],
+              mode: "median",
+              minAvailableSources: 1,
+            },
+          ],
+          onSourceUnavailable: () => {
+            throw "non-error failure string";
+          },
+        });
+        const readings2 = await compNonError.read(mockContext);
+        assert.ok(Array.isArray(readings2));
+      });
+    });
+
+    describe("rule sources / inputs alias and boundary validations", () => {
+      it("rejects non-array or empty rule sources", () => {
+        assert.throws(
+          () =>
+            new CompositeSignalProvider({
+              providers: [child1],
+              rules: [
+                {
+                  name: "r.bad.sources",
+                  unit: "count",
+                  sources: "not-array" as unknown as readonly string[],
+                  compute: () => 1,
+                },
+              ],
+            }),
+          ConfigurationError,
+        );
+
+        assert.throws(
+          () =>
+            new CompositeSignalProvider({
+              providers: [child1],
+              rules: [
+                {
+                  name: "r.empty.sources",
+                  unit: "count",
+                  sources: [],
+                  compute: () => 1,
+                },
+              ],
+            }),
+          ConfigurationError,
+        );
+      });
+
+      it("rejects non-array or empty inputs when sources is also present", () => {
+        assert.throws(
+          () =>
+            new CompositeSignalProvider({
+              providers: [child1],
+              rules: [
+                {
+                  name: "r.bad.inputs",
+                  unit: "count",
+                  sources: ["p1.val"],
+                  inputs: "not-array" as unknown as readonly string[],
+                  compute: () => 1,
+                },
+              ],
+            }),
+          ConfigurationError,
+        );
+
+        assert.throws(
+          () =>
+            new CompositeSignalProvider({
+              providers: [child1],
+              rules: [
+                {
+                  name: "r.empty.inputs",
+                  unit: "count",
+                  sources: ["p1.val"],
+                  inputs: [],
+                  compute: () => 1,
+                },
+              ],
+            }),
+          ConfigurationError,
+        );
+      });
+
+      it("rejects invalid mode on rule", () => {
+        assert.throws(
+          () =>
+            new CompositeSignalProvider({
+              providers: [child1],
+              rules: [
+                {
+                  name: "r.invalid.mode",
+                  unit: "count",
+                  sources: ["p1.val"],
+                  mode: "invalid_mode" as unknown as CompositeCombinerMode,
+                },
+              ],
+            }),
+          ConfigurationError,
+        );
+      });
+
+      it("rejects NaN and Infinity minAvailableSources", () => {
+        assert.throws(
+          () =>
+            new CompositeSignalProvider({
+              providers: [child1],
+              rules: [
+                {
+                  name: "r.nan",
+                  unit: "count",
+                  sources: ["p1.val"],
+                  mode: "median",
+                  minAvailableSources: NaN,
+                },
+              ],
+            }),
+          ConfigurationError,
+        );
+
+        assert.throws(
+          () =>
+            new CompositeSignalProvider({
+              providers: [child1],
+              rules: [
+                {
+                  name: "r.inf",
+                  unit: "count",
+                  sources: ["p1.val"],
+                  mode: "median",
+                  minAvailableSources: Infinity,
+                },
+              ],
+            }),
+          ConfigurationError,
+        );
+      });
+
+      it("rejects non-trimmed name in shorthand options", () => {
+        assert.throws(
+          () =>
+            createCompositeSignalProvider({
+              providers: [child1],
+              name: 123 as unknown as string,
+              unit: "count",
+              sources: ["p1.val"],
+              mode: "median",
+            }),
+          ConfigurationError,
+        );
+
+        assert.throws(
+          () =>
+            createCompositeSignalProvider({
+              providers: [child1],
+              name: " leading",
+              unit: "count",
+              sources: ["p1.val"],
+              mode: "median",
+            }),
+          ConfigurationError,
+        );
+
+        assert.throws(
+          () =>
+            createCompositeSignalProvider({
+              providers: [child1],
+              name: "trailing ",
+              unit: "count",
+              sources: ["p1.val"],
+              mode: "median",
+            }),
+          ConfigurationError,
+        );
+      });
+
+      it("rejects non-array sources in shorthand options", () => {
+        assert.throws(
+          () =>
+            createCompositeSignalProvider({
+              providers: [child1],
+              name: "r.short",
+              unit: "count",
+              sources: "not-array" as unknown as readonly string[],
+              mode: "median",
+            }),
+          ConfigurationError,
+        );
+      });
+
+      it("works with passthroughInputs: false and shorthand options", async () => {
+        const comp = createCompositeSignalProvider({
+          providers: [child1, child2],
+          name: "comp.only",
+          unit: "count",
+          sources: ["p1.val", "p2.val"],
+          mode: "median",
+          passthroughInputs: false,
+        });
+
+        assert.equal(comp.signals.length, 1);
+        assert.equal(comp.signals[0]?.name, "comp.only");
+
+        const readings = await comp.read(mockContext);
+        assert.equal(readings.length, 1);
+        assert.equal(readings[0]?.name, "comp.only");
+        assert.equal((readings[0] as { value?: number })?.value, 20);
+      });
     });
   });
 });
