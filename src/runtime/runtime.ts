@@ -420,6 +420,71 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
     return stats;
   }
 
+  hasInFlight(operationId?: string): boolean {
+    if (operationId !== undefined) {
+      const id = validateOperationId(operationId);
+      return this.#locks.has(id) || (this.#activeRuns.get(id) ?? 0) > 0;
+    }
+    if (this.#locks.size > 0) {
+      return true;
+    }
+    for (const count of this.#activeRuns.values()) {
+      if (count > 0) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  getActiveOperations(): readonly string[] {
+    const active = new Set<string>();
+    for (const id of this.#locks.keys()) {
+      active.add(id);
+    }
+    for (const [id, count] of this.#activeRuns.entries()) {
+      if (count > 0) {
+        active.add(id);
+      }
+    }
+    const result = Array.from(active);
+    result.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    return Object.freeze(result);
+  }
+
+  pruneIdleOperations(): readonly string[] {
+    const pruned: string[] = [];
+    const operationIds = [...this.#tracked.keys()];
+    for (const id of operationIds) {
+      if (this.#pins.has(id) || this.hasInFlight(id)) {
+        continue;
+      }
+      let removed = false;
+      if (this.#closed) {
+        removed = this.#removeOperation(id);
+        const REMOVAL_HOOKS = Symbol.for("adaptive-runtime.observability.removeOperationHooks");
+        const hooks = (this as unknown as { [REMOVAL_HOOKS]?: Set<(opId: string) => void> })[
+          REMOVAL_HOOKS
+        ];
+        if (hooks !== undefined) {
+          for (const hook of hooks) {
+            try {
+              hook(id);
+            } catch {
+              // Ignore hook errors
+            }
+          }
+        }
+      } else {
+        removed = this.removeOperation(id);
+      }
+      if (removed) {
+        pruned.push(id);
+      }
+    }
+    pruned.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    return Object.freeze(pruned);
+  }
+
   getTrackedOperations(): readonly string[] {
     return Object.freeze([...this.#tracked.keys()]);
   }
@@ -447,7 +512,11 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
   removeOperation(operationId: string): boolean {
     this.#ensureOpen();
     const id = validateOperationId(operationId);
-    if (this.#locks.has(id) || this.#activeRuns.has(id)) {
+    return this.#removeOperation(id);
+  }
+
+  #removeOperation(id: string): boolean {
+    if (this.#locks.has(id) || (this.#activeRuns.get(id) ?? 0) > 0) {
       return false;
     }
     let removed = false;
@@ -536,7 +605,7 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
       const stats = this.#stats.get(operationId);
       const candidates: StrategyCandidate[] = operation.strategies.map((strategy) => {
         const strategyStats = stats.strategies[strategy.id];
-        return {
+        const candidate: StrategyCandidate & { samples?: number } = {
           id: strategy.id,
           qualityTier: strategy.qualityTier,
           costTier: strategy.costTier,
@@ -545,7 +614,9 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
             strategyStats?.ewmaDurationMs ?? strategyStats?.averageDurationMs ?? null,
           ewmaLatencyMs: strategyStats?.ewmaDurationMs ?? null,
           errorRate: strategyStats?.errorRate ?? 0,
+          samples: strategyStats?.runs ?? 0,
         };
+        return candidate;
       });
 
       const now = this.#clock.now();

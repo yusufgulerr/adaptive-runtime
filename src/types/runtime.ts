@@ -87,6 +87,24 @@ export interface AdaptiveRuntime {
   getDecision(operationId: string): StrategyDecision | null;
   getStats(operationId: string): RuntimeStats;
   /**
+   * Returns true if the specified operation (or any operation when omitted)
+   * currently has an active selection lock or in-flight run. Does not alter LRU
+   * tracking order. Remains usable after close().
+   */
+  hasInFlight(operationId?: string): boolean;
+  /**
+   * Returns a frozen, code-unit sorted array of unique operation ids that
+   * currently have an active selection lock or in-flight run. Does not alter
+   * LRU tracking order. Remains usable after close().
+   */
+  getActiveOperations(): readonly string[];
+  /**
+   * Prunes retained state and statistics for all tracked operations that are
+   * neither pinned nor currently in-flight. Returns a frozen, code-unit sorted
+   * array of the pruned operation ids. Usable before or after close().
+   */
+  pruneIdleOperations(): readonly string[];
+  /**
    * Returns a frozen array of all currently tracked operation ids in LRU order
    * (oldest to newest). Does not refresh or alter the LRU order.
    */
