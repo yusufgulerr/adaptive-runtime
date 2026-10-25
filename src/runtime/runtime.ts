@@ -13,7 +13,7 @@ import {
 } from "../policy/engine.js";
 import { resolveOperationPolicy, resolvePolicy } from "../policy/resolve.js";
 import { SignalCollector } from "../signals/collector.js";
-import type { Clock } from "../types/clock.js";
+import type { Clock, ClockTimer } from "../types/clock.js";
 import type { StrategyDecision } from "../types/decision.js";
 import type { AdaptiveRuntimeEvents, RuntimeEventName } from "../types/events.js";
 import type { Policy, ResolvedPolicy } from "../types/policy.js";
@@ -24,7 +24,14 @@ import type {
   RunResult,
   RuntimeStats,
 } from "../types/run.js";
-import type { AdaptiveRuntime, CreateRuntimeOptions, EvaluateOptions } from "../types/runtime.js";
+import type {
+  AdaptiveRuntime,
+  CreateRuntimeOptions,
+  EvaluateOptions,
+  ImportStateOptions,
+  RuntimeHealthSummary,
+  WaitForIdleOptions,
+} from "../types/runtime.js";
 import type { SignalDescriptor } from "../types/signals.js";
 import type { OperationRuntimeState, RuntimeStateSnapshot } from "../types/state.js";
 import type { QualityCheckResult, Strategy, StrategyRunContext } from "../types/strategy.js";
@@ -128,6 +135,8 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
   readonly #locks = new Map<string, Promise<unknown>>();
   readonly #tracked = new Map<string, true>();
   readonly #activeRuns = new Map<string, number>();
+  readonly #drainWaiters = new Set<() => void>();
+  readonly #lastTransitionAt = new Map<string, number>();
   #closed = false;
   #closePromise: Promise<void> | null = null;
 
@@ -305,42 +314,190 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
     });
   }
 
-  importState(snapshot: RuntimeStateSnapshot): number {
+  importState(snapshot: RuntimeStateSnapshot, options?: ImportStateOptions): number {
     this.#ensureOpen();
+    let mode: "replace" | "merge" = "replace";
+    let conflictResolution: "incoming" | "existing" | "latest" = "incoming";
+
+    if (options !== undefined) {
+      if (options === null || typeof options !== "object" || Array.isArray(options)) {
+        throw new ConfigurationError("importState options must be an object.");
+      }
+      if (options.mode !== undefined) {
+        if (options.mode !== "replace" && options.mode !== "merge") {
+          throw new ConfigurationError('importState options.mode must be "replace" or "merge".');
+        }
+        mode = options.mode;
+      }
+      if (options.conflictResolution !== undefined) {
+        if (
+          options.conflictResolution !== "incoming" &&
+          options.conflictResolution !== "existing" &&
+          options.conflictResolution !== "latest"
+        ) {
+          throw new ConfigurationError(
+            'importState options.conflictResolution must be "incoming", "existing", or "latest".',
+          );
+        }
+        conflictResolution = options.conflictResolution;
+      }
+    }
+
     const validated = validateRuntimeStateSnapshot(snapshot);
 
-    // Validate the entire target set before mutating so a rejected import never
-    // leaves a partially hydrated runtime.
-    for (const { operationId } of validated.operations) {
-      if (this.#locks.has(operationId) || this.#activeRuns.has(operationId)) {
-        throw new ConfigurationError(
-          `Cannot import state for operation "${operationId}" while a selection or run is in flight.`,
+    if (mode === "replace") {
+      // Validate the entire target set before mutating so a rejected import never
+      // leaves a partially hydrated runtime.
+      for (const { operationId } of validated.operations) {
+        if (this.#locks.has(operationId) || this.#activeRuns.has(operationId)) {
+          throw new ConfigurationError(
+            `Cannot import state for operation "${operationId}" while a selection or run is in flight.`,
+          );
+        }
+      }
+
+      for (const { operationId, state } of validated.operations) {
+        this.#applyOperationState(operationId, state);
+      }
+      this.#enforceTrackingLimit();
+      return validated.operations.length;
+    }
+
+    const rawOperations = Array.isArray(
+      (snapshot as unknown as Record<string, unknown>)?.operations,
+    )
+      ? ((snapshot as unknown as Record<string, unknown>).operations as readonly unknown[])
+      : [];
+    const rawMap = new Map<string, Record<string, unknown>>();
+    for (const raw of rawOperations) {
+      if (
+        raw !== null &&
+        typeof raw === "object" &&
+        typeof (raw as Record<string, unknown>).operationId === "string"
+      ) {
+        rawMap.set(
+          (raw as Record<string, unknown>).operationId as string,
+          raw as Record<string, unknown>,
         );
       }
     }
 
+    let restoredCount = 0;
     for (const { operationId, state } of validated.operations) {
-      this.#states.set(operationId, state.policyState);
-      if (state.decision === null) {
-        this.#decisions.delete(operationId);
-      } else {
-        this.#decisions.set(operationId, state.decision);
+      const inFlight = this.#locks.has(operationId) || (this.#activeRuns.get(operationId) ?? 0) > 0;
+      if (inFlight) {
+        continue;
       }
-      if (state.pinnedStrategyId === null) {
-        this.#pins.delete(operationId);
-      } else {
-        this.#pins.set(operationId, state.pinnedStrategyId);
+
+      const exists = this.#hasOperationRecord(operationId);
+      if (exists) {
+        if (conflictResolution === "existing") {
+          continue;
+        }
+        if (conflictResolution === "latest") {
+          const raw = rawMap.get(operationId);
+          const rawState =
+            raw?.state !== null && typeof raw?.state === "object"
+              ? (raw.state as Record<string, unknown>)
+              : undefined;
+
+          const incomingTimestamp =
+            (typeof raw?.lastTransitionTimestamp === "number" &&
+            Number.isFinite(raw.lastTransitionTimestamp)
+              ? raw.lastTransitionTimestamp
+              : undefined) ??
+            (typeof rawState?.lastTransitionTimestamp === "number" &&
+            Number.isFinite(rawState.lastTransitionTimestamp)
+              ? rawState.lastTransitionTimestamp
+              : undefined) ??
+            (typeof (state.policyState as unknown as Record<string, unknown>)
+              ?.lastTransitionTimestamp === "number" &&
+            Number.isFinite(
+              (state.policyState as unknown as Record<string, unknown>).lastTransitionTimestamp,
+            )
+              ? ((state.policyState as unknown as Record<string, unknown>)
+                  .lastTransitionTimestamp as number)
+              : undefined) ??
+            (typeof raw?.lastTransitionAt === "number" && Number.isFinite(raw.lastTransitionAt)
+              ? raw.lastTransitionAt
+              : undefined) ??
+            (typeof rawState?.lastTransitionAt === "number" &&
+            Number.isFinite(rawState.lastTransitionAt)
+              ? rawState.lastTransitionAt
+              : undefined) ??
+            (typeof (state.policyState as unknown as Record<string, unknown>)?.lastTransitionAt ===
+              "number" &&
+            Number.isFinite(
+              (state.policyState as unknown as Record<string, unknown>).lastTransitionAt,
+            )
+              ? ((state.policyState as unknown as Record<string, unknown>)
+                  .lastTransitionAt as number)
+              : undefined) ??
+            (state.policyState.modeSince > 0 ? state.policyState.modeSince : undefined) ??
+            state.decision?.decidedAt ??
+            -1;
+
+          const existingPolicyState = this.#states.get(operationId);
+          const existingDecision = this.#decisions.get(operationId);
+          const existingTimestamp =
+            this.#lastTransitionAt.get(operationId) ??
+            (typeof (existingPolicyState as unknown as Record<string, unknown>)
+              ?.lastTransitionAt === "number" &&
+            Number.isFinite(
+              (existingPolicyState as unknown as Record<string, unknown>).lastTransitionAt,
+            )
+              ? ((existingPolicyState as unknown as Record<string, unknown>)
+                  .lastTransitionAt as number)
+              : undefined) ??
+            (typeof (existingPolicyState as unknown as Record<string, unknown>)
+              ?.lastTransitionTimestamp === "number" &&
+            Number.isFinite(
+              (existingPolicyState as unknown as Record<string, unknown>).lastTransitionTimestamp,
+            )
+              ? ((existingPolicyState as unknown as Record<string, unknown>)
+                  .lastTransitionTimestamp as number)
+              : undefined) ??
+            ((existingPolicyState?.modeSince ?? 0) > 0
+              ? existingPolicyState?.modeSince
+              : undefined) ??
+            existingDecision?.decidedAt ??
+            -1;
+
+          if (incomingTimestamp < existingTimestamp) {
+            continue;
+          }
+          if (incomingTimestamp !== -1) {
+            this.#lastTransitionAt.set(operationId, incomingTimestamp);
+          }
+        }
       }
-      if (state.adaptationEnabled === null) {
-        this.#adaptationOverrides.delete(operationId);
-      } else {
-        this.#adaptationOverrides.set(operationId, state.adaptationEnabled);
-      }
-      this.#stats.restore(operationId, state.stats);
-      this.#trackOperation(operationId);
+
+      this.#applyOperationState(operationId, state);
+      restoredCount++;
     }
     this.#enforceTrackingLimit();
-    return validated.operations.length;
+    return restoredCount;
+  }
+
+  #applyOperationState(operationId: string, state: OperationRuntimeState): void {
+    this.#states.set(operationId, state.policyState);
+    if (state.decision === null) {
+      this.#decisions.delete(operationId);
+    } else {
+      this.#decisions.set(operationId, state.decision);
+    }
+    if (state.pinnedStrategyId === null) {
+      this.#pins.delete(operationId);
+    } else {
+      this.#pins.set(operationId, state.pinnedStrategyId);
+    }
+    if (state.adaptationEnabled === null) {
+      this.#adaptationOverrides.delete(operationId);
+    } else {
+      this.#adaptationOverrides.set(operationId, state.adaptationEnabled);
+    }
+    this.#stats.restore(operationId, state.stats);
+    this.#trackOperation(operationId);
   }
 
   pinStrategy(operationId: string, strategyId: string): void {
@@ -436,6 +593,102 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
     return false;
   }
 
+  async waitForIdle(options?: WaitForIdleOptions): Promise<boolean> {
+    let targetOperationId: string | undefined;
+    let timeoutMs: number | undefined;
+    let signal: AbortSignal | undefined;
+
+    if (options !== undefined) {
+      if (options === null || typeof options !== "object" || Array.isArray(options)) {
+        throw new ConfigurationError("waitForIdle options must be an object.");
+      }
+      if (options.operationId !== undefined) {
+        targetOperationId = validateOperationId(options.operationId, "operationId");
+      }
+      if (options.timeoutMs !== undefined) {
+        if (
+          typeof options.timeoutMs !== "number" ||
+          !Number.isFinite(options.timeoutMs) ||
+          options.timeoutMs < 0
+        ) {
+          throw new ConfigurationError(
+            "waitForIdle options.timeoutMs must be a non-negative finite number.",
+          );
+        }
+        timeoutMs = options.timeoutMs;
+      }
+      if (options.signal !== undefined) {
+        if (
+          typeof options.signal !== "object" ||
+          options.signal === null ||
+          !("aborted" in options.signal)
+        ) {
+          throw new ConfigurationError("waitForIdle options.signal must be an AbortSignal.");
+        }
+        signal = options.signal;
+      }
+    }
+
+    if (!this.hasInFlight(targetOperationId)) {
+      return true;
+    }
+
+    if (signal?.aborted) {
+      return false;
+    }
+
+    return new Promise<boolean>((resolve) => {
+      let timer: ClockTimer | undefined;
+      let onAbort: (() => void) | undefined;
+      let notifyWaiter: (() => void) | undefined;
+
+      const cleanup = () => {
+        if (timer !== undefined) {
+          timer.cancel();
+          timer = undefined;
+        }
+        if (signal !== undefined && onAbort !== undefined) {
+          signal.removeEventListener?.("abort", onAbort);
+          onAbort = undefined;
+        }
+        if (notifyWaiter !== undefined) {
+          this.#drainWaiters.delete(notifyWaiter);
+          notifyWaiter = undefined;
+        }
+      };
+
+      const done = (result: boolean) => {
+        cleanup();
+        resolve(result);
+      };
+
+      if (signal !== undefined) {
+        onAbort = () => {
+          done(false);
+        };
+        signal.addEventListener("abort", onAbort, { once: true });
+      }
+
+      if (timeoutMs !== undefined) {
+        timer = this.#clock.setTimeout(() => {
+          done(false);
+        }, timeoutMs);
+      }
+
+      notifyWaiter = () => {
+        if (!this.hasInFlight(targetOperationId)) {
+          done(true);
+        }
+      };
+
+      this.#drainWaiters.add(notifyWaiter);
+
+      if (!this.hasInFlight(targetOperationId)) {
+        done(true);
+      }
+    });
+  }
+
   getActiveOperations(): readonly string[] {
     const active = new Set<string>();
     for (const id of this.#locks.keys()) {
@@ -449,6 +702,40 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
     const result = Array.from(active);
     result.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
     return Object.freeze(result);
+  }
+
+  getRuntimeHealth(): RuntimeHealthSummary {
+    const activeOperations = this.getActiveOperations();
+
+    const pinned = Array.from(this.#pins.keys());
+    pinned.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    const pinnedOperations = Object.freeze(pinned);
+
+    const disabled = new Set<string>();
+    for (const [id, enabled] of this.#adaptationOverrides.entries()) {
+      if (enabled === false) {
+        disabled.add(id);
+      }
+    }
+    for (const [id, policy] of this.#operationPolicies.entries()) {
+      if (policy.adaptationEnabled === false && this.#adaptationOverrides.get(id) !== true) {
+        disabled.add(id);
+      }
+    }
+    const adaptationDisabled = Array.from(disabled);
+    adaptationDisabled.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    const adaptationDisabledOperations = Object.freeze(adaptationDisabled);
+
+    return Object.freeze({
+      closed: this.#closed,
+      trackedOperationCount: this.#tracked.size,
+      maxTrackedOperations: this.#policy.maxTrackedOperations ?? Number.POSITIVE_INFINITY,
+      activeOperationCount: activeOperations.length,
+      activeOperations,
+      pinnedOperationCount: pinnedOperations.length,
+      pinnedOperations,
+      adaptationDisabledOperations,
+    });
   }
 
   pruneIdleOperations(): readonly string[] {
@@ -526,6 +813,7 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
     removed = this.#adaptationOverrides.delete(id) || removed;
     removed = this.#operationPolicies.delete(id) || removed;
     removed = this.#stats.remove(id) || removed;
+    this.#lastTransitionAt.delete(id);
     this.#tracked.delete(id);
     return removed;
   }
@@ -535,11 +823,13 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
     if (operationId === undefined) {
       this.#stats.clear();
       this.#pruneAllTracked();
+      this.#lastTransitionAt.clear();
       return;
     }
     const id = validateOperationId(operationId);
     this.#stats.reset(id);
     this.#pruneTracked(id);
+    this.#lastTransitionAt.delete(id);
   }
 
   on<K extends RuntimeEventName>(
@@ -641,6 +931,7 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
         this.#states.set(operationId, evaluation.state);
         this.#decisions.set(operationId, decision);
         this.#trackOperation(operationId);
+        this.#lastTransitionAt.set(operationId, decision.decidedAt);
         this.#emitter.emit("decision", { decision });
       }
       return decision;
@@ -773,6 +1064,7 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
         if (this.#locks.get(operationId) === execution) {
           this.#locks.delete(operationId);
         }
+        this.#notifyDrainWaiters();
       });
 
     this.#locks.set(operationId, execution);
@@ -846,6 +1138,12 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
     this.#enforceTrackingLimit();
   }
 
+  #notifyDrainWaiters(): void {
+    for (const notify of [...this.#drainWaiters]) {
+      notify();
+    }
+  }
+
   #endActiveRun(operationId: string): void {
     const active = this.#activeRuns.get(operationId) ?? 1;
     if (active <= 1) {
@@ -855,6 +1153,7 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
     }
     this.#trackOperation(operationId);
     this.#enforceTrackingLimit();
+    this.#notifyDrainWaiters();
   }
 
   /**
@@ -888,6 +1187,7 @@ class AdaptiveRuntimeImpl implements AdaptiveRuntime {
       this.#adaptationOverrides.delete(operationId);
       this.#operationPolicies.delete(operationId);
       this.#stats.remove(operationId);
+      this.#lastTransitionAt.delete(operationId);
       this.#tracked.delete(operationId);
     }
   }
