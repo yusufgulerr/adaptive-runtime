@@ -148,6 +148,47 @@ const safeSelector = createSafeSelector(
 - If `selector` throws or returns an invalid candidate, intercepts the error, invokes `fallbackSelector` if provided, or safely returns `undefined` (falling back to engine defaults).
 - Prevents runtime selection crashes caused by third-party or experimental selector implementations.
 
+## `createWeightedUtilitySelector(options?)`
+
+Creates a pure custom selector that scores strategy candidates using a multi-objective weighted utility function balancing quality, latency, error rate, and cost:
+
+```ts
+const selector = createWeightedUtilitySelector({
+  qualityWeight: 1.0,           // Non-negative weight for candidate.qualityTier
+  latencyWeight: 0.5,           // Non-negative weight penalizing candidate latency
+  errorRateWeight: 2.0,         // Non-negative weight penalizing candidate error rate
+  costWeight: 0.3,              // Non-negative weight penalizing candidate costTier
+  maxLatencyRefMs: 500,         // Reference ceiling for normalizing latency (default 1000)
+  maxCostTierRef: 5,            // Reference ceiling for normalizing costTier (default 5)
+  minSamplesForErrorRate: 5,    // Samples required before factoring in error rate
+  useEwma: true,                // Use EWMA stats when available
+});
+```
+
+- Normalizes quality ($[0, 1]$), latency ($[0, 1]$ inverted), error rate ($[0, 1]$ inverted), and cost ($[0, 1]$ inverted) into a composite utility score.
+- Evaluates eligible candidates and selects the candidate with the highest aggregate positive utility.
+- Breaks ties deterministically: highest `qualityTier`, lowest `costTier`, lowest latency, and ascending candidate `id`.
+
+## `createSignalTrendGuardSelector(options)`
+
+Creates a stateful rate-of-change degradation selector monitoring sliding-window regression slopes across designated signals:
+
+```ts
+const trendGuard = createSignalTrendGuardSelector({
+  signalName: "process.memory.rss",
+  maxSlopePerSec: 10 * 1024 * 1024,  // Rate-of-change threshold (units/sec)
+  windowSize: 10,                    // Sliding window size in samples (default 10)
+  minTimeSpanMs: 1000,               // Minimum duration between oldest/newest samples (default 500)
+  degradedQualityCap: 1,             // Maximum quality tier permitted when slope exceeds threshold
+  preferLowestLatencyOnSpike: true,  // Select lowest-latency candidate on degradation spike
+  fallbackSelector: undefined,       // Optional fallback selector when slope is within bounds
+});
+```
+
+- Computes linear regression slope over observed signal values across the sliding window.
+- When the observed slope exceeds `maxSlopePerSec`, restricts candidate selection to `degradedQualityCap` or selects the lowest-latency/lowest-cost resilient strategy.
+- Exposes a `.reset()` method on the returned selector (`SignalTrendGuardSelector`) to clear accumulated window history.
+
 ## `composeSelectors(selectors)`
 
 Combines multiple `CustomPolicySelector` functions into a deterministic sequential pipeline:
@@ -177,13 +218,15 @@ const summary = formatDecisionSummary(decision);
 
 ```ts
 interface AdaptiveRuntime {
+  waitForIdle(options?: WaitForIdleOptions): Promise<boolean>;
+  getRuntimeHealth(): RuntimeHealthSummary;
   run<TInput, TOutput>(operation: Operation<TInput, TOutput>): Promise<RunResult<TOutput>>;
   evaluate<TInput, TOutput>(
     operation: Operation<TInput, TOutput>,
     options?: EvaluateOptions,
   ): Promise<StrategyDecision>;
   exportState(operationId?: string): RuntimeStateSnapshot;
-  importState(snapshot: RuntimeStateSnapshot): number;
+  importState(snapshot: RuntimeStateSnapshot, options?: ImportStateOptions): number;
   pinStrategy(operationId: string, strategyId: string): void;
   unpinStrategy(operationId: string): void;
   setAdaptationEnabled(operationId: string, enabled: boolean): void;
@@ -192,6 +235,9 @@ interface AdaptiveRuntime {
   getEffectivePolicy(operationId: string): ResolvedPolicy;
   getDecision(operationId: string): StrategyDecision | null;
   getStats(operationId: string): RuntimeStats;
+  hasInFlight(operationId?: string): boolean;
+  getActiveOperations(): readonly string[];
+  pruneIdleOperations(): readonly string[];
   getTrackedOperations(): readonly string[];
   getAllStats(): Readonly<Record<string, RuntimeStats>>;
   getProviderDescriptors(): readonly SignalDescriptor[];
@@ -200,6 +246,39 @@ interface AdaptiveRuntime {
   on<K extends RuntimeEventName>(event: K, listener: RuntimeEventListener<K>): () => void;
   close(): Promise<void>;
 }
+```
+
+### `waitForIdle(options?)`
+
+Cooperatively waits until all active selections and in-flight runs complete, either for a specific operation or across the entire runtime. Resolves `true` when idle, or `false` if `timeoutMs` expires or `signal` triggers.
+
+```ts
+interface WaitForIdleOptions {
+  readonly operationId?: string;
+  readonly timeoutMs?: number;
+  readonly signal?: AbortSignal;
+}
+
+const idle = await runtime.waitForIdle({ timeoutMs: 5000 });
+```
+
+### `getRuntimeHealth()`
+
+Returns a frozen, non-disturbing summary of runtime health, capacity, active runs, and pinned/adaptation-disabled sets without altering LRU order. Usable before and after `close()`.
+
+```ts
+interface RuntimeHealthSummary {
+  readonly closed: boolean;
+  readonly trackedOperationCount: number;
+  readonly maxTrackedOperations: number;
+  readonly activeOperationCount: number;
+  readonly activeOperations: readonly string[];
+  readonly pinnedOperationCount: number;
+  readonly pinnedOperations: readonly string[];
+  readonly adaptationDisabledOperations: readonly string[];
+}
+
+const health = runtime.getRuntimeHealth();
 ```
 
 ### `run(operation)`
@@ -238,7 +317,7 @@ interface EvaluateOptions {
   It does not execute a strategy or update run statistics.
 - A dry run can still trigger a fresh provider read or reuse a cached snapshot.
 
-### `exportState(operationId?)` / `importState(snapshot)`
+### `exportState(operationId?)` / `importState(snapshot, options?)`
 
 `exportState()` returns a frozen, versioned, JSON-compatible snapshot:
 
@@ -257,16 +336,22 @@ interface RuntimeStateSnapshot {
     };
   }[];
 }
+
+interface ImportStateOptions {
+  readonly mode?: "replace" | "merge";
+  readonly conflictResolution?: "incoming" | "existing" | "latest";
+}
 ```
 
 Passing an operation id exports only that operation; an unknown id produces an
 empty `operations` array. Snapshots exclude function-bearing configuration such
 as per-operation policy overrides and custom selectors.
 
-`importState(snapshot)` validates and deep-clones the entire snapshot before
-mutating runtime state, so an invalid snapshot changes nothing. It rejects an
-import for an operation with an in-flight selection or run, restores the listed
-operations, leaves operations absent from the snapshot untouched, and returns the
+`importState(snapshot, options?)` validates and deep-clones the entire snapshot before
+mutating runtime state, so an invalid snapshot changes nothing.
+- `mode: "replace"` (default): Restores the listed operations; rejects if an operation has an in-flight run.
+- `mode: "merge"`: Non-destructive additive merge. If an operation already exists, resolves conflicts using `conflictResolution` (`"incoming"`, `"existing"`, or `"latest"` based on timestamps). Does not fail on in-flight operations unless conflicting mutation is required.
+Leaves operations absent from the snapshot untouched, and returns the
 number of restored operations. Imported operations participate in
 `maxTrackedOperations` eviction; pins remain protected.
 
@@ -1282,6 +1367,31 @@ default `sampleSequence: null` treats every step as a fresh sample. Strategies c
 declare `estimatedLatencyMs`, `ewmaLatencyMs`, and `errorRate` for high-fidelity
 simulation of custom selectors. No strategy is executed and no timer is scheduled.
 
+### `comparePolicyTimelines(options)`
+
+Compares two policies step-by-step across an identical simulated timeline:
+
+```ts
+const comparison = comparePolicyTimelines({
+  baselinePolicy: basePolicy,
+  candidatePolicy: candidatePolicy,
+  strategies: simulatedStrategies,
+  steps: timelineSteps,
+  initialStrategyId: "fast",
+});
+// {
+//   baseline: PolicyTimelineSimulationResult,
+//   candidate: PolicyTimelineSimulationResult,
+//   totalSteps: number,
+//   divergenceCount: number,
+//   agreementRatio: number,
+//   divergences: [{ stepIndex, timestamp, baselineStrategyId, candidateStrategyId, ... }],
+//   switchCountDelta: number
+// }
+```
+
+Reports step-level divergences, agreement ratio, and strategy switch count deltas.
+
 ## Exports
 
 The package exports:
@@ -1291,11 +1401,13 @@ The package exports:
   `EventLoopUtilizationProvider`, `NetworkLatencyProvider`,
   `CompositeSignalProvider`, `createCompositeSignalProvider`, `composeSelectors`,
   `createCostBudgetSelector`, `createErrorRateGuardSelector`, `createLatencyBudgetSelector`,
-  `createSafeSelector`, `inspectStateSnapshot`, `diffStateSnapshots`, `filterStateSnapshot`,
+  `createSafeSelector`, `createWeightedUtilitySelector`, `createSignalTrendGuardSelector`,
+  `inspectStateSnapshot`, `diffStateSnapshots`, `filterStateSnapshot`,
   `validateStateSnapshot`, all public types, and all error classes;
 - `adaptive-runtime/core`: platform-neutral runtime, policy helper,
   `composeSelectors`, `createCostBudgetSelector`, `createErrorRateGuardSelector`,
-  `createLatencyBudgetSelector`, `createSafeSelector`, `inspectStateSnapshot`,
+  `createLatencyBudgetSelector`, `createSafeSelector`, `createWeightedUtilitySelector`,
+  `createSignalTrendGuardSelector`, `inspectStateSnapshot`,
   `diffStateSnapshots`, `filterStateSnapshot`, `validateStateSnapshot`,
   errors, types (including state snapshot types), `NetworkLatencyProvider`, and
   `CompositeSignalProvider`, `createCompositeSignalProvider`;
@@ -1309,14 +1421,15 @@ The package exports:
 - `adaptive-runtime/policy`: policy types and defaults, `definePolicy`,
   `resolvePolicy`, `createInitialPolicyState`, `evaluatePolicy`,
   `composeSelectors`, `createCostBudgetSelector`, `createErrorRateGuardSelector`,
-  `createLatencyBudgetSelector`, `createSafeSelector`, and the decision/state types;
+  `createLatencyBudgetSelector`, `createSafeSelector`, `createWeightedUtilitySelector`,
+  `createSignalTrendGuardSelector`, and the decision/state types;
 - `adaptive-runtime/providers`: every built-in provider (Node.js, web, edge, and
   composite), `createCompositeSignalProvider`, `createEdgeExecutionBudgetProvider`,
   plus signal-name constants; this mixed barrel is not platform-neutral;
 - `adaptive-runtime/observability`: `MetricsCollector`,
   `createMetricsCollector`, `attachOpenTelemetryMeter`, and the metrics types;
 - `adaptive-runtime/testing`: `createFakeClock`, `ScriptedSignalProvider`,
-  `runProviderConformanceCheck`, and `simulatePolicyTimeline`;
+  `runProviderConformanceCheck`, `simulatePolicyTimeline`, and `comparePolicyTimelines`;
 - `adaptive-runtime/package.json`: package metadata.
 
 The root entry point intentionally excludes `/observability` and `/testing`.

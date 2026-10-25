@@ -30,6 +30,8 @@ describe("package entry points", () => {
     expectExport(coreApi, "composeSelectors");
     expectExport(coreApi, "createCostBudgetSelector");
     expectExport(coreApi, "createSafeSelector");
+    expectExport(coreApi, "createWeightedUtilitySelector");
+    expectExport(coreApi, "createSignalTrendGuardSelector");
     expectExport(coreApi, "inspectStateSnapshot");
     expectExport(coreApi, "diffStateSnapshots");
     expectExport(coreApi, "filterStateSnapshot");
@@ -101,6 +103,8 @@ describe("package entry points", () => {
     expectExport(rootApi, "composeSelectors");
     expectExport(rootApi, "createCostBudgetSelector");
     expectExport(rootApi, "createSafeSelector");
+    expectExport(rootApi, "createWeightedUtilitySelector");
+    expectExport(rootApi, "createSignalTrendGuardSelector");
     expectExport(rootApi, "inspectStateSnapshot");
     expectExport(rootApi, "diffStateSnapshots");
     expectExport(rootApi, "filterStateSnapshot");
@@ -123,10 +127,13 @@ describe("package entry points", () => {
     expectExport(testingApi, "ScriptedSignalProvider");
     expectExport(testingApi, "runProviderConformanceCheck");
     expectExport(testingApi, "simulatePolicyTimeline");
+    expectExport(testingApi, "comparePolicyTimelines");
     expectExport(policyApi, "definePolicy");
     expectExport(policyApi, "composeSelectors");
     expectExport(policyApi, "createCostBudgetSelector");
     expectExport(policyApi, "createSafeSelector");
+    expectExport(policyApi, "createWeightedUtilitySelector");
+    expectExport(policyApi, "createSignalTrendGuardSelector");
     expectExport(policyApi, "evaluatePolicy");
     expectExport(providersApi, "ProcessMemoryProvider");
     expectExport(providersApi, "DeviceMemoryProvider");
@@ -147,7 +154,7 @@ describe("package entry points", () => {
       version?: string;
       exports?: Record<string, unknown>;
     };
-    assert.equal(packageJson.version, "0.8.0");
+    assert.equal(packageJson.version, "0.9.0");
     const exports = packageJson.exports ?? {};
     const required = [
       ".",

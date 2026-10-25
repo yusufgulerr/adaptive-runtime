@@ -15,6 +15,8 @@ const EXPECTED_EXPORTS = {
     "composeSelectors",
     "createCostBudgetSelector",
     "createSafeSelector",
+    "createWeightedUtilitySelector",
+    "createSignalTrendGuardSelector",
     "inspectStateSnapshot",
     "diffStateSnapshots",
     "filterStateSnapshot",
@@ -27,6 +29,8 @@ const EXPECTED_EXPORTS = {
     "composeSelectors",
     "createCostBudgetSelector",
     "createSafeSelector",
+    "createWeightedUtilitySelector",
+    "createSignalTrendGuardSelector",
     "inspectStateSnapshot",
     "diffStateSnapshots",
     "filterStateSnapshot",
@@ -56,6 +60,8 @@ const EXPECTED_EXPORTS = {
     "composeSelectors",
     "createCostBudgetSelector",
     "createSafeSelector",
+    "createWeightedUtilitySelector",
+    "createSignalTrendGuardSelector",
   ],
   "./providers": [
     "CompositeSignalProvider",
@@ -73,6 +79,7 @@ const EXPECTED_EXPORTS = {
     "ScriptedSignalProvider",
     "runProviderConformanceCheck",
     "simulatePolicyTimeline",
+    "comparePolicyTimelines",
   ],
 };
 

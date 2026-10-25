@@ -4,7 +4,8 @@ This document records the historical 0.3.0 release verification on
 **2026-10-22**, the 0.5.0 source-line and release verification on
 **2026-10-23**, the 0.6.0 source-line and release-integration verification on
 **2026-10-24**, the 0.7.0 source-line and release-integration verification on
-**2026-10-24**, and the 0.8.0 source-line and release-integration verification on
+**2026-10-24**, the 0.8.0 source-line and release-integration verification on
+**2026-10-25**, and the 0.9.0 source-line and release-integration verification on
 **2026-10-25**. It distinguishes local verification, remote workflow evidence,
 GitHub repository settings, and npm registry status. The 0.3.0 tree was merged to
 `main` at `5504f21`; the release-workflow fix and the OpenSSF readiness
@@ -24,8 +25,50 @@ readiness. The 0.8.0 release tree integrates 9 feature and resilience tracks
 (PR #36 through #44), delivering cost-aware policy selectors, safe selector boundaries,
 runtime in-flight introspection, deterministic snapshot inspection/diffing/filtering,
 web frame timing/compute pressure guards, edge budget reserve headroom, composite
-signal median/spread operators, and an adversarial soak testing suite. npm publication
-remains pending owner approval.
+signal median/spread operators, and an adversarial soak testing suite.
+The 0.9.0 release tree integrates PRs #47 through #51, delivering multi-objective weighted utility
+selection, signal-slope trend guard selectors, structured JSON metrics reporting, cardinality limit
+callbacks and simulation, Node.js provider EWMA smoothing/heap headroom/jitter statistics, per-provider
+circuit breaker cooldowns and health diagnostics, cooperative `waitForIdle` drain, runtime health
+summary, state snapshot merge hydration, and offline policy timeline divergence comparison.
+npm publication remains pending owner approval.
+
+## 0.9.0 source-line and release-integration verification
+
+The 0.9.0 quality gates were run locally on **2026-10-25** with the repository's
+documented commands. All changes were integrated via conventional pull requests
+(#47 through #51, and integration PR #52) with all required CI checks green. Measurements below were captured on the release
+branch `chore/v090-release-integration` before PR creation and squash-merge to `main`.
+
+| Command | Result |
+| --- | --- |
+| `npm run format` | **PASS** — 105 files checked, no fixes applied |
+| `npm run lint` | **PASS** — 105 files checked, no fixes applied |
+| `npm run typecheck` | **PASS** — `tsc -p tsconfig.check.json` (0 errors) |
+| `npm run verify:version-sync` | **PASS** — `adaptive-runtime 0.9.0` in `package.json`, `package-lock.json`, `CHANGELOG.md`, and `CITATION.cff` |
+| `npm run check` | **PASS** — lint, typecheck, version sync, 721 tests / 111 suites, build, exports, zero dependencies, and Markdown links |
+| `npm test` | **PASS** — 721 tests, 111 suites, 0 failures, 0 skipped |
+| `npm run test:fuzz` | **PASS** — 18 property tests, 4 suites, 0 failures |
+| `npm run test:coverage` | **PASS** — 99.08% lines, 95.57% branches, 99.22% functions |
+| `npm run build` | **PASS** — ESM, declarations, and maps emitted to `dist/` |
+| `npm run verify:exports` | **PASS** — 10 export entries, 27 files, and 60 runtime symbols |
+| `npm run verify:zero-deps` | **PASS** — 64 lockfile entries, 0 production packages |
+| `npm audit --omit=dev --audit-level=high` | **PASS** — 0 vulnerabilities |
+| Six `npm run example:*` commands | **PASS** — basic, search, planning, quick-start, observability, edge |
+| `npm run benchmark` | **PASS** — 20,000 runs per round, 7 rounds; see [BENCHMARKS.md](BENCHMARKS.md) |
+| `npm run benchmark:concurrency` | **PASS** — 4,096 runs per level per round, 3 rounds; see [BENCHMARKS.md](BENCHMARKS.md) |
+| `npm pack --dry-run` | **PASS** — 188 files, 262.8 kB packed, 1.3 MB unpacked, version 0.9.0 |
+| `npm run check:links` | **PASS** — 48 Markdown files, 260 relative links, 0 broken |
+
+Coverage from the 0.9.0 run:
+
+| Metric | Result | Threshold | Status |
+| --- | ---: | ---: | --- |
+| Lines | 99.08% | 80% | PASS |
+| Branches | 95.57% | 80% | PASS |
+| Functions | 99.22% | 80% | PASS |
+
+Every `src/**` file remains above 90% branch coverage (threshold >= 80%, target >= 95%). The package inspection above is a dry-run inventory, not a clean-consumer install of a published tarball. The npm registry and provenance attestation remain **not verified** for 0.9.0; npm publication requires explicit owner approval.
 
 ## 0.8.0 source-line and release-integration verification
 

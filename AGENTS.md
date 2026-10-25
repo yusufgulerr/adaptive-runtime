@@ -21,12 +21,13 @@
 
 ## Current position
 
-- Version 0.8.0 on the 0.x line (1.0-RC preparation). The public repository exists.
-  Wave 1, Wave 2, and v0.8.0 integration delivered cost-aware budget selectors,
-  safe selector boundaries, runtime in-flight introspection, deterministic snapshot
-  inspection/diffing/filtering, web frame timing/compute pressure guards, edge budget
-  reserve headroom, composite provider median/spread operators, and adversarial soak testing.
-  `v0.1.0`, `v0.3.0`, `v0.4.0`, `v0.5.0`, `v0.6.0`, `v0.7.0`, and `v0.8.0` are tagged and released on GitHub; npm publication is a separate owner-approved dispatch and has not been performed.
+- Version 0.9.0 on the 0.x line (1.0-RC preparation). The public repository exists.
+  v0.9.0 delivered multi-objective weighted utility selectors, signal-slope trend guard selectors,
+  structured JSON metrics reporting, metric cardinality safety callbacks and simulator,
+  Node.js provider EWMA smoothing, heap headroom, and network jitter stats,
+  per-provider circuit breaker cooldowns and health diagnostics, cooperative waitForIdle drain,
+  runtime health summary, and state merge hydration.
+  `v0.1.0`, `v0.3.0`, `v0.4.0`, `v0.5.0`, `v0.6.0`, `v0.7.0`, `v0.8.0`, and `v0.9.0` are tagged and released on GitHub; npm publication is a separate owner-approved dispatch and has not been performed.
 - The runtime is multi-platform: one portable core plus Node.js, browser, web, and
   WinterCG entry points. It includes shadow evaluation, versioned state
   export/import, bounded operation state (`maxTrackedOperations`,

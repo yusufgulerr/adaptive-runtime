@@ -6,6 +6,8 @@ import {
   createCompositeSignalProvider,
   createCostBudgetSelector,
   createSafeSelector,
+  createSignalTrendGuardSelector,
+  createWeightedUtilitySelector,
   diffStateSnapshots,
   filterStateSnapshot,
   inspectStateSnapshot,
@@ -21,7 +23,7 @@ import { createMetricsCollector, MetricsCollector } from "../../src/observabilit
 import * as policyApi from "../../src/policy/index.js";
 import * as providersApi from "../../src/providers/index.js";
 import { createEdgeExecutionBudgetProvider } from "../../src/providers/index.js";
-import { createFakeClock } from "../../src/testing/index.js";
+import { comparePolicyTimelines, createFakeClock } from "../../src/testing/index.js";
 import { FunctionSignalProvider } from "../helpers/providers.js";
 
 function constantProvider(id: string, signalName: string, value: number) {
@@ -294,5 +296,77 @@ describe("public API integration", () => {
     assert.deepEqual(diff.removedOperations, ["v080-op"]);
 
     await runtime.close();
+  });
+
+  it("exposes v0.9.0 runtime symbols, weighted utility, signal trend guard, and timeline comparison", async () => {
+    assert.equal(typeof createWeightedUtilitySelector, "function");
+    assert.equal(typeof createSignalTrendGuardSelector, "function");
+    assert.equal(typeof comparePolicyTimelines, "function");
+
+    const weightedSelector = createWeightedUtilitySelector({
+      qualityWeight: 1.0,
+      latencyWeight: 0.5,
+      costWeight: 0.2,
+      useEwma: true,
+    });
+
+    const trendSelector = createSignalTrendGuardSelector({
+      signalName: "net.latency",
+      maxSlopePerSec: 5,
+      degradedQualityCap: 1,
+    });
+    assert.equal(typeof trendSelector, "function");
+    assert.equal(typeof trendSelector.reset, "function");
+
+    const runtime = createAdaptiveRuntime({
+      providers: [constantProvider("latency", "net.latency", 10)],
+      policy: {
+        evaluationIntervalMs: 0,
+        customSelector: weightedSelector,
+      },
+    });
+
+    const health = runtime.getRuntimeHealth();
+    assert.equal(health.closed, false);
+    assert.equal(health.trackedOperationCount, 0);
+    assert.equal(health.activeOperationCount, 0);
+
+    const runResult = await runtime.run({
+      operationId: "v090-op",
+      input: 21,
+      strategies: identityStrategies,
+    });
+    assert.equal(runResult.value, 42);
+    assert.equal(runResult.metadata.strategyId, "thorough");
+
+    const idle = await runtime.waitForIdle();
+    assert.equal(idle, true);
+    await runtime.close();
+
+    const comparison = comparePolicyTimelines({
+      baselinePolicy: { evaluationIntervalMs: 0 },
+      candidatePolicy: { evaluationIntervalMs: 0 },
+      strategies: [
+        { id: "quick", qualityTier: 1 },
+        { id: "thorough", qualityTier: 2 },
+      ],
+      steps: [
+        {
+          now: 0,
+          signals: [
+            {
+              name: "net.latency",
+              unit: "milliseconds",
+              status: "ok",
+              value: 10,
+              observedAt: 0,
+            },
+          ],
+        },
+      ],
+    });
+    assert.equal(comparison.totalSteps, 1);
+    assert.equal(comparison.divergenceCount, 0);
+    assert.equal(comparison.agreementRatio, 1);
   });
 });

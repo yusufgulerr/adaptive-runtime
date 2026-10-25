@@ -6,6 +6,37 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) after 1.0.
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-10-25
+
+### Added
+
+- **Multi-objective weighted utility & signal-slope trend guard selectors (PR #47):**
+  - `createWeightedUtilitySelector(options)`: Composable policy selector evaluating multiple normalized utility objectives (`quality`, `cost`, `latency`, `errorRate`, or custom business metrics) with configurable weights, selecting the candidate with the highest aggregate positive utility while maintaining strict tie-breaking determinism.
+  - `createSignalTrendGuardSelector(options)`: Proactive rate-of-change degradation selector monitoring sliding-window regression slopes across designated signals (such as latency spikes or memory growth) to trigger early graceful degradation before hard budget thresholds are violated.
+  - Re-exported selector factories and option types in `adaptive-runtime`, `adaptive-runtime/policy`, and `adaptive-runtime/core`.
+- **Structured JSON metrics, cardinality callbacks & timeline comparator (PR #48):**
+  - `MetricsCollector.toStructuredMetrics()` / `MetricsCollector.toMetricsJson()`: Machine-readable structured JSON metrics export format (`schemaVersion: 1`) for modern observability pipelines.
+  - Metric cardinality controls: Added `onCardinalityLimitExceeded` alert callback and strict bounded metric label tracking in `MetricsCollector`.
+  - `simulateMetricsCardinality(options)`: Simulation harness in `adaptive-runtime/observability` and `adaptive-runtime/testing` projecting label cardinality and potential leak hazards before production deployment.
+  - `comparePolicyTimelines(base, candidate, options)`: Offline policy timeline comparator identifying strategy divergence intervals, quality tier shifts, and timeline step discrepancies.
+- **Node.js provider EWMA smoothing, heap headroom & network jitter stats (PR #49):**
+  - `CpuUtilizationProvider`: Added exponential moving average (EWMA) smoothing with configurable smoothing factor `alpha` and `getCpuStats()` reporting raw and smoothed CPU utilization.
+  - `ProcessMemoryProvider`: Added heap headroom calculation (`PROCESS_MEMORY_HEAP_HEADROOM`) and `getMemoryStats()` exposing heap headroom and utilization ratios.
+  - `NetworkLatencyProvider`: Added network latency jitter calculation (`NETWORK_LATENCY_JITTER`) and `getLatencyStats()` tracking rolling latency statistics and standard deviation.
+  - Re-exported stats types (`CpuUtilizationStats`, `ProcessMemoryStats`, `NetworkLatencyStats`) in root and provider barrels.
+- **Per-provider circuit breaker cooldowns & health diagnostics (PR #50):**
+  - Configurable provider circuit breaker in `SignalCollector` tracking consecutive provider failures, tripping into `open` cooldown states, and safely testing recovery via `half-open` probing.
+  - `runtime.getRuntimeHealth()` and `collector.getHealth()` returning `RuntimeHealthSummary` with per-provider `ProviderHealthStatus` records (consecutive errors, cooldown timestamps, state).
+- **Cooperative waitForIdle drain, runtime health summary & state merge hydration (PR #51):**
+  - `runtime.waitForIdle(options)`: Cooperative drain awaiting completion of all in-flight operations across the runtime with timeout and abort signal support for clean SIGTERM shutdowns.
+  - `runtime.importState(snapshot, { mode: "merge" | "replace" })`: State hydration mode allowing non-destructive additive state merging across cluster instances and rolling upgrades.
+
+### Changed
+
+- Re-exported `createWeightedUtilitySelector`, `createSignalTrendGuardSelector`, `RuntimeHealthSummary`, `WaitForIdleOptions`, `ImportStateOptions`, and `ProviderHealthStatus` across package barrels.
+- Re-exported `comparePolicyTimelines` and comparison report types from `adaptive-runtime/testing`.
+- Updated package export verifier and public API test suites to validate all v0.9.0 runtime symbols.
+
 ## [0.8.0] — 2026-10-25
 
 ### Added
@@ -413,7 +444,8 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) after 1.0.
 - The runtime is not a sandbox and does not enforce OS resource limits.
 - Public API and decision reason codes may change during 0.x.
 
-[Unreleased]: https://github.com/yusufgulerr/adaptive-runtime/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/yusufgulerr/adaptive-runtime/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/yusufgulerr/adaptive-runtime/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/yusufgulerr/adaptive-runtime/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/yusufgulerr/adaptive-runtime/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/yusufgulerr/adaptive-runtime/compare/v0.5.0...v0.6.0

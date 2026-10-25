@@ -29,11 +29,16 @@ export {
   createErrorRateGuardSelector,
   createLatencyBudgetSelector,
   createSafeSelector,
+  createSignalTrendGuardSelector,
+  createWeightedUtilitySelector,
   type ErrorRateGuardSelectorOptions,
   formatDecisionSummary,
   InvalidConfigurationError,
   type LatencyBudgetSelectorOptions,
   type SafeSelectorOptions,
+  type SignalTrendGuardSelector,
+  type SignalTrendGuardSelectorOptions,
+  type WeightedUtilitySelectorOptions,
 } from "./policy/selectors.js";
 export {
   type CompositeCombinerMode,
@@ -46,6 +51,7 @@ export {
   NETWORK_LATENCY,
   NetworkLatencyProvider,
   type NetworkLatencyProviderOptions,
+  type NetworkLatencyStats,
   type NetworkProbeContext,
 } from "./providers/network-latency.js";
 export { createAdaptiveRuntime } from "./runtime/runtime.js";
@@ -56,6 +62,7 @@ export {
   validateRuntimeStateSnapshot,
   validateStateSnapshot,
 } from "./runtime/state.js";
+export type { ProviderHealthStatus } from "./signals/collector.js";
 export type { Clock, ClockTimer } from "./types/clock.js";
 export type {
   BudgetView,
@@ -90,7 +97,14 @@ export type {
   RuntimeStats,
   StrategyStats,
 } from "./types/run.js";
-export type { AdaptiveRuntime, CreateRuntimeOptions, EvaluateOptions } from "./types/runtime.js";
+export type {
+  AdaptiveRuntime,
+  CreateRuntimeOptions,
+  EvaluateOptions,
+  ImportStateOptions,
+  RuntimeHealthSummary,
+  WaitForIdleOptions,
+} from "./types/runtime.js";
 export type {
   AvailableSignalReading,
   ResourceSignal,

@@ -18,6 +18,8 @@
 - [0016 — Shadow evaluation, state hydration, and provider expansion](0016-shadow-evaluation-state-hydration-and-provider-expansion.md)
 - [0017 — Runtime introspection, bounded quality details, and composable policy selectors](0017-runtime-introspection-and-composable-selectors.md)
 - [0018 — Selector composition, runtime introspection, and simulation fidelity](0018-selector-composition-and-simulation-fidelity.md)
+- [0019 — Concurrency benchmarks, resilient selector pipeline, and runtime state lifecycle](0019-concurrency-benchmarks-and-resilient-selector-pipeline.md)
+- [0020 — Utility selectors, cooperative drain, and provider circuit breakers](0020-utility-selectors-cooperative-drain-and-provider-circuit-breakers.md)
 
 ## Decision map
 

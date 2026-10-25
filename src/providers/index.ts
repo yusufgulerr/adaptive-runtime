@@ -15,6 +15,7 @@ export {
   type CpuUsageSnapshot,
   CpuUtilizationProvider,
   type CpuUtilizationProviderOptions,
+  type CpuUtilizationStats,
   PROCESS_CPU_UTILIZATION,
 } from "./cpu-utilization.js";
 export {
@@ -44,6 +45,7 @@ export {
   NETWORK_LATENCY,
   NetworkLatencyProvider,
   type NetworkLatencyProviderOptions,
+  type NetworkLatencyStats,
   type NetworkProbeContext,
 } from "./network-latency.js";
 export {
@@ -52,6 +54,7 @@ export {
   PROCESS_MEMORY_RSS,
   ProcessMemoryProvider,
   type ProcessMemoryProviderOptions,
+  type ProcessMemoryStats,
 } from "./process-memory.js";
 export {
   ComputePressureProvider,
