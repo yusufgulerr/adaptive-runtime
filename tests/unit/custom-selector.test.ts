@@ -15,11 +15,16 @@ import {
   createErrorRateGuardSelector,
   createLatencyBudgetSelector,
   createSafeSelector,
+  createSignalTrendGuardSelector,
+  createWeightedUtilitySelector,
   type ErrorRateGuardSelectorOptions,
   formatDecisionSummary,
   InvalidConfigurationError,
   type LatencyBudgetSelectorOptions,
   type SafeSelectorOptions,
+  type SignalTrendGuardSelector,
+  type SignalTrendGuardSelectorOptions,
+  type WeightedUtilitySelectorOptions,
 } from "../../src/policy/selectors.js";
 import { createAdaptiveRuntime } from "../../src/runtime/runtime.js";
 import type { StrategyDecision } from "../../src/types/decision.js";
@@ -699,6 +704,7 @@ describe("Built-in Policy Selectors and formatDecisionSummary", () => {
     samples?: number | null,
     ewmaLatencyMs?: number | null,
     lastLatencyMs?: number | null,
+    ewmaErrorRate?: number | null,
   ): CustomSelectorCandidate => ({
     candidate: { id, qualityTier, costTier, applicable: true },
     estimatedCost: costTier,
@@ -707,6 +713,7 @@ describe("Built-in Policy Selectors and formatDecisionSummary", () => {
     samples,
     ewmaLatencyMs,
     ...(lastLatencyMs !== undefined ? { lastLatencyMs } : {}),
+    ...(ewmaErrorRate !== undefined ? { ewmaErrorRate } : {}),
   });
 
   describe("createErrorRateGuardSelector", () => {
@@ -2142,6 +2149,1074 @@ describe("Built-in Policy Selectors and formatDecisionSummary", () => {
       assert.equal(typeof coreModule.createSafeSelector, "function");
       assert.equal(policyModule.createSafeSelector, createSafeSelector);
       assert.equal(coreModule.createSafeSelector, createSafeSelector);
+    });
+  });
+
+  describe("createWeightedUtilitySelector", () => {
+    it("validates options strictly", () => {
+      assert.throws(
+        () => createWeightedUtilitySelector(null as unknown as WeightedUtilitySelectorOptions),
+        InvalidConfigurationError,
+      );
+      assert.throws(
+        () => createWeightedUtilitySelector("invalid" as unknown as WeightedUtilitySelectorOptions),
+        InvalidConfigurationError,
+      );
+      assert.throws(
+        () => createWeightedUtilitySelector(123 as unknown as WeightedUtilitySelectorOptions),
+        InvalidConfigurationError,
+      );
+      assert.throws(
+        () => createWeightedUtilitySelector([] as unknown as WeightedUtilitySelectorOptions),
+        InvalidConfigurationError,
+      );
+
+      // Invalid weights
+      assert.throws(
+        () => createWeightedUtilitySelector({ qualityWeight: -0.1 }),
+        InvalidConfigurationError,
+      );
+      assert.throws(
+        () => createWeightedUtilitySelector({ qualityWeight: Number.NaN }),
+        InvalidConfigurationError,
+      );
+      assert.throws(
+        () => createWeightedUtilitySelector({ qualityWeight: Number.POSITIVE_INFINITY }),
+        InvalidConfigurationError,
+      );
+      assert.throws(
+        () => createWeightedUtilitySelector({ qualityWeight: "0.5" as unknown as number }),
+        InvalidConfigurationError,
+      );
+
+      assert.throws(
+        () => createWeightedUtilitySelector({ latencyWeight: -1 }),
+        InvalidConfigurationError,
+      );
+      assert.throws(
+        () => createWeightedUtilitySelector({ latencyWeight: Number.NaN }),
+        InvalidConfigurationError,
+      );
+
+      assert.throws(
+        () => createWeightedUtilitySelector({ errorRateWeight: -0.2 }),
+        InvalidConfigurationError,
+      );
+      assert.throws(
+        () => createWeightedUtilitySelector({ errorRateWeight: Number.NaN }),
+        InvalidConfigurationError,
+      );
+
+      assert.throws(
+        () => createWeightedUtilitySelector({ costWeight: -0.5 }),
+        InvalidConfigurationError,
+      );
+      assert.throws(
+        () => createWeightedUtilitySelector({ costWeight: Number.NaN }),
+        InvalidConfigurationError,
+      );
+
+      // All four weights zero
+      assert.throws(
+        () =>
+          createWeightedUtilitySelector({
+            qualityWeight: 0,
+            latencyWeight: 0,
+            errorRateWeight: 0,
+            costWeight: 0,
+          }),
+        InvalidConfigurationError,
+      );
+
+      // maxLatencyRefMs
+      assert.throws(
+        () => createWeightedUtilitySelector({ maxLatencyRefMs: 0 }),
+        InvalidConfigurationError,
+      );
+      assert.throws(
+        () => createWeightedUtilitySelector({ maxLatencyRefMs: -10 }),
+        InvalidConfigurationError,
+      );
+      assert.throws(
+        () => createWeightedUtilitySelector({ maxLatencyRefMs: Number.NaN }),
+        InvalidConfigurationError,
+      );
+      assert.throws(
+        () => createWeightedUtilitySelector({ maxLatencyRefMs: "100" as unknown as number }),
+        InvalidConfigurationError,
+      );
+
+      // maxCostTierRef
+      assert.throws(
+        () => createWeightedUtilitySelector({ maxCostTierRef: 0 }),
+        InvalidConfigurationError,
+      );
+      assert.throws(
+        () => createWeightedUtilitySelector({ maxCostTierRef: -1 }),
+        InvalidConfigurationError,
+      );
+      assert.throws(
+        () => createWeightedUtilitySelector({ maxCostTierRef: Number.NaN }),
+        InvalidConfigurationError,
+      );
+
+      // minSamplesForErrorRate
+      assert.throws(
+        () => createWeightedUtilitySelector({ minSamplesForErrorRate: -1 }),
+        InvalidConfigurationError,
+      );
+      assert.throws(
+        () => createWeightedUtilitySelector({ minSamplesForErrorRate: 1.5 }),
+        InvalidConfigurationError,
+      );
+      assert.throws(
+        () => createWeightedUtilitySelector({ minSamplesForErrorRate: Number.NaN }),
+        InvalidConfigurationError,
+      );
+      assert.throws(
+        () =>
+          createWeightedUtilitySelector({
+            minSamplesForErrorRate: "5" as unknown as number,
+          }),
+        InvalidConfigurationError,
+      );
+
+      // useEwma
+      assert.throws(
+        () => createWeightedUtilitySelector({ useEwma: "true" as unknown as boolean }),
+        InvalidConfigurationError,
+      );
+      assert.throws(
+        () => createWeightedUtilitySelector({ useEwma: 1 as unknown as boolean }),
+        InvalidConfigurationError,
+      );
+
+      // Valid configurations
+      assert.doesNotThrow(() => createWeightedUtilitySelector());
+      assert.doesNotThrow(() => createWeightedUtilitySelector({}));
+      assert.doesNotThrow(() =>
+        createWeightedUtilitySelector({
+          qualityWeight: 1,
+          latencyWeight: 0,
+          errorRateWeight: 0,
+          costWeight: 0,
+        }),
+      );
+      assert.doesNotThrow(() =>
+        createWeightedUtilitySelector({
+          minSamplesForErrorRate: 0,
+          useEwma: false,
+          maxLatencyRefMs: 500,
+          maxCostTierRef: 10,
+        }),
+      );
+    });
+
+    it("returns null when candidates list is empty", () => {
+      const selector = createWeightedUtilitySelector();
+      const result = selector({
+        operation: "test",
+        candidates: [],
+        signals: {},
+        now: 1000,
+      });
+      assert.equal(result, null);
+    });
+
+    it("returns single candidate immediately without scoring", () => {
+      const selector = createWeightedUtilitySelector();
+      const single = cand("sole-strategy", 1, 1);
+      const result = selector({
+        operation: "test",
+        candidates: [single],
+        signals: {},
+        now: 1000,
+      });
+      assert.ok(typeof result === "object" && result !== null);
+      assert.equal(result.strategyId, "sole-strategy");
+      assert.ok(result.reason?.includes("sole-strategy"));
+    });
+
+    it("computes normQuality as 1 when all candidates have identical qualityTier", () => {
+      const selector = createWeightedUtilitySelector({
+        qualityWeight: 0.5,
+        latencyWeight: 0.5,
+        errorRateWeight: 0,
+        costWeight: 0,
+      });
+      // Both qualityTier 2: normQuality is 1 for both. strat-low-lat has lower latency penalty
+      const cands = [
+        cand("strat-high-lat", 2, 1, 0, 100, 10, 100),
+        cand("strat-low-lat", 2, 1, 0, 20, 10, 20),
+      ];
+      const result = selector({
+        operation: "test",
+        candidates: cands,
+        signals: {},
+        now: 1000,
+      });
+      assert.ok(typeof result === "object" && result !== null);
+      assert.equal(result.strategyId, "strat-low-lat");
+    });
+
+    it("normalizes quality across spread of quality tiers", () => {
+      const selector = createWeightedUtilitySelector({
+        qualityWeight: 1.0,
+        latencyWeight: 0,
+        errorRateWeight: 0,
+        costWeight: 0,
+      });
+      const cands = [cand("low-q", 1, 1), cand("mid-q", 3, 1), cand("high-q", 5, 1)];
+      const result = selector({
+        operation: "test",
+        candidates: cands,
+        signals: {},
+        now: 1000,
+      });
+      assert.ok(typeof result === "object" && result !== null);
+      assert.equal(result.strategyId, "high-q");
+    });
+
+    it("assigns neutral 0.5 latency penalty to unknown/unmeasured latency", () => {
+      const selector = createWeightedUtilitySelector({
+        qualityWeight: 0,
+        latencyWeight: 1.0,
+        errorRateWeight: 0,
+        costWeight: 0,
+        maxLatencyRefMs: 100,
+      });
+      // strat-known has latency 20ms -> penalty = 20 / 100 = 0.2 (better than 0.5)
+      // strat-unknown has null latency -> penalty = 0.5
+      // strat-slow has latency 90ms -> penalty = 0.9 (worse than 0.5)
+      const cands = [
+        cand("strat-slow", 1, 1, 0, 90),
+        cand("strat-unknown", 1, 1, 0, null),
+        cand("strat-fast", 1, 1, 0, 20),
+      ];
+      const result1 = selector({
+        operation: "test",
+        candidates: [cands[0] as CustomSelectorCandidate, cands[1] as CustomSelectorCandidate],
+        signals: {},
+        now: 1000,
+      });
+      // strat-unknown (penalty 0.5) beats strat-slow (penalty 0.9)
+      assert.ok(typeof result1 === "object" && result1 !== null);
+      assert.equal(result1.strategyId, "strat-unknown");
+
+      const result2 = selector({
+        operation: "test",
+        candidates: [cands[1] as CustomSelectorCandidate, cands[2] as CustomSelectorCandidate],
+        signals: {},
+        now: 1000,
+      });
+      // strat-fast (penalty 0.2) beats strat-unknown (penalty 0.5)
+      assert.ok(typeof result2 === "object" && result2 !== null);
+      assert.equal(result2.strategyId, "strat-fast");
+    });
+
+    it("respects useEwma flag for latency (prefers ewma vs last latency)", () => {
+      // strat-a: ewma 10ms, last 100ms
+      // strat-b: ewma 100ms, last 10ms
+      const candA = cand("strat-a", 1, 1, 0, null, 10, 10, 100);
+      const candB = cand("strat-b", 1, 1, 0, null, 10, 100, 10);
+
+      const selectorEwma = createWeightedUtilitySelector({
+        qualityWeight: 0,
+        latencyWeight: 1.0,
+        errorRateWeight: 0,
+        costWeight: 0,
+        useEwma: true,
+      });
+      const resEwma = selectorEwma({
+        operation: "test",
+        candidates: [candA, candB],
+        signals: {},
+        now: 1000,
+      });
+      assert.ok(typeof resEwma === "object" && resEwma !== null);
+      assert.equal(resEwma.strategyId, "strat-a"); // 10ms < 100ms
+
+      const selectorLast = createWeightedUtilitySelector({
+        qualityWeight: 0,
+        latencyWeight: 1.0,
+        errorRateWeight: 0,
+        costWeight: 0,
+        useEwma: false,
+      });
+      const resLast = selectorLast({
+        operation: "test",
+        candidates: [candA, candB],
+        signals: {},
+        now: 1000,
+      });
+      assert.ok(typeof resLast === "object" && resLast !== null);
+      assert.equal(resLast.strategyId, "strat-b"); // last 10ms < 100ms
+    });
+
+    it("evaluates error rate penalty only when samples >= minSamplesForErrorRate", () => {
+      const selector = createWeightedUtilitySelector({
+        qualityWeight: 0,
+        latencyWeight: 0,
+        errorRateWeight: 1.0,
+        costWeight: 0,
+        minSamplesForErrorRate: 5,
+      });
+
+      // strat-unproven has 100% error rate but only 2 samples (< 5) -> penalty 0
+      // strat-proven has 10% error rate with 10 samples (>= 5) -> penalty 0.1
+      const stratUnproven = cand("unproven", 1, 1, 1.0, null, 2);
+      const stratProven = cand("proven", 1, 1, 0.1, null, 10);
+
+      const res = selector({
+        operation: "test",
+        candidates: [stratProven, stratUnproven],
+        signals: {},
+        now: 1000,
+      });
+      assert.ok(typeof res === "object" && res !== null);
+      // unproven has penalty 0 (-0 > -0.1), so unproven wins!
+      assert.equal(res.strategyId, "unproven");
+    });
+
+    it("respects useEwma flag for error rate (prefers ewma vs raw error rate)", () => {
+      // strat-1: ewmaErrorRate 0.05, errorRate 0.50
+      // strat-2: ewmaErrorRate 0.50, errorRate 0.05
+      const cand1 = cand("strat-1", 1, 1, 0.5, null, 10, null, null, 0.05);
+      const cand2 = cand("strat-2", 1, 1, 0.05, null, 10, null, null, 0.5);
+
+      const selectorEwma = createWeightedUtilitySelector({
+        qualityWeight: 0,
+        latencyWeight: 0,
+        errorRateWeight: 1.0,
+        costWeight: 0,
+        useEwma: true,
+      });
+      const resEwma = selectorEwma({
+        operation: "test",
+        candidates: [cand1, cand2],
+        signals: {},
+        now: 1000,
+      });
+      assert.ok(typeof resEwma === "object" && resEwma !== null);
+      assert.equal(resEwma.strategyId, "strat-1");
+
+      const selectorRaw = createWeightedUtilitySelector({
+        qualityWeight: 0,
+        latencyWeight: 0,
+        errorRateWeight: 1.0,
+        costWeight: 0,
+        useEwma: false,
+      });
+      const resRaw = selectorRaw({
+        operation: "test",
+        candidates: [cand1, cand2],
+        signals: {},
+        now: 1000,
+      });
+      assert.ok(typeof resRaw === "object" && resRaw !== null);
+      assert.equal(resRaw.strategyId, "strat-2");
+    });
+
+    it("normalizes cost penalty against maxCostTierRef or candidate costs", () => {
+      const selector = createWeightedUtilitySelector({
+        qualityWeight: 0,
+        latencyWeight: 0,
+        errorRateWeight: 0,
+        costWeight: 1.0,
+        maxCostTierRef: 10,
+      });
+      const cands = [cand("cheap", 1, 1), cand("expensive", 1, 5)];
+      const res = selector({
+        operation: "test",
+        candidates: cands,
+        signals: {},
+        now: 1000,
+      });
+      assert.ok(typeof res === "object" && res !== null);
+      assert.equal(res.strategyId, "cheap");
+    });
+
+    it("breaks ties deterministically within 1e-12 epsilon by qualityTier desc, costTier asc, code-unit id asc", () => {
+      // Pure latency selector where both candidates have identical latency (50ms) -> identical utility score
+      const pureLatencySelector = createWeightedUtilitySelector({
+        qualityWeight: 0,
+        latencyWeight: 1.0,
+        errorRateWeight: 0,
+        costWeight: 0,
+      });
+
+      // Both have latency 50ms -> identical utility score
+      const tieQuality = pureLatencySelector({
+        operation: "test",
+        candidates: [cand("low-quality", 1, 2, 0, 50), cand("high-quality", 3, 2, 0, 50)],
+        signals: {},
+        now: 1000,
+      });
+      assert.ok(typeof tieQuality === "object" && tieQuality !== null);
+      assert.equal(tieQuality.strategyId, "high-quality");
+
+      // Same qualityTier and utility score -> tie broken by costTier ascending
+      const tieCost = pureLatencySelector({
+        operation: "test",
+        candidates: [cand("high-cost", 2, 5, 0, 50), cand("low-cost", 2, 1, 0, 50)],
+        signals: {},
+        now: 1000,
+      });
+      assert.ok(typeof tieCost === "object" && tieCost !== null);
+      assert.equal(tieCost.strategyId, "low-cost");
+
+      // Same qualityTier, same costTier, same utility score -> tie broken by code-unit id ascending
+      const tieId = pureLatencySelector({
+        operation: "test",
+        candidates: [cand("strat-zebra", 2, 1, 0, 50), cand("strat-alpha", 2, 1, 0, 50)],
+        signals: {},
+        now: 1000,
+      });
+      assert.ok(typeof tieId === "object" && tieId !== null);
+      assert.equal(tieId.strategyId, "strat-alpha");
+    });
+
+    it("composes cleanly with composeSelectors and engine evaluation", () => {
+      const weightedSelector = createWeightedUtilitySelector({
+        qualityWeight: 0.6,
+        latencyWeight: 0.4,
+        errorRateWeight: 0,
+        costWeight: 0,
+      });
+      const composed = composeSelectors([() => null, weightedSelector]);
+
+      const policy = resolvePolicy({
+        customSelector: composed,
+      });
+      const input = createInput();
+      const state = createInitialPolicyState();
+      const evaluation = evaluatePolicy(state, input, policy);
+
+      assert.ok(typeof evaluation.decision.strategyId === "string");
+      assert.ok(evaluation.decision.reasons.some((r) => r.code === "custom-selector"));
+    });
+
+    it("is re-exported from policy barrel", async () => {
+      const policyModule = await import("../../src/policy/index.js");
+      assert.equal(typeof policyModule.createWeightedUtilitySelector, "function");
+      assert.equal(policyModule.createWeightedUtilitySelector, createWeightedUtilitySelector);
+    });
+  });
+
+  describe("createSignalTrendGuardSelector", () => {
+    it("validates options strictly", () => {
+      assert.throws(
+        () => createSignalTrendGuardSelector(null as unknown as SignalTrendGuardSelectorOptions),
+        InvalidConfigurationError,
+      );
+      assert.throws(
+        () =>
+          createSignalTrendGuardSelector("invalid" as unknown as SignalTrendGuardSelectorOptions),
+        InvalidConfigurationError,
+      );
+      assert.throws(
+        () => createSignalTrendGuardSelector([] as unknown as SignalTrendGuardSelectorOptions),
+        InvalidConfigurationError,
+      );
+
+      // signalName
+      assert.throws(
+        () => createSignalTrendGuardSelector({ signalName: "", maxSlopePerSec: 10 }),
+        InvalidConfigurationError,
+      );
+      assert.throws(
+        () => createSignalTrendGuardSelector({ signalName: "   ", maxSlopePerSec: 10 }),
+        InvalidConfigurationError,
+      );
+      assert.throws(
+        () =>
+          createSignalTrendGuardSelector({
+            signalName: 123 as unknown as string,
+            maxSlopePerSec: 10,
+          }),
+        InvalidConfigurationError,
+      );
+
+      // maxSlopePerSec
+      assert.throws(
+        () => createSignalTrendGuardSelector({ signalName: "cpu", maxSlopePerSec: 0 }),
+        InvalidConfigurationError,
+      );
+      assert.throws(
+        () => createSignalTrendGuardSelector({ signalName: "cpu", maxSlopePerSec: Number.NaN }),
+        InvalidConfigurationError,
+      );
+      assert.throws(
+        () =>
+          createSignalTrendGuardSelector({
+            signalName: "cpu",
+            maxSlopePerSec: Number.POSITIVE_INFINITY,
+          }),
+        InvalidConfigurationError,
+      );
+
+      // windowSize
+      assert.throws(
+        () =>
+          createSignalTrendGuardSelector({
+            signalName: "cpu",
+            maxSlopePerSec: 10,
+            windowSize: 1,
+          }),
+        InvalidConfigurationError,
+      );
+      assert.throws(
+        () =>
+          createSignalTrendGuardSelector({
+            signalName: "cpu",
+            maxSlopePerSec: 10,
+            windowSize: 101,
+          }),
+        InvalidConfigurationError,
+      );
+      assert.throws(
+        () =>
+          createSignalTrendGuardSelector({
+            signalName: "cpu",
+            maxSlopePerSec: 10,
+            windowSize: 3.5,
+          }),
+        InvalidConfigurationError,
+      );
+
+      // minTimeSpanMs
+      assert.throws(
+        () =>
+          createSignalTrendGuardSelector({
+            signalName: "cpu",
+            maxSlopePerSec: 10,
+            minTimeSpanMs: 0,
+          }),
+        InvalidConfigurationError,
+      );
+      assert.throws(
+        () =>
+          createSignalTrendGuardSelector({
+            signalName: "cpu",
+            maxSlopePerSec: 10,
+            minTimeSpanMs: -50,
+          }),
+        InvalidConfigurationError,
+      );
+      assert.throws(
+        () =>
+          createSignalTrendGuardSelector({
+            signalName: "cpu",
+            maxSlopePerSec: 10,
+            minTimeSpanMs: Number.NaN,
+          }),
+        InvalidConfigurationError,
+      );
+
+      // degradedQualityCap
+      assert.throws(
+        () =>
+          createSignalTrendGuardSelector({
+            signalName: "cpu",
+            maxSlopePerSec: 10,
+            degradedQualityCap: Number.NaN,
+          }),
+        InvalidConfigurationError,
+      );
+
+      // preferLowestLatencyOnSpike
+      assert.throws(
+        () =>
+          createSignalTrendGuardSelector({
+            signalName: "cpu",
+            maxSlopePerSec: 10,
+            preferLowestLatencyOnSpike: "true" as unknown as boolean,
+          }),
+        InvalidConfigurationError,
+      );
+
+      // fallbackSelector
+      assert.throws(
+        () =>
+          createSignalTrendGuardSelector({
+            signalName: "cpu",
+            maxSlopePerSec: 10,
+            fallbackSelector: "invalid" as unknown as CustomPolicySelector,
+          }),
+        InvalidConfigurationError,
+      );
+
+      // Valid configurations (both positive and negative slopes)
+      assert.doesNotThrow(() =>
+        createSignalTrendGuardSelector({ signalName: "cpu", maxSlopePerSec: 25.5 }),
+      );
+      assert.doesNotThrow(() =>
+        createSignalTrendGuardSelector({ signalName: "battery", maxSlopePerSec: -15 }),
+      );
+    });
+
+    it("returns null or fallback when window has < 2 samples or timeSpan < minTimeSpanMs", () => {
+      const guard = createSignalTrendGuardSelector({
+        signalName: "cpu.utilization",
+        maxSlopePerSec: 10,
+        minTimeSpanMs: 100,
+        fallbackSelector: () => ({ strategyId: "fallback-strat" }),
+      });
+
+      const cands = [cand("strat-1", 1, 1)];
+
+      // Sample 1: only 1 reading in window
+      const res1 = guard({
+        operation: "test",
+        candidates: cands,
+        signals: {
+          "cpu.utilization": {
+            name: "cpu.utilization",
+            unit: "ratio",
+            status: "ok",
+            value: 0.1,
+            observedAt: 1000,
+          },
+        },
+        now: 1000,
+      });
+      assert.ok(typeof res1 === "object" && res1 !== null);
+      assert.equal(res1.strategyId, "fallback-strat");
+
+      // Sample 2: elapsed only 50ms (< minTimeSpanMs 100ms)
+      const res2 = guard({
+        operation: "test",
+        candidates: cands,
+        signals: {
+          "cpu.utilization": {
+            name: "cpu.utilization",
+            unit: "ratio",
+            status: "ok",
+            value: 0.9, // huge jump, but timeSpan is too short!
+            observedAt: 1050,
+          },
+        },
+        now: 1050,
+      });
+      assert.ok(typeof res2 === "object" && res2 !== null);
+      assert.equal(res2.strategyId, "fallback-strat");
+    });
+
+    it("detects rising spike and activates degraded low-latency candidate selection", () => {
+      const guard = createSignalTrendGuardSelector({
+        signalName: "load",
+        maxSlopePerSec: 50, // threshold 50/s
+        minTimeSpanMs: 100,
+        degradedQualityCap: 2,
+        preferLowestLatencyOnSpike: true,
+      });
+
+      const cands = [
+        cand("high-heavy", 3, 3, 0, 100), // quality 3 > cap 2
+        cand("mid-slow", 2, 2, 0, 80), // quality 2, lat 80
+        cand("mid-fast", 2, 2, 0, 15), // quality 2, lat 15 (should win!)
+      ];
+
+      // t = 1000, load = 10
+      guard({
+        operation: "test",
+        candidates: cands,
+        signals: {
+          load: { name: "load", unit: "count", status: "ok", value: 10, observedAt: 1000 },
+        },
+        now: 1000,
+      });
+
+      // t = 1200, load = 30 -> slope = (30 - 10) / 0.2s = 100/s > 50/s (Spike active!)
+      const res = guard({
+        operation: "test",
+        candidates: cands,
+        signals: {
+          load: { name: "load", unit: "count", status: "ok", value: 30, observedAt: 1200 },
+        },
+        now: 1200,
+      });
+
+      assert.ok(typeof res === "object" && res !== null);
+      assert.equal(res.strategyId, "mid-fast");
+      assert.ok(res.reason?.includes("signal-trend-guard: spike detected"));
+    });
+
+    it("detects falling drop when maxSlopePerSec is negative", () => {
+      const guard = createSignalTrendGuardSelector({
+        signalName: "available-memory-mb",
+        maxSlopePerSec: -50, // drop steeper than -50/s triggers spike
+        minTimeSpanMs: 200,
+      });
+
+      const cands = [cand("strat-fast", 1, 1, 0, 10), cand("strat-slow", 2, 2, 0, 100)];
+
+      // t = 1000, mem = 500
+      guard({
+        operation: "test",
+        candidates: cands,
+        signals: {
+          "available-memory-mb": {
+            name: "available-memory-mb",
+            unit: "bytes",
+            status: "ok",
+            value: 500,
+            observedAt: 1000,
+          },
+        },
+        now: 1000,
+      });
+
+      // t = 1500, mem = 480 -> slope = (480 - 500) / 0.5s = -40/s (> -50/s, not steep enough)
+      const resNormal = guard({
+        operation: "test",
+        candidates: cands,
+        signals: {
+          "available-memory-mb": {
+            name: "available-memory-mb",
+            unit: "bytes",
+            status: "ok",
+            value: 480,
+            observedAt: 1500,
+          },
+        },
+        now: 1500,
+      });
+      assert.equal(resNormal, null);
+
+      // t = 2000, mem = 400 -> slope from oldest (1000, 500) = (400 - 500) / 1.0s = -100/s (< -50/s, steep drop!)
+      const resDrop = guard({
+        operation: "test",
+        candidates: cands,
+        signals: {
+          "available-memory-mb": {
+            name: "available-memory-mb",
+            unit: "bytes",
+            status: "ok",
+            value: 400,
+            observedAt: 2000,
+          },
+        },
+        now: 2000,
+      });
+      assert.ok(typeof resDrop === "object" && resDrop !== null);
+      assert.equal(resDrop.strategyId, "strat-fast");
+    });
+
+    it("trims sliding window to windowSize", () => {
+      const guard = createSignalTrendGuardSelector({
+        signalName: "temp",
+        maxSlopePerSec: 10,
+        windowSize: 3,
+        minTimeSpanMs: 100,
+      });
+
+      const cands = [cand("strat", 1, 1)];
+
+      // Push 4 entries: 1000 (v=10), 1100 (v=20), 1200 (v=30), 1300 (v=32)
+      // Window after 4th entry has: [1100, 1200, 1300]
+      // Slope between oldest (1100, v=20) and newest (1300, v=32) is (32 - 20) / 0.2s = 60/s > 10/s!
+      guard({
+        operation: "test",
+        candidates: cands,
+        signals: {
+          temp: { name: "temp", unit: "count", status: "ok", value: 10, observedAt: 1000 },
+        },
+        now: 1000,
+      });
+      guard({
+        operation: "test",
+        candidates: cands,
+        signals: {
+          temp: { name: "temp", unit: "count", status: "ok", value: 20, observedAt: 1100 },
+        },
+        now: 1100,
+      });
+      guard({
+        operation: "test",
+        candidates: cands,
+        signals: {
+          temp: { name: "temp", unit: "count", status: "ok", value: 30, observedAt: 1200 },
+        },
+        now: 1200,
+      });
+      const res = guard({
+        operation: "test",
+        candidates: cands,
+        signals: {
+          temp: { name: "temp", unit: "count", status: "ok", value: 32, observedAt: 1300 },
+        },
+        now: 1300,
+      });
+      assert.ok(typeof res === "object" && res !== null);
+      assert.equal(res.strategyId, "strat");
+    });
+
+    it("clears window on clock reset (timestamp going backwards)", () => {
+      const guard = createSignalTrendGuardSelector({
+        signalName: "cpu",
+        maxSlopePerSec: 10,
+        minTimeSpanMs: 100,
+      });
+
+      const cands = [cand("strat", 1, 1)];
+
+      // Sample at 5000
+      guard({
+        operation: "test",
+        candidates: cands,
+        signals: {
+          cpu: { name: "cpu", unit: "ratio", status: "ok", value: 0.1, observedAt: 5000 },
+        },
+        now: 5000,
+      });
+
+      // Sample at 1000 (clock reset!)
+      const resReset = guard({
+        operation: "test",
+        candidates: cands,
+        signals: {
+          cpu: { name: "cpu", unit: "ratio", status: "ok", value: 0.9, observedAt: 1000 },
+        },
+        now: 1000,
+      });
+      // Window should have been cleared, leaving only 1 entry -> spike not active
+      assert.equal(resReset, null);
+    });
+
+    it("updates value in-place when reading has same timestamp", () => {
+      const guard = createSignalTrendGuardSelector({
+        signalName: "cpu",
+        maxSlopePerSec: 10,
+        minTimeSpanMs: 100,
+      });
+
+      const cands = [cand("strat", 1, 1)];
+
+      guard({
+        operation: "test",
+        candidates: cands,
+        signals: {
+          cpu: { name: "cpu", unit: "ratio", status: "ok", value: 0.1, observedAt: 1000 },
+        },
+        now: 1000,
+      });
+
+      // Same timestamp updated to 0.5
+      guard({
+        operation: "test",
+        candidates: cands,
+        signals: {
+          cpu: { name: "cpu", unit: "ratio", status: "ok", value: 0.5, observedAt: 1000 },
+        },
+        now: 1000,
+      });
+
+      // At 1200, value is 0.7. Slope is (0.7 - 0.5) / 0.2s = 1.0/s <= 10/s -> inactive
+      const res = guard({
+        operation: "test",
+        candidates: cands,
+        signals: {
+          cpu: { name: "cpu", unit: "ratio", status: "ok", value: 0.7, observedAt: 1200 },
+        },
+        now: 1200,
+      });
+      assert.equal(res, null);
+    });
+
+    it("resets sliding window when .reset() is invoked", () => {
+      const guard = createSignalTrendGuardSelector({
+        signalName: "metric",
+        maxSlopePerSec: 10,
+        minTimeSpanMs: 100,
+      });
+
+      const cands = [cand("strat", 1, 1)];
+
+      guard({
+        operation: "test",
+        candidates: cands,
+        signals: {
+          metric: { name: "metric", unit: "count", status: "ok", value: 10, observedAt: 1000 },
+        },
+        now: 1000,
+      });
+      const resSpike = guard({
+        operation: "test",
+        candidates: cands,
+        signals: {
+          metric: { name: "metric", unit: "count", status: "ok", value: 50, observedAt: 1200 },
+        },
+        now: 1200,
+      });
+      assert.ok(typeof resSpike === "object" && resSpike !== null);
+
+      // Invoke .reset()
+      guard.reset();
+
+      // Next reading is now treated as 1st reading
+      const resAfterReset = guard({
+        operation: "test",
+        candidates: cands,
+        signals: {
+          metric: { name: "metric", unit: "count", status: "ok", value: 60, observedAt: 1300 },
+        },
+        now: 1300,
+      });
+      assert.equal(resAfterReset, null);
+    });
+
+    it("falls back to all candidates if none qualify for degradedQualityCap", () => {
+      const guard = createSignalTrendGuardSelector({
+        signalName: "cpu",
+        maxSlopePerSec: 5,
+        minTimeSpanMs: 100,
+        degradedQualityCap: 1, // Cap is 1, but candidates have quality 3 and 4
+      });
+
+      const cands = [cand("strat-3", 3, 1, 0, 50), cand("strat-4", 4, 1, 0, 10)];
+
+      guard({
+        operation: "test",
+        candidates: cands,
+        signals: {
+          cpu: { name: "cpu", unit: "ratio", status: "ok", value: 0.1, observedAt: 1000 },
+        },
+        now: 1000,
+      });
+
+      const res = guard({
+        operation: "test",
+        candidates: cands,
+        signals: {
+          cpu: { name: "cpu", unit: "ratio", status: "ok", value: 0.9, observedAt: 1100 },
+        },
+        now: 1100,
+      });
+
+      assert.ok(typeof res === "object" && res !== null);
+      // Falls back to all candidates and selects lowest latency ("strat-4", lat 10)
+      assert.equal(res.strategyId, "strat-4");
+    });
+
+    it("prefers lowest qualityTier (load-shedding) when preferLowestLatencyOnSpike is false", () => {
+      const guard = createSignalTrendGuardSelector({
+        signalName: "cpu",
+        maxSlopePerSec: 2,
+        minTimeSpanMs: 100,
+        preferLowestLatencyOnSpike: false,
+      });
+
+      const cands = [
+        cand("tier-3-fast", 3, 1, 0, 5), // high quality, ultra low latency
+        cand("tier-1-slow", 1, 1, 0, 100), // lowest quality (sheds most load!)
+      ];
+
+      guard({
+        operation: "test",
+        candidates: cands,
+        signals: {
+          cpu: { name: "cpu", unit: "ratio", status: "ok", value: 0.1, observedAt: 1000 },
+        },
+        now: 1000,
+      });
+
+      const res = guard({
+        operation: "test",
+        candidates: cands,
+        signals: {
+          cpu: { name: "cpu", unit: "ratio", status: "ok", value: 0.9, observedAt: 1200 },
+        },
+        now: 1200,
+      });
+
+      assert.ok(typeof res === "object" && res !== null);
+      assert.equal(res.strategyId, "tier-1-slow");
+    });
+
+    it("ignores unavailable or invalid signal readings gracefully", () => {
+      const guard = createSignalTrendGuardSelector({
+        signalName: "cpu",
+        maxSlopePerSec: 10,
+      });
+
+      const cands = [cand("strat", 1, 1)];
+
+      // Signal missing from context.signals
+      assert.equal(guard({ operation: "test", candidates: cands, signals: {}, now: 1000 }), null);
+
+      // Signal status is not "ok"
+      assert.equal(
+        guard({
+          operation: "test",
+          candidates: cands,
+          signals: {
+            cpu: { name: "cpu", unit: "ratio", status: "error", error: "fail", observedAt: 1000 },
+          },
+          now: 1000,
+        }),
+        null,
+      );
+
+      // Signal value is NaN
+      assert.equal(
+        guard({
+          operation: "test",
+          candidates: cands,
+          signals: {
+            cpu: { name: "cpu", unit: "ratio", status: "ok", value: Number.NaN, observedAt: 1000 },
+          },
+          now: 1000,
+        }),
+        null,
+      );
+    });
+
+    it("composes with createWeightedUtilitySelector in composeSelectors", () => {
+      const guard = createSignalTrendGuardSelector({
+        signalName: "cpu",
+        maxSlopePerSec: 5,
+        minTimeSpanMs: 100,
+      });
+      const utilitySelector = createWeightedUtilitySelector();
+      const composed = composeSelectors([guard, utilitySelector]);
+
+      const cands = [cand("quality-heavy", 3, 2, 0, 50), cand("fast-light", 1, 1, 0, 10)];
+
+      // t = 1000: guard is inactive -> utilitySelector runs and picks highest utility
+      const res1 = composed({
+        operation: "test",
+        candidates: cands,
+        signals: {
+          cpu: { name: "cpu", unit: "ratio", status: "ok", value: 0.1, observedAt: 1000 },
+        },
+        now: 1000,
+      });
+      assert.ok(typeof res1 === "object" && res1 !== null);
+
+      // t = 1100: spike active on guard -> guard intercepts and picks fast-light!
+      const res2 = composed({
+        operation: "test",
+        candidates: cands,
+        signals: {
+          cpu: { name: "cpu", unit: "ratio", status: "ok", value: 0.9, observedAt: 1100 },
+        },
+        now: 1100,
+      });
+      assert.ok(typeof res2 === "object" && res2 !== null);
+      assert.equal(res2.strategyId, "fast-light");
+      assert.ok(res2.reason?.includes("signal-trend-guard: spike detected"));
+    });
+
+    it("is re-exported from policy barrel", async () => {
+      const policyModule = await import("../../src/policy/index.js");
+      assert.equal(typeof policyModule.createSignalTrendGuardSelector, "function");
+      assert.equal(policyModule.createSignalTrendGuardSelector, createSignalTrendGuardSelector);
+      const testGuard: SignalTrendGuardSelector = createSignalTrendGuardSelector({
+        signalName: "test-signal",
+        maxSlopePerSec: 10,
+      });
+      assert.equal(typeof testGuard.reset, "function");
     });
   });
 });
