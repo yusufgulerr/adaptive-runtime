@@ -1,9 +1,9 @@
 # Roadmap
 
 This roadmap describes intent, not commitments or dates. Priorities may change
-with feedback and evidence. The 0.8.0 source line is implemented, verified, tagged,
+with feedback and evidence. The 0.9.0 source line is implemented, verified, tagged,
 and released on GitHub, advancing the runtime to 1.0-RC readiness. Releases `v0.1.0`
-through `v0.8.0` are tagged and released on GitHub; npm publication is a separate
+through `v0.9.0` are tagged and released on GitHub; npm publication is a separate
 owner-approved workflow dispatch and remains pending.
 
 ## 0.1.0 — Foundation (delivered)
@@ -265,11 +265,33 @@ Delivered:
 - **Property testing & adversarial soak suite:**
   - State serialization round-trip property tests and 631 tests / 100 suites across all platforms.
 
+## 0.9.0 — Utility Selectors, Cooperative Drain, and Provider Circuit Breakers (delivered)
+
+Delivered:
+
+- **Multi-objective weighted utility & signal-trend guard selectors:**
+  - `createWeightedUtilitySelector`: Composable scoring balancing normalized quality, latency, error rate, and cost weights.
+  - `createSignalTrendGuardSelector`: Linear regression slope monitoring for early proactive degradation before budget breaches.
+- **Structured JSON metrics & cardinality simulator:**
+  - `MetricsCollector.toJSON()` producing `MetricsJsonReport` with utilization and dropped series counters.
+  - `onSeriesDropped` alert callback and cardinality limit enforcement.
+  - `comparePolicyTimelines`: Offline timeline comparator for A/B policy validation and regression analysis.
+- **Node.js provider EWMA smoothing & jitter stats:**
+  - `CpuUtilizationProvider` EWMA smoothing with configurable `alpha` and `getCpuStats()`.
+  - `ProcessMemoryProvider` heap headroom calculation (`PROCESS_MEMORY_HEAP_HEADROOM`) and `getMemoryStats()`.
+  - `NetworkLatencyProvider` jitter calculation (`NETWORK_LATENCY_JITTER`) and `getLatencyStats()`.
+- **Per-provider circuit breaker cooldowns & health diagnostics:**
+  - Circuit breaker in `SignalCollector` with consecutive failure thresholds, open cooldown windows, and half-open probing.
+  - `runtime.getRuntimeHealth()` and `collector.getHealth()` returning `RuntimeHealthSummary` and per-provider statuses.
+- **Cooperative graceful drain & state merge hydration:**
+  - `runtime.waitForIdle()` for zero-drop graceful container shutdown (SIGTERM).
+  - `runtime.importState(snapshot, { mode: "merge" })` for non-destructive additive state hydration.
+
 ## 1.0.0-RC & 1.0.0 — Stability and Release Candidate
 
-The 0.7.0 and 0.8.0 milestones achieve complete 1.0.0-RC technical and architectural readiness:
+The 0.8.0 and 0.9.0 milestones achieve complete 1.0.0-RC technical and architectural readiness:
 
-- [x] **Complete architectural coverage across 19 ADRs:** ADRs 0001 through 0019 document every architectural decision, lifecycle guarantee, and stability contract.
+- [x] **Complete architectural coverage across 20 ADRs:** ADRs 0001 through 0020 document every architectural decision, lifecycle guarantee, and stability contract.
 - [x] **Zero runtime dependencies, portable core, and platform-targeted subpaths:** Validated by automated repository scans and package export verification (`npm run verify:zero-deps`, `npm run verify:exports`).
 - [x] **Rigorous property-based fuzzing and multi-platform CI verification:** Enforced across Node 22, 24, and 26 on Linux, macOS, and Windows.
 - [x] **Published 0.x line stability:** 0.5.0, 0.6.0, and 0.7.0 delivered stable minor cycles without breaking changes.

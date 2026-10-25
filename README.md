@@ -25,20 +25,18 @@ strategies with declared quality and cost tiers. The runtime reads the signals
 you supply, applies a deterministic policy, and runs exactly one strategy with
 inspectable metadata explaining the choice.
 
-> **Status: v0.8.0 (1.0-RC preparation).** The public repository is live and the
-> v0.8.0 tree passes CI on Node.js 22, 24, and 26, plus CodeQL and OpenSSF
+> **Status: v0.9.0 (1.0-RC preparation).** The public repository is live and the
+> v0.9.0 tree passes CI on Node.js 22, 24, and 26, plus CodeQL and OpenSSF
 > Scorecard on `main`. The release keeps the verified multi-runtime core for
 > Node.js, browsers, and WinterCG edge runtimes with **zero runtime dependencies**
-> and a fully typed ESM surface. v0.8.0 delivers cost-aware strategy selection
-> (`createCostBudgetSelector`), safe selector boundaries (`createSafeSelector`),
-> non-disturbing in-flight operation queries (`hasInFlight`, `getActiveOperations`),
-> idle operation pruning (`pruneIdleOperations`), deterministic state snapshot
-> inspection, diffing, and selective filtering (`inspectStateSnapshot`,
-> `diffStateSnapshots`, `filterStateSnapshot`, `validateStateSnapshot`), web frame timing
-> stats and compute pressure staleness guards, edge execution budget reserve headroom
-> (`reserveWallClockMs`, `reserveCpuMs`), composite signal aggregation operators
-> (`median`, `spread`) with quorum guards (`minAvailableSources`), and an adversarial
-> soak test suite. The public API follows semantic versioning; GitHub releases are
+> and a fully typed ESM surface. v0.9.0 delivers multi-objective weighted utility selection
+> (`createWeightedUtilitySelector`), signal-slope trend guard selection (`createSignalTrendGuardSelector`),
+> cooperative graceful draining (`waitForIdle`), runtime and per-provider circuit breaker health
+> diagnostics (`getRuntimeHealth`, `circuitBreaker`), state snapshot merge hydration (`importState({ mode: 'merge' })`),
+> structured JSON metrics export (`toStructuredMetrics`, `toMetricsJson`) with metric cardinality
+> safety guards and simulator (`simulateMetricsCardinality`), Node.js provider EWMA smoothing,
+> heap headroom, and network jitter statistics, and offline policy timeline divergence comparison
+> (`comparePolicyTimelines`). The public API follows semantic versioning; GitHub releases are
 > tag-driven; npm publication is a separate owner-approved OIDC/provenance dispatch.
 > See [Architectural boundaries](#architectural-boundaries-and-operational-notes).
 
@@ -424,6 +422,54 @@ const inspection = inspectStateSnapshot(snapshot);
 const filtered = filterStateSnapshot(snapshot, ["search", "planner"]);
 const diff = diffStateSnapshots(beforeSnapshot, afterSnapshot);
 // diff.addedOperations, diff.removedOperations, diff.strategyTransitions, diff.unchangedOperations
+```
+
+### Multi-objective weighted utility & signal-trend guard selectors
+
+Select candidates using normalized multi-objective scoring functions and protect against rapid signal degradation slopes:
+
+```ts
+import {
+  createWeightedUtilitySelector,
+  createSignalTrendGuardSelector,
+  composeSelectors,
+} from "adaptive-runtime";
+
+const utilitySelector = createWeightedUtilitySelector({
+  objectives: [
+    { name: "quality", weight: 0.6, value: ({ candidate }) => candidate.qualityTier },
+    { name: "economy", weight: 0.4, value: ({ candidate }) => 1 / (candidate.costTier ?? 1) },
+  ],
+});
+
+const trendGuard = createSignalTrendGuardSelector({
+  signalName: "net.latency",
+  slopeThreshold: 25.0, // ms per second degradation slope
+  degradeStrategyId: "fast-fallback",
+});
+
+const selector = composeSelectors([trendGuard, utilitySelector]);
+```
+
+### Cooperative graceful drain & runtime health diagnostics
+
+Gracefully drain running operations before teardown and monitor per-provider circuit breaker health:
+
+```ts
+// Wait for all in-flight operations across all operations to complete
+await runtime.waitForIdle({ timeoutMs: 5_000 });
+
+// Check overall runtime health and per-provider circuit breaker statuses
+const health = runtime.getRuntimeHealth();
+if (!health.healthy) {
+  for (const provider of health.providers) {
+    if (provider.status === "open") {
+      console.warn(`Provider ${provider.providerId} open (failures: ${provider.failureCount})`);
+    }
+  }
+}
+
+await runtime.close();
 ```
 
 The full type and error reference is in [docs/API.md](docs/API.md). Design

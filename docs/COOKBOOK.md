@@ -1,7 +1,7 @@
 # Cookbook
 
-> **Status:** Adaptive Runtime 0.5.0 is the current development line. The GitHub
-> release is tag-driven; npm publication is a separate owner-approved OIDC
+> **Status:** Adaptive Runtime 0.9.0 is the current development line (1.0-RC preparation).
+> The GitHub release is tag-driven; npm publication is a separate owner-approved OIDC
 > workflow dispatch and is pending.
 > These patterns target the API in [API.md](API.md) and run against a local
 > checkout. See [Installation](../README.md#installation) for the local install
@@ -24,6 +24,8 @@ misread. The patterns are independent; use the parts that fit your workload.
 9. [Input-dependent eligibility](#9-input-dependent-eligibility)
 10. [Cost budget selector for financial and compute bounding](#10-cost-budget-selector-for-financial-and-compute-bounding)
 11. [Safe selector wrapper for crash-proof pipelines](#11-safe-selector-wrapper-for-crash-proof-pipelines)
+12. [Cooperative graceful drain with `waitForIdle`](#12-cooperative-graceful-drain-with-waitforidle)
+13. [Multi-objective utility and signal-trend degradation guards](#13-multi-objective-utility-and-signal-trend-degradation-guards)
 
 ## Ground rules
 
@@ -1002,6 +1004,90 @@ to the optional `fallbackSelector` or falls back to engine defaults.
 - While `createSafeSelector` prevents runtime crashes, silent fallbacks can mask
   underlying logic bugs in custom selectors. Monitor `run:start` and audit decision
   reasons (`formatDecisionSummary`) in observability pipelines.
+
+## 12. Cooperative graceful drain with `waitForIdle`
+
+**Use when:** Your application receives a shutdown signal (e.g. `SIGTERM`, server teardown)
+and must wait for all in-flight strategy executions to complete before closing providers
+and releasing resources.
+
+```ts
+import process from "node:process";
+import { createAdaptiveRuntime } from "adaptive-runtime";
+
+const runtime = createAdaptiveRuntime();
+
+// In a real application, multiple asynchronous operations may be in-flight:
+void runtime.run({ operationId: "worker-job", input: "data", strategies });
+
+async function handleShutdown() {
+  console.info("SIGTERM received, draining active executions...");
+
+  // Wait for all in-flight runs across all operations to complete (with a 5s deadline)
+  const isIdle = await runtime.waitForIdle({ timeoutMs: 5_000 });
+
+  if (!isIdle) {
+    console.warn("Drain timed out with active operations remaining:", runtime.getActiveOperations());
+  }
+
+  // Safe to close without interrupting running strategies
+  await runtime.close();
+  process.exit(0);
+}
+
+process.once("SIGTERM", () => void handleShutdown());
+```
+
+**Why it works:** `waitForIdle()` hooks into the runtime's in-flight execution counter.
+It resolves `true` when all active selections and strategy executions settle, or `false`
+if the timeout expires or an abort signal triggers.
+
+**Watch out:**
+
+- `waitForIdle()` does not prevent new incoming calls to `run()`. Stop accepting incoming
+  traffic at the HTTP or queue ingress layer before initiating the drain.
+
+## 13. Multi-objective utility and signal-trend degradation guards
+
+**Use when:** You want to balance quality against latency and cost simultaneously, while
+also proactively stepping down to faster strategies if a signal is degrading steeply
+before static budget limits trigger.
+
+```ts
+import {
+  createAdaptiveRuntime,
+  composeSelectors,
+  createWeightedUtilitySelector,
+  createSignalTrendGuardSelector,
+} from "adaptive-runtime";
+
+// 1. Proactive degradation guard on steep memory growth
+const trendGuard = createSignalTrendGuardSelector({
+  signalName: "process.memory.rss",
+  maxSlopePerSec: 20 * 1024 * 1024, // > 20 MB/s growth triggers fallback
+  degradedQualityCap: 1,
+  preferLowestLatencyOnSpike: true,
+});
+
+// 2. Multi-objective scoring balancing quality, latency, and cost
+const utilitySelector = createWeightedUtilitySelector({
+  qualityWeight: 1.0,
+  latencyWeight: 0.5,
+  costWeight: 0.25,
+  useEwma: true,
+});
+
+const runtime = createAdaptiveRuntime({
+  policy: {
+    customSelector: composeSelectors([trendGuard, utilitySelector]),
+  },
+});
+```
+
+**Why it works:** The trend guard selector monitors rate-of-change across recent readings.
+If memory or latency is climbing faster than `maxSlopePerSec`, it forces candidate quality
+down before a budget breach occurs. If trends are normal, control passes to the weighted
+utility selector to compute optimal multi-attribute scores.
 
 ## Related documents
 
