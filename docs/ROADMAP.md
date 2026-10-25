@@ -76,7 +76,7 @@ Exit criteria:
 These are known, non-blocking issues. None changes the documented 0.x
 semantics, and the existing tests cover the current behavior.
 
-Resolved through 0.5.0:
+Resolved through 0.8.0 / 1.0-RC:
 
 1. **Per-operation state growth.** `Policy.maxTrackedOperations` now bounds all
    operation-keyed maps with LRU eviction, and `removeOperation(operationId)`
@@ -95,14 +95,15 @@ Resolved through 0.5.0:
    version, `dist.integrity`, and `repository.url`, verifies the provenance
    attestation, and installs the package in a clean consumer that imports every
    documented entry point. See [RELEASING.md](RELEASING.md).
+6. **Benchmark regression tracking.** Delivered in v0.8.0 / 1.0-RC: machine-readable
+   JSON outputs for both runtime overhead (`benchmarks/runtime-overhead.ts --json`) and
+   concurrency throughput/heap (`benchmarks/concurrency.ts --json`), with automated
+   percentage delta and configurable regression threshold comparison in
+   `scripts/compare-benchmarks.mjs`.
 
 Open:
 
-6. **No benchmark regression tracking (low).** Benchmarks are intentionally not a
-   CI gate because they are noisy on shared runners. Record a trend over time
-   before considering a loose, non-blocking threshold. Provider start recovery
-   (0.4.0) and the abort-aware selection queue (0.4.0, ADR 0012) closed the earlier
-   lifecycle and queued-abort items.
+None. All identified maintainability and telemetry debt items are resolved.
 
 ## 0.3.0 — Extensibility without losing determinism (delivered and released)
 
@@ -245,18 +246,19 @@ Delivered:
 
 ## 1.0.0-RC & 1.0.0 — Stability and Release Candidate
 
-The 0.7.0 milestone completes the technical runway for 1.0.0-RC:
+The 0.7.0 and 0.8.0 milestones achieve complete 1.0.0-RC technical and architectural readiness:
 
-- Complete architectural coverage across 18 ADRs.
-- Zero runtime dependencies, portable core, and platform-targeted subpaths.
-- Rigorous property-based fuzzing and multi-platform CI verification (Node 22, 24, 26, macOS, Windows).
-- At least one published 0.x line with no breaking changes for a full minor cycle.
-- Frozen public type and error-code compatibility policy.
-- A documented deprecation policy.
-- Security review of the provider and event surfaces.
-- Load and soak testing of the runtime's own overhead, including concurrent runs.
-- Clear guidance for strategy-side idempotency and side effects under timeout.
-- Decision that the fixed tier model is sufficient, or a stable custom-policy API.
+- [x] **Complete architectural coverage across 19 ADRs:** ADRs 0001 through 0019 document every architectural decision, lifecycle guarantee, and stability contract.
+- [x] **Zero runtime dependencies, portable core, and platform-targeted subpaths:** Validated by automated repository scans and package export verification (`npm run verify:zero-deps`, `npm run verify:exports`).
+- [x] **Rigorous property-based fuzzing and multi-platform CI verification:** Enforced across Node 22, 24, and 26 on Linux, macOS, and Windows.
+- [x] **Published 0.x line stability:** 0.5.0, 0.6.0, and 0.7.0 delivered stable minor cycles without breaking changes.
+- [x] **Frozen public type and error-code compatibility policy:** Frozen 12-error-code catalog formalized in [DEPRECATION_AND_STABILITY.md](DEPRECATION_AND_STABILITY.md).
+- [x] **Documented deprecation policy:** Standardized 2-minor-cycle deprecation policy formalized in [DEPRECATION_AND_STABILITY.md](DEPRECATION_AND_STABILITY.md).
+- [x] **Security review of provider and event surfaces:** Strict reading validation, bounded quality detail lengths, and frozen data snapshots.
+- [x] **Load, concurrency, and soak telemetry:** Automated machine-readable JSON telemetry for runtime overhead and concurrency benchmarks with regression comparison tooling (`scripts/compare-benchmarks.mjs`).
+- [x] **Clear guidance for strategy-side idempotency and side effects under timeout:** Comprehensive timeout cancellation and idempotency contract in [COOKBOOK.md](COOKBOOK.md).
+- [x] **Resilient selector pipeline and state management:** Delivered `createCostBudgetSelector`, `createSafeSelector`, candidate `samples` property, and in-flight operation lifecycle management (`hasInFlight`, `getActiveOperations`, `pruneIdleOperations`).
+- [x] **Observability lifecycle control:** Delivered `MetricsCollector.resetMetrics` for clean multi-stage evaluation.
 
 1.0 does **not** imply that strategies are correct, sandboxed, or safe. Those
 remain application responsibilities.

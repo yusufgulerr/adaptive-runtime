@@ -114,6 +114,40 @@ const selector = createLatencyBudgetSelector({
 - By default selects highest quality tier; with `preferLowestCost: true` it selects lowest cost tier.
 - If all candidates exceed `maxLatencyMs`, it selects the candidate with the lowest observed latency.
 
+## `createCostBudgetSelector(options)`
+
+Creates a pure, zero-dependency `CustomPolicySelector` that restricts eligible candidates to those
+within an upper cost tier bound:
+
+```ts
+const selector = createCostBudgetSelector({
+  maxCostTier: 1,                           // Discard candidates with costTier > 1
+  fallbackSelector: (context) => undefined, // Optional secondary selector among cost-compliant candidates
+});
+```
+
+- Filters candidates where `costTier <= maxCostTier`. Missing `costTier` is treated as compliant.
+- When multiple candidates qualify:
+  - If `fallbackSelector` is provided, delegates selection among eligible candidates.
+  - If no `fallbackSelector` is provided, selects the candidate with the highest `qualityTier`, breaking ties by lowest `costTier` and ascending code-unit `id`.
+- If no candidates satisfy `costTier <= maxCostTier`, returns `undefined` to allow subsequent selectors in a pipeline or default engine tie-breaking to take effect.
+
+## `createSafeSelector(selector, fallbackSelector?)`
+
+Wraps a custom selector with an exception and validation boundary:
+
+```ts
+const safeSelector = createSafeSelector(
+  untrustedSelector,
+  (context) => undefined, // Optional fallback selector if untrustedSelector throws
+);
+```
+
+- Executes `selector` inside a defensive `try/catch` block.
+- Validates that returned strategy selections reference currently eligible candidates.
+- If `selector` throws or returns an invalid candidate, intercepts the error, invokes `fallbackSelector` if provided, or safely returns `undefined` (falling back to engine defaults).
+- Prevents runtime selection crashes caused by third-party or experimental selector implementations.
+
 ## `composeSelectors(selectors)`
 
 Combines multiple `CustomPolicySelector` functions into a deterministic sequential pipeline:
@@ -362,6 +396,25 @@ operation had no retained state. Returns `false` without removing anything while
 the operation is selecting or executing. Throws `RuntimeClosedError` after
 `close()` and `ConfigurationError` for an invalid id.
 
+### `hasInFlight(operationId)`
+
+Returns `true` if one or more executions for `operationId` are currently selecting
+or executing strategies; `false` otherwise. This is a non-disturbing introspection API:
+it **does not** create operation state or alter the operation's position in the LRU
+tracking order. Remains readable after `close()`.
+
+### `getActiveOperations()`
+
+Returns a frozen array of all `operationId` strings currently executing or selecting
+strategies (`hasInFlight === true`). Does not alter LRU order.
+
+### `pruneIdleOperations(maxAgeMs?)`
+
+Safely evicts tracked operations that are not pinned, have no in-flight work
+(`hasInFlight === false`), and have remained idle for at least `maxAgeMs` milliseconds
+(or the policy's idle threshold if omitted). Returns the number of pruned operations.
+Guarantees that active and pinned operations are never evicted during dynamic cleanup.
+
 ### `resetStats(operationId?)`
 
 Clears the counters and latency samples for one operation, or for all operations
@@ -515,6 +568,9 @@ interface CustomSelectorCandidate {
   readonly candidate: PolicyCandidate;
   readonly estimatedCost: number | null;
   readonly estimatedLatencyMs: number | null;
+  readonly ewmaLatencyMs?: number | null;
+  readonly errorRate?: number | null;
+  readonly samples?: number;
   readonly id?: string;
   readonly qualityTier?: number;
   readonly costTier?: number;
@@ -988,7 +1044,9 @@ listener's responsibility.
 ## Errors
 
 All errors extend `AdaptiveRuntimeError`, which has a stable `code` string and
-supports the standard `cause` option.
+supports the standard `cause` option. The 12 error codes below form the **Frozen
+12-Error-Code Catalog** guaranteed stable across 1.x releases; see
+[DEPRECATION_AND_STABILITY.md](DEPRECATION_AND_STABILITY.md) for stability guarantees.
 
 | Class | `code` | Extra fields |
 | --- | --- | --- |
@@ -1046,6 +1104,7 @@ interface RuntimeMetricsCollector {
   toPrometheusText(): string;
   removeOperation(operationId: string): void;
   reset(): void;
+  resetMetrics(): void;
 }
 
 function createMetricsCollector(options?: ObservabilityOptions): RuntimeMetricsCollector;
