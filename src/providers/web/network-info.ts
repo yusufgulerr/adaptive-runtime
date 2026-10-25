@@ -22,6 +22,7 @@ export interface NetworkInformationLike {
 export interface NetworkInformationProviderOptions {
   readonly id?: string;
   readonly getConnection?: () => NetworkInformationLike | undefined;
+  readonly saveDataPenaltyRttMs?: number;
 }
 
 function validateId(id: string | undefined, defaultId: string): string {
@@ -45,12 +46,23 @@ export class NetworkInformationProvider implements SignalProvider {
   readonly id: string;
   readonly signals: readonly SignalDescriptor[];
   readonly #getConnection: () => NetworkInformationLike | undefined;
+  readonly #saveDataPenaltyRttMs: number | undefined;
   #closed = false;
 
   constructor(options: NetworkInformationProviderOptions = {}) {
     this.id = validateId(options.id, "web-network-information");
     if (options.getConnection !== undefined && typeof options.getConnection !== "function") {
       throw new ConfigurationError("NetworkInformationProvider getConnection must be a function.");
+    }
+    if (
+      options.saveDataPenaltyRttMs !== undefined &&
+      (typeof options.saveDataPenaltyRttMs !== "number" ||
+        !Number.isFinite(options.saveDataPenaltyRttMs) ||
+        options.saveDataPenaltyRttMs < 0)
+    ) {
+      throw new ConfigurationError(
+        "NetworkInformationProvider saveDataPenaltyRttMs must be a non-negative finite number.",
+      );
     }
     this.#getConnection =
       options.getConnection ??
@@ -60,6 +72,7 @@ export class NetworkInformationProvider implements SignalProvider {
         };
         return g.navigator?.connection;
       });
+    this.#saveDataPenaltyRttMs = options.saveDataPenaltyRttMs;
 
     this.signals = [
       {
@@ -122,14 +135,28 @@ export class NetworkInformationProvider implements SignalProvider {
         Number.isFinite(connection.rtt) &&
         connection.rtt >= 0
       ) {
+        const applyPenalty =
+          connection.saveData === true && typeof this.#saveDataPenaltyRttMs === "number";
+        const penalty = applyPenalty ? this.#saveDataPenaltyRttMs : 0;
+        const effectiveRtt = connection.rtt + penalty;
+        const rttDetails: Record<string, unknown> = {
+          ...details,
+          rtt: connection.rtt,
+        };
+        if (applyPenalty) {
+          rttDetails.rawRtt = connection.rtt;
+          rttDetails.saveDataPenaltyRttMs = this.#saveDataPenaltyRttMs;
+          rttDetails.effectiveRtt = effectiveRtt;
+        }
+
         readings.push({
           name: WEB_NETWORK_RTT_MS,
           unit: "milliseconds",
           status: "ok",
-          value: connection.rtt,
+          value: effectiveRtt,
           observedAt,
           confidence: 1,
-          details: { ...details, rtt: connection.rtt },
+          details: rttDetails,
         });
       } else {
         readings.push({

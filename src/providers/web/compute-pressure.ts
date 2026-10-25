@@ -33,8 +33,12 @@ export interface ComputePressureProviderOptions {
   readonly source?: string;
   /** Positive sampling interval in milliseconds. */
   readonly sampleIntervalMs?: number;
+  /** Positive maximum sample age in milliseconds before readings are treated as stale. */
+  readonly maxSampleAgeMs?: number;
   /** Injection point. Defaults to globalThis.PressureObserver when available. */
   readonly pressureObserverFactory?: PressureObserverFactory;
+  /** Optional clock providing now() for sample staleness evaluation. */
+  readonly clock?: { now(): number };
 }
 
 const PRESSURE_VALUES: Readonly<Record<ComputePressureState, number>> = {
@@ -110,9 +114,12 @@ export class ComputePressureProvider implements SignalProvider {
   readonly #signalName: string;
   readonly #source: string;
   readonly #sampleIntervalMs: number | undefined;
+  readonly #maxSampleAgeMs: number | undefined;
   readonly #pressureObserverFactory: PressureObserverFactory | undefined;
+  readonly #clock: { now(): number } | undefined;
   #observer: PressureObserverLike | null = null;
   #state: ComputePressureState | null = null;
+  #lastSampleTime: number | null = null;
   #started = false;
   #closed = false;
 
@@ -134,6 +141,24 @@ export class ComputePressureProvider implements SignalProvider {
       );
     }
     if (
+      options.maxSampleAgeMs !== undefined &&
+      (typeof options.maxSampleAgeMs !== "number" ||
+        !Number.isFinite(options.maxSampleAgeMs) ||
+        options.maxSampleAgeMs <= 0)
+    ) {
+      throw new ConfigurationError(
+        "ComputePressureProvider maxSampleAgeMs must be a positive finite number.",
+      );
+    }
+    if (
+      options.clock !== undefined &&
+      (typeof options.clock !== "object" ||
+        options.clock === null ||
+        typeof options.clock.now !== "function")
+    ) {
+      throw new ConfigurationError("ComputePressureProvider clock must implement now().");
+    }
+    if (
       options.pressureObserverFactory !== undefined &&
       typeof options.pressureObserverFactory !== "function"
     ) {
@@ -142,7 +167,9 @@ export class ComputePressureProvider implements SignalProvider {
       );
     }
     this.#sampleIntervalMs = options.sampleIntervalMs;
+    this.#maxSampleAgeMs = options.maxSampleAgeMs;
     this.#pressureObserverFactory = options.pressureObserverFactory;
+    this.#clock = options.clock;
     this.signals = [
       {
         name: this.#signalName,
@@ -152,7 +179,7 @@ export class ComputePressureProvider implements SignalProvider {
     ];
   }
 
-  recordPressureState(state: ComputePressureState): void {
+  recordPressureState(state: ComputePressureState, sampleTime?: number): void {
     if (this.#closed) {
       return;
     }
@@ -161,7 +188,23 @@ export class ComputePressureProvider implements SignalProvider {
         "ComputePressureProvider state must be one of: nominal, fair, serious, critical.",
       );
     }
+    if (
+      sampleTime !== undefined &&
+      (typeof sampleTime !== "number" || !Number.isFinite(sampleTime) || sampleTime < 0)
+    ) {
+      throw new ConfigurationError("sampleTime must be a non-negative finite number.");
+    }
     this.#state = state;
+    this.#lastSampleTime =
+      sampleTime ??
+      this.#clock?.now() ??
+      (typeof performance !== "undefined" && typeof performance.now === "function"
+        ? performance.now()
+        : Date.now());
+  }
+
+  getLastState(): ComputePressureState | null {
+    return this.#state;
   }
 
   async start(): Promise<void> {
@@ -227,6 +270,32 @@ export class ComputePressureProvider implements SignalProvider {
         },
       ];
     }
+
+    const clockNow = this.#clock?.now() ?? context.now;
+    if (this.#maxSampleAgeMs !== undefined && this.#lastSampleTime !== null) {
+      const sampleAge = clockNow - this.#lastSampleTime;
+      if (sampleAge > this.#maxSampleAgeMs) {
+        return [
+          {
+            name: this.#signalName,
+            unit: "ratio",
+            status: "unavailable" as unknown as "unknown",
+            value: null as unknown as number,
+            reason: "stale_pressure_sample",
+            error: "stale_pressure_sample",
+            observedAt,
+            details: {
+              source: this.#source,
+              state: this.#state,
+              reason: "stale_pressure_sample",
+              sampleAgeMs: sampleAge,
+              maxSampleAgeMs: this.#maxSampleAgeMs,
+            },
+          } as unknown as ResourceSignal,
+        ];
+      }
+    }
+
     return [
       {
         name: this.#signalName,
@@ -261,7 +330,11 @@ export class ComputePressureProvider implements SignalProvider {
     for (let index = records.length - 1; index >= 0; index -= 1) {
       const record = records[index];
       if (record !== null && typeof record === "object" && isComputePressureState(record.state)) {
-        this.recordPressureState(record.state);
+        const sampleTime =
+          typeof record.time === "number" && Number.isFinite(record.time) && record.time >= 0
+            ? record.time
+            : undefined;
+        this.recordPressureState(record.state, sampleTime);
         return;
       }
     }
