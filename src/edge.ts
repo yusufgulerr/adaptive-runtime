@@ -5,9 +5,13 @@
 
 export * from "./core.js";
 export {
+  createEdgeExecutionBudgetProvider,
   EDGE_CONCURRENCY_SATURATION,
   EDGE_EXECUTION_REMAINING_MS,
   EDGE_EXECUTION_USED_RATIO,
+  type EdgeBudgetSnapshot,
+  EdgeExecutionBudgetProvider,
+  type EdgeExecutionBudgetProviderOptions,
   ExecutionBudgetProvider,
   type ExecutionBudgetProviderOptions,
   type ExecutionBudgetSnapshot,
