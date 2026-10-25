@@ -28,7 +28,13 @@ describe("package entry points", () => {
     expectExport(coreApi, "createAdaptiveRuntime");
     expectExport(coreApi, "definePolicy");
     expectExport(coreApi, "composeSelectors");
+    expectExport(coreApi, "createCostBudgetSelector");
+    expectExport(coreApi, "createSafeSelector");
+    expectExport(coreApi, "inspectStateSnapshot");
+    expectExport(coreApi, "diffStateSnapshots");
+    expectExport(coreApi, "filterStateSnapshot");
     expectExport(coreApi, "CompositeSignalProvider");
+    expectExport(coreApi, "createCompositeSignalProvider");
     expectExport(coreApi, "NetworkLatencyProvider");
     expectExport(coreApi, "ConfigurationError");
     expectMissing(coreApi, "ProcessMemoryProvider");
@@ -56,6 +62,7 @@ describe("package entry points", () => {
     expectMissing(nodeApi, "DeviceMemoryProvider");
     expectMissing(nodeApi, "ComputePressureProvider");
     expectMissing(nodeApi, "ExecutionBudgetProvider");
+    expectMissing(nodeApi, "createEdgeExecutionBudgetProvider");
     assert.equal(nodeApi.createAdaptiveRuntime, coreApi.createAdaptiveRuntime);
   });
 
@@ -79,6 +86,7 @@ describe("package entry points", () => {
     expectExport(edgeApi, "CompositeSignalProvider");
     expectExport(edgeApi, "NetworkLatencyProvider");
     expectExport(edgeApi, "ExecutionBudgetProvider");
+    expectExport(edgeApi, "createEdgeExecutionBudgetProvider");
     expectMissing(edgeApi, "ProcessMemoryProvider");
     expectMissing(edgeApi, "DeviceMemoryProvider");
     expectMissing(edgeApi, "ComputePressureProvider");
@@ -91,11 +99,18 @@ describe("package entry points", () => {
   it("the root entry point is the Node.js entry point", () => {
     expectExport(rootApi, "createAdaptiveRuntime");
     expectExport(rootApi, "composeSelectors");
+    expectExport(rootApi, "createCostBudgetSelector");
+    expectExport(rootApi, "createSafeSelector");
+    expectExport(rootApi, "inspectStateSnapshot");
+    expectExport(rootApi, "diffStateSnapshots");
+    expectExport(rootApi, "filterStateSnapshot");
+    expectExport(rootApi, "createCompositeSignalProvider");
     expectExport(rootApi, "ProcessMemoryProvider");
     expectExport(rootApi, "EventLoopUtilizationProvider");
     expectMissing(rootApi, "DeviceMemoryProvider");
     expectMissing(rootApi, "ComputePressureProvider");
     expectMissing(rootApi, "ExecutionBudgetProvider");
+    expectMissing(rootApi, "createEdgeExecutionBudgetProvider");
     assert.equal(rootApi.createAdaptiveRuntime, nodeApi.createAdaptiveRuntime);
     assert.equal(rootApi.ProcessMemoryProvider, nodeApi.ProcessMemoryProvider);
   });
@@ -110,15 +125,19 @@ describe("package entry points", () => {
     expectExport(testingApi, "simulatePolicyTimeline");
     expectExport(policyApi, "definePolicy");
     expectExport(policyApi, "composeSelectors");
+    expectExport(policyApi, "createCostBudgetSelector");
+    expectExport(policyApi, "createSafeSelector");
     expectExport(policyApi, "evaluatePolicy");
     expectExport(providersApi, "ProcessMemoryProvider");
     expectExport(providersApi, "DeviceMemoryProvider");
     expectExport(providersApi, "NetworkInformationProvider");
     expectExport(providersApi, "FrameTimingProvider");
     expectExport(providersApi, "ExecutionBudgetProvider");
+    expectExport(providersApi, "createEdgeExecutionBudgetProvider");
     expectExport(providersApi, "EventLoopUtilizationProvider");
     expectExport(providersApi, "ComputePressureProvider");
     expectExport(providersApi, "CompositeSignalProvider");
+    expectExport(providersApi, "createCompositeSignalProvider");
   });
 
   it("package.json declares every documented public subpath", () => {
@@ -128,7 +147,7 @@ describe("package entry points", () => {
       version?: string;
       exports?: Record<string, unknown>;
     };
-    assert.equal(packageJson.version, "0.7.0");
+    assert.equal(packageJson.version, "0.8.0");
     const exports = packageJson.exports ?? {};
     const required = [
       ".",

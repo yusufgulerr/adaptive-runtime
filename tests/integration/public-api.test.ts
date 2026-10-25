@@ -3,6 +3,12 @@ import { describe, it } from "node:test";
 import {
   type CustomPolicySelector,
   createAdaptiveRuntime,
+  createCompositeSignalProvider,
+  createCostBudgetSelector,
+  createSafeSelector,
+  diffStateSnapshots,
+  filterStateSnapshot,
+  inspectStateSnapshot,
   MissingSignalError,
   NoEligibleStrategyError,
   OperationAbortedError,
@@ -14,6 +20,7 @@ import {
 import { createMetricsCollector, MetricsCollector } from "../../src/observability/index.js";
 import * as policyApi from "../../src/policy/index.js";
 import * as providersApi from "../../src/providers/index.js";
+import { createEdgeExecutionBudgetProvider } from "../../src/providers/index.js";
 import { createFakeClock } from "../../src/testing/index.js";
 import { FunctionSignalProvider } from "../helpers/providers.js";
 
@@ -226,5 +233,66 @@ describe("public API integration", () => {
     const prometheus = collector.toPrometheusText();
     assert.match(prometheus, /public_api_test_runs_total/);
     assert.match(prometheus, /public_api_test_decisions_total/);
+  });
+
+  it("exposes v0.8.0 runtime symbols and state/composite/edge utilities", async () => {
+    assert.equal(typeof createCostBudgetSelector, "function");
+    assert.equal(typeof createSafeSelector, "function");
+    assert.equal(typeof inspectStateSnapshot, "function");
+    assert.equal(typeof diffStateSnapshots, "function");
+    assert.equal(typeof filterStateSnapshot, "function");
+    assert.equal(typeof createCompositeSignalProvider, "function");
+    assert.equal(typeof createEdgeExecutionBudgetProvider, "function");
+
+    const edgeProvider = createEdgeExecutionBudgetProvider({ wallClockBudgetMs: 5_000 });
+    const compositeProvider = createCompositeSignalProvider({
+      providers: [edgeProvider],
+      rules: [
+        {
+          name: "composite.budget",
+          unit: "milliseconds",
+          sources: ["edge.execution.remainingMs"],
+          mode: "mean",
+        },
+      ],
+    });
+
+    const costSelector = createCostBudgetSelector({ maxCostTier: 2 });
+    const selector = createSafeSelector(costSelector, {
+      fallbackSelector: () => "thorough",
+    });
+
+    const runtime = createAdaptiveRuntime({
+      providers: [compositeProvider],
+      policy: {
+        evaluationIntervalMs: 0,
+        customSelector: selector,
+      },
+    });
+
+    const runResult = await runtime.run({
+      operationId: "v080-op",
+      input: 5,
+      strategies: identityStrategies,
+    });
+    assert.equal(runResult.value, 10);
+
+    const snapshotBefore = runtime.exportState();
+    const inspection = inspectStateSnapshot(snapshotBefore);
+    assert.equal(inspection.operationCount, 1);
+    assert.deepEqual(inspection.operationIds, ["v080-op"]);
+
+    const filtered = filterStateSnapshot(snapshotBefore, ["v080-op"]);
+    assert.equal(filtered.operations.length, 1);
+
+    const snapshotAfter = {
+      version: 1 as const,
+      exportedAt: snapshotBefore.exportedAt + 100,
+      operations: [],
+    };
+    const diff = diffStateSnapshots(snapshotBefore, snapshotAfter);
+    assert.deepEqual(diff.removedOperations, ["v080-op"]);
+
+    await runtime.close();
   });
 });

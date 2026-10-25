@@ -36,9 +36,11 @@ export {
   type SafeSelectorOptions,
 } from "./policy/selectors.js";
 export {
+  type CompositeCombinerMode,
   CompositeSignalProvider,
   type CompositeSignalProviderOptions,
   type CompositeSignalRule,
+  createCompositeSignalProvider,
 } from "./providers/composite.js";
 export {
   NETWORK_LATENCY,
@@ -47,6 +49,13 @@ export {
   type NetworkProbeContext,
 } from "./providers/network-latency.js";
 export { createAdaptiveRuntime } from "./runtime/runtime.js";
+export {
+  diffStateSnapshots,
+  filterStateSnapshot,
+  inspectStateSnapshot,
+  validateRuntimeStateSnapshot,
+  validateStateSnapshot,
+} from "./runtime/state.js";
 export type { Clock, ClockTimer } from "./types/clock.js";
 export type {
   BudgetView,
@@ -96,7 +105,11 @@ export type {
 export type {
   OperationRuntimeState,
   OperationStateSnapshot,
+  OperationStateTransition,
   RuntimeStateSnapshot,
+  SerializedOperationState,
+  StateSnapshotDiff,
+  StateSnapshotInspection,
 } from "./types/state.js";
 export type {
   QualityCheckResult,

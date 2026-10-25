@@ -21,12 +21,13 @@
 
 ## Current position
 
-- Version 0.7.0 on the 0.x line (1.0-RC preparation). The public repository exists.
-  Wave 1 and Wave 2 integration delivered composable policy selectors,
-  non-disturbing runtime introspection, exact stats hydration without IEEE 754 drift,
-  coalesced shared reads, and high-fidelity timeline simulation. 0.5.0 is tagged
-  and released on GitHub; npm publication is a separate owner-approved dispatch
-  and has not been performed.
+- Version 0.8.0 on the 0.x line (1.0-RC preparation). The public repository exists.
+  Wave 1, Wave 2, and v0.8.0 integration delivered cost-aware budget selectors,
+  safe selector boundaries, runtime in-flight introspection, deterministic snapshot
+  inspection/diffing/filtering, web frame timing/compute pressure guards, edge budget
+  reserve headroom, composite provider median/spread operators, and adversarial soak testing.
+  0.5.0 is tagged and released on GitHub; npm publication is a separate owner-approved
+  dispatch and has not been performed.
 - The runtime is multi-platform: one portable core plus Node.js, browser, web, and
   WinterCG entry points. It includes shadow evaluation, versioned state
   export/import, bounded operation state (`maxTrackedOperations`,
