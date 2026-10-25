@@ -1,11 +1,10 @@
 # Roadmap
 
 This roadmap describes intent, not commitments or dates. Priorities may change
-with feedback and evidence. The 0.7.0 source line is implemented and verified,
-advancing the runtime to 1.0-RC readiness. The latest GitHub release is v0.5.0;
-0.6.0 was delivered and integrated, and 0.7.0 completes the technical runway for
-1.0.0-RC. npm publication is a separate owner-approved workflow dispatch and remains
-pending.
+with feedback and evidence. The 0.8.0 source line is implemented, verified, tagged,
+and released on GitHub, advancing the runtime to 1.0-RC readiness. Releases `v0.1.0`
+through `v0.8.0` are tagged and released on GitHub; npm publication is a separate
+owner-approved workflow dispatch and remains pending.
 
 ## 0.1.0 — Foundation (delivered)
 
@@ -243,6 +242,28 @@ Delivered:
   - `estimatedLatencyMs`, `ewmaLatencyMs`, and `errorRate` simulation parameters on `SimulatedStrategy` in `adaptive-runtime/testing`.
   - Automatic series purging in OpenTelemetry UpDownCounter delta tracking upon operation removal.
   - Full suite expanded to 507 tests across 77 suites with >= 96% branch coverage across all files.
+
+## 0.8.0 — Cost-aware selectors, state inspection, and resilience (delivered)
+
+Delivered:
+
+- **Cost-aware policy selector & safe boundary:**
+  - `createCostBudgetSelector`: cost-aware strategy evaluation against budget limits.
+  - `createSafeSelector`: resilient error-isolation boundary with graceful fallback delegation.
+  - Candidate `samples` property wired directly to policy selectors.
+- **Runtime in-flight introspection & idle pruning:**
+  - `hasInFlight(operationId)` and `getActiveOperations()` non-disturbing introspection.
+  - `pruneIdleOperations(maxAgeMs)` safe pruning of unpinned idle operations.
+- **Deterministic state snapshot inspection & diffing:**
+  - `inspectStateSnapshot`, `diffStateSnapshots`, `filterStateSnapshot`, and `validateStateSnapshot`.
+- **Web & edge provider enhancements:**
+  - Frame timing dropped ratio and p95 duration calculation.
+  - Compute pressure staleness guards.
+  - Edge execution budget reserve headroom (`reserveWallClockMs`, `reserveCpuMs`), snapshot inspection, and window reset.
+- **Composite signal aggregation:**
+  - Added `median` and `spread` combiner modes, `minAvailableSources` quorum guard, and `onSourceUnavailable` callback.
+- **Property testing & adversarial soak suite:**
+  - State serialization round-trip property tests and 631 tests / 100 suites across all platforms.
 
 ## 1.0.0-RC & 1.0.0 — Stability and Release Candidate
 

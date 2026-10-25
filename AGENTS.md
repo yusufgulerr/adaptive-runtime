@@ -26,8 +26,7 @@
   safe selector boundaries, runtime in-flight introspection, deterministic snapshot
   inspection/diffing/filtering, web frame timing/compute pressure guards, edge budget
   reserve headroom, composite provider median/spread operators, and adversarial soak testing.
-  0.5.0 is tagged and released on GitHub; npm publication is a separate owner-approved
-  dispatch and has not been performed.
+  `v0.1.0`, `v0.3.0`, `v0.4.0`, `v0.5.0`, `v0.6.0`, `v0.7.0`, and `v0.8.0` are tagged and released on GitHub; npm publication is a separate owner-approved dispatch and has not been performed.
 - The runtime is multi-platform: one portable core plus Node.js, browser, web, and
   WinterCG entry points. It includes shadow evaluation, versioned state
   export/import, bounded operation state (`maxTrackedOperations`,

@@ -270,6 +270,35 @@ operations, leaves operations absent from the snapshot untouched, and returns th
 number of restored operations. Imported operations participate in
 `maxTrackedOperations` eviction; pins remain protected.
 
+### `inspectStateSnapshot(snapshot)`
+
+Returns a pure summary inspection object (`StateSnapshotInspection`) from an exported runtime state snapshot without instantiating or mutating a runtime:
+- `version`: Snapshot schema version (`1`).
+- `exportedAtMs`: Wall-clock millisecond timestamp when the snapshot was exported.
+- `operationCount`: Total number of serialized operations.
+- `operationIds`: Frozen array of all operation IDs present in the snapshot.
+- `totalStrategyRecords`: Sum of historical strategy statistics records across all operations.
+- `activeStrategiesByOperation`: Immutable mapping of each `operationId` to its last active strategy ID (or `null`).
+
+Throws `ConfigurationError` if the input is malformed.
+
+### `diffStateSnapshots(before, after)`
+
+Computes a deterministic structural diff (`StateSnapshotDiff`) between two runtime state snapshots:
+- `addedOperations`: Operation IDs present in `after` but not `before`.
+- `removedOperations`: Operation IDs present in `before` but not `after`.
+- `unchangedOperations`: Operation IDs present in both with identical decision strategy IDs and zero switch deltas.
+- `strategyTransitions`: Array of `OperationStateTransition` records (`operationId`, `previousStrategyId`, `currentStrategyId`, `switchCountDelta`) for operations whose selected strategy or switch count changed.
+
+### `filterStateSnapshot(snapshot, predicateOrIds)`
+
+Creates a new deeply frozen `RuntimeStateSnapshot` containing only operations matching either an array of allowed `operationId` strings or a custom predicate function `(operationId: string, state: SerializedOperationState) => boolean`. Preserves version and `exportedAt` timestamp.
+
+### `validateStateSnapshot(snapshot)`
+
+Validates that an unknown input matches the strict versioned schema of `RuntimeStateSnapshot`, returning the deeply frozen, typed snapshot or throwing `ConfigurationError`.
+
+
 ### `pinStrategy(operationId, strategyId)` / `unpinStrategy(operationId)`
 
 A pin is an explicit manual override for future runs. It bypasses quality
@@ -885,40 +914,56 @@ state is known, the reading is `unknown`, never `0`.
 
 #### `ExecutionBudgetProvider` (`adaptive-runtime/edge`)
 
+Exported as both `ExecutionBudgetProvider` and `EdgeExecutionBudgetProvider`, with factory `createEdgeExecutionBudgetProvider(options)`.
+
 ```ts
 new ExecutionBudgetProvider({
   id?: string,
-  getBudgetSnapshot: (context) => {
+  wallClockBudgetMs?: number,
+  reserveWallClockMs?: number, // Headroom deducted before computing remainingMs
+  reserveCpuMs?: number,
+  maxSubrequests?: number,
+  getBudgetSnapshot?: (context) => {
     totalBudgetMs?: number;
     elapsedMs?: number;
     activeRequests?: number;
     maxConcurrency?: number;
+    cpuBudgetMs?: number;
+    cpuElapsedMs?: number;
   } | Promise<...>,
 });
 ```
 
 Signals: `edge.execution.remainingMs` (`milliseconds`),
 `edge.execution.usedRatio` (`ratio`), and `edge.concurrency.saturation` (`ratio`).
-`remainingMs = max(0, totalBudgetMs - elapsedMs)` and
+`remainingMs = max(0, totalBudgetMs - reserveWallClockMs - elapsedMs)` and
 `usedRatio = elapsedMs / totalBudgetMs` are `ok` only when
 `totalBudgetMs > 0` and `elapsedMs >= 0`. Saturation is `ok` only when
 `activeRequests >= 0` and `maxConcurrency > 0`. Missing fields produce
 `unknown`; invalid fields produce `error`. The snapshot function may be async
-and receives the provider's abort signal.
+and receives the provider's abort signal. Call `provider.getBudgetSnapshot(context)`
+for inspectable headroom metrics or `provider.resetWindow()` to reset elapsed metrics
+between recycled worker executions.
 
 #### `CompositeSignalProvider` (`adaptive-runtime/core`)
+
+Exported as `CompositeSignalProvider` and factory `createCompositeSignalProvider(options)`.
 
 ```ts
 new CompositeSignalProvider({
   id?: string,
   providers: readonly SignalProvider[],
   passthroughInputs?: boolean, // default true
+  onSourceUnavailable?: (info: SourceUnavailableInfo) => void,
   rules: readonly {
     name: string;
     unit: SignalUnit;
     description?: string;
-    inputs: readonly string[];
-    compute: (values: Readonly<Record<string, number>>) => number;
+    inputs?: readonly string[];
+    sources?: readonly string[];
+    mode?: "median" | "spread" | "min" | "max" | "mean" | "sum" | "p95";
+    compute?: (values: Readonly<Record<string, number>>) => number;
+    minAvailableSources?: number; // Quorum guard
   }[],
 });
 ```
@@ -926,9 +971,11 @@ new CompositeSignalProvider({
 The constructor validates that providers and rules are non-empty, that every
 input name is declared by a child provider, that rule names are unique, and that
 derived names do not collide with passthrough inputs. `read()` runs child reads
-with `Promise.all`. Each rule propagates the highest-priority unavailable status
-(`error` > `stale` > `unsupported` > `unknown`) and calls `compute` only when all
-inputs are `ok`. A throw or non-finite compute result becomes an `error` reading.
+with `Promise.all`. Rules support declarative combiner modes (`mean`, `median`, `spread`,
+`min`, `max`, `sum`, `p95`) or custom `compute` functions. The `minAvailableSources` quorum guard
+ensures that aggregations only execute when at least that many input signals are `ok`.
+Each rule propagates the highest-priority unavailable status (`error` > `stale` > `unsupported` > `unknown`).
+`onSourceUnavailable` fires when a source reading fails or becomes unavailable, enabling non-fatal diagnostics.
 `start()` and `close()` are forwarded to every child provider. Composite output
 can feed budgets exactly like a built-in signal.
 
@@ -1242,25 +1289,30 @@ The package exports:
 - root (`adaptive-runtime`): the Node.js entry point — core plus
   `ProcessMemoryProvider`, `CpuUtilizationProvider`, `EventLoopDelayProvider`,
   `EventLoopUtilizationProvider`, `NetworkLatencyProvider`,
-  `CompositeSignalProvider`, `composeSelectors`, `createErrorRateGuardSelector`,
-  `createLatencyBudgetSelector`, all public types, and all error classes;
+  `CompositeSignalProvider`, `createCompositeSignalProvider`, `composeSelectors`,
+  `createCostBudgetSelector`, `createErrorRateGuardSelector`, `createLatencyBudgetSelector`,
+  `createSafeSelector`, `inspectStateSnapshot`, `diffStateSnapshots`, `filterStateSnapshot`,
+  `validateStateSnapshot`, all public types, and all error classes;
 - `adaptive-runtime/core`: platform-neutral runtime, policy helper,
-  `composeSelectors`, `createErrorRateGuardSelector`, `createLatencyBudgetSelector`,
+  `composeSelectors`, `createCostBudgetSelector`, `createErrorRateGuardSelector`,
+  `createLatencyBudgetSelector`, `createSafeSelector`, `inspectStateSnapshot`,
+  `diffStateSnapshots`, `filterStateSnapshot`, `validateStateSnapshot`,
   errors, types (including state snapshot types), `NetworkLatencyProvider`, and
-  `CompositeSignalProvider`;
+  `CompositeSignalProvider`, `createCompositeSignalProvider`;
 - `adaptive-runtime/node`: core plus the process-level providers, including
   `EventLoopDelayProvider` and `EventLoopUtilizationProvider`;
 - `adaptive-runtime/web`: core plus `DeviceMemoryProvider`,
   `NetworkInformationProvider`, `FrameTimingProvider`, and
   `ComputePressureProvider`;
-- `adaptive-runtime/edge`: core plus `ExecutionBudgetProvider`;
+- `adaptive-runtime/edge`: core plus `ExecutionBudgetProvider` and
+  `createEdgeExecutionBudgetProvider`;
 - `adaptive-runtime/policy`: policy types and defaults, `definePolicy`,
   `resolvePolicy`, `createInitialPolicyState`, `evaluatePolicy`,
-  `composeSelectors`, `createErrorRateGuardSelector`, `createLatencyBudgetSelector`,
-  and the decision/state types needed to call it;
+  `composeSelectors`, `createCostBudgetSelector`, `createErrorRateGuardSelector`,
+  `createLatencyBudgetSelector`, `createSafeSelector`, and the decision/state types;
 - `adaptive-runtime/providers`: every built-in provider (Node.js, web, edge, and
-  composite) plus signal-name constants; this mixed barrel is not
-  platform-neutral;
+  composite), `createCompositeSignalProvider`, `createEdgeExecutionBudgetProvider`,
+  plus signal-name constants; this mixed barrel is not platform-neutral;
 - `adaptive-runtime/observability`: `MetricsCollector`,
   `createMetricsCollector`, `attachOpenTelemetryMeter`, and the metrics types;
 - `adaptive-runtime/testing`: `createFakeClock`, `ScriptedSignalProvider`,
