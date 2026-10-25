@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { ConfigurationError } from "../../src/errors/index.js";
+import { createErrorRateGuardSelector } from "../../src/policy/selectors.js";
 import {
   CompositeSignalProvider,
   ComputePressureProvider,
@@ -16,6 +17,7 @@ import {
 } from "../../src/providers/index.js";
 import {
   createFakeClock,
+  InvalidConfigurationError,
   runProviderConformanceCheck,
   type ScriptedSignal,
   ScriptedSignalProvider,
@@ -277,7 +279,7 @@ describe("ScriptedSignalProvider", () => {
 });
 
 describe("runProviderConformanceCheck", () => {
-  it("passes a valid provider and invokes the lifecycle once", async () => {
+  it("passes a valid provider, verifying double start/close idempotency and concurrent reads", async () => {
     let starts = 0;
     let reads = 0;
     let closes = 0;
@@ -320,9 +322,92 @@ describe("runProviderConformanceCheck", () => {
     assert.equal(report.providerId, "conforming");
     assert.ok(report.checksPassed > 0);
     assert.deepEqual(report.failures, []);
-    assert.equal(starts, 1);
-    assert.equal(reads, 2);
-    assert.equal(closes, 1);
+    assert.equal(starts, 2);
+    assert.equal(reads, 4);
+    assert.equal(closes, 2);
+  });
+
+  it("reports when provider.start() is not idempotent (second start throws)", async () => {
+    let starts = 0;
+    const provider: SignalProvider = {
+      id: "non-idempotent-start",
+      signals: [{ name: "test.value", unit: "count" }],
+      start: () => {
+        starts += 1;
+        if (starts > 1) {
+          throw new Error("Already started");
+        }
+      },
+      read: (context) => [
+        { name: "test.value", unit: "count", status: "ok", value: 1, observedAt: context.now },
+      ],
+    };
+    const report = await runProviderConformanceCheck(provider);
+    assert.equal(report.ok, false);
+    assert.match(report.failures.join(" "), /provider\.start\(\) threw or rejected on second call/);
+  });
+
+  it("reports when provider.close() is not idempotent (second close throws)", async () => {
+    let closes = 0;
+    const provider: SignalProvider = {
+      id: "non-idempotent-close",
+      signals: [{ name: "test.value", unit: "count" }],
+      read: (context) => [
+        { name: "test.value", unit: "count", status: "ok", value: 1, observedAt: context.now },
+      ],
+      close: () => {
+        closes += 1;
+        if (closes > 1) {
+          throw new Error("Already closed");
+        }
+      },
+    };
+    const report = await runProviderConformanceCheck(provider, { checkPostClose: false });
+    assert.equal(report.ok, false);
+    assert.match(report.failures.join(" "), /provider\.close\(\) threw or rejected on second call/);
+  });
+
+  it("reports when concurrent provider.read() throws or rejects", async () => {
+    let callCount = 0;
+    const provider: SignalProvider = {
+      id: "failing-concurrent-read",
+      signals: [{ name: "test.value", unit: "count" }],
+      read: (context) => {
+        callCount += 1;
+        if (callCount > 1) {
+          throw new Error("Concurrent read conflict");
+        }
+        return [
+          { name: "test.value", unit: "count", status: "ok", value: 1, observedAt: context.now },
+        ];
+      },
+    };
+    const report = await runProviderConformanceCheck(provider, { checkPostClose: false });
+    assert.equal(report.ok, false);
+    assert.match(report.failures.join(" "), /concurrent provider\.read\(\) threw or rejected/);
+  });
+
+  it("reports when concurrent provider.read() returns malformed or non-array results", async () => {
+    let callCount = 0;
+    const provider: SignalProvider = {
+      id: "corrupted-concurrent-read",
+      signals: [{ name: "test.value", unit: "count" }],
+      read: (context) => {
+        callCount += 1;
+        if (callCount === 2) {
+          return "not-an-array" as unknown as readonly ResourceSignal[];
+        }
+        return [
+          { name: "test.value", unit: "count", status: "ok", value: 1, observedAt: context.now },
+        ];
+      },
+    };
+    const report = await runProviderConformanceCheck(provider, { checkPostClose: false });
+    assert.equal(report.ok, false);
+    assert.match(
+      report.failures.join(" "),
+      /concurrent provider\.read\(\) calls must both return arrays/,
+    );
   });
 
   it("skips the post-close read when checkPostClose is false", async () => {
@@ -347,7 +432,7 @@ describe("runProviderConformanceCheck", () => {
 
     const report = await runProviderConformanceCheck(provider, { checkPostClose: false });
     assert.equal(report.ok, true);
-    assert.equal(reads, 1);
+    assert.equal(reads, 3);
   });
 
   it("reports post-close readings that are not unsupported", async () => {
@@ -1177,19 +1262,152 @@ describe("simulatePolicyTimeline", () => {
     assert.throws(
       () =>
         simulatePolicyTimeline({
-          strategies: [{ id: "s1", qualityTier: 1 }],
-          steps: [
-            {
-              signals: [],
-              strategies: [{ id: "s1", qualityTier: 1, errorRate: 2 }],
-            },
-          ],
+          strategies: [{ id: "s1", qualityTier: 1, errorRate: 2 }],
+          steps: [{ signals: [] }],
         }),
       (err: unknown) =>
         err instanceof ConfigurationError &&
         err.message.includes(
-          "steps[0].strategies[0].errorRate must be a finite number between 0 and 1 or null when present.",
+          "strategies[0].errorRate must be a finite number between 0 and 1 or null when present.",
         ),
     );
+  });
+
+  it("validates SimulatedStrategy.samples and throws InvalidConfigurationError on invalid values", () => {
+    // Valid samples
+    assert.doesNotThrow(() =>
+      simulatePolicyTimeline({
+        strategies: [{ id: "s1", qualityTier: 1, samples: 0 }],
+        steps: [{ signals: [] }],
+      }),
+    );
+    assert.doesNotThrow(() =>
+      simulatePolicyTimeline({
+        strategies: [{ id: "s1", qualityTier: 1, samples: 42 }],
+        steps: [{ signals: [] }],
+      }),
+    );
+    assert.doesNotThrow(() =>
+      simulatePolicyTimeline({
+        strategies: [{ id: "s1", qualityTier: 1, samples: null }],
+        steps: [{ signals: [] }],
+      }),
+    );
+    assert.doesNotThrow(() =>
+      simulatePolicyTimeline({
+        strategies: [{ id: "s1", qualityTier: 1, samples: undefined }],
+        steps: [{ signals: [] }],
+      }),
+    );
+
+    // Negative integer
+    assert.throws(
+      () =>
+        simulatePolicyTimeline({
+          strategies: [{ id: "s1", qualityTier: 1, samples: -1 }],
+          steps: [{ signals: [] }],
+        }),
+      (err: unknown) =>
+        err instanceof InvalidConfigurationError &&
+        err.field === "strategies.samples" &&
+        err instanceof ConfigurationError &&
+        err.message.includes(
+          "strategies[0].samples must be a non-negative integer or null when present.",
+        ),
+    );
+
+    // Float / non-integer
+    assert.throws(
+      () =>
+        simulatePolicyTimeline({
+          strategies: [{ id: "s1", qualityTier: 1, samples: 3.14 }],
+          steps: [{ signals: [] }],
+        }),
+      (err: unknown) =>
+        err instanceof InvalidConfigurationError && err.field === "strategies.samples",
+    );
+
+    // NaN / Infinity / non-number
+    assert.throws(
+      () =>
+        simulatePolicyTimeline({
+          strategies: [{ id: "s1", qualityTier: 1, samples: Number.NaN }],
+          steps: [{ signals: [] }],
+        }),
+      (err: unknown) =>
+        err instanceof InvalidConfigurationError && err.field === "strategies.samples",
+    );
+
+    assert.throws(
+      () =>
+        simulatePolicyTimeline({
+          strategies: [{ id: "s1", qualityTier: 1, samples: Number.POSITIVE_INFINITY }],
+          steps: [{ signals: [] }],
+        }),
+      (err: unknown) =>
+        err instanceof InvalidConfigurationError && err.field === "strategies.samples",
+    );
+
+    assert.throws(
+      () =>
+        simulatePolicyTimeline({
+          strategies: [{ id: "s1", qualityTier: 1, samples: "10" as unknown as number }],
+          steps: [{ signals: [] }],
+        }),
+      (err: unknown) =>
+        err instanceof InvalidConfigurationError && err.field === "strategies.samples",
+    );
+
+    // Step strategy override validation
+    assert.throws(
+      () =>
+        simulatePolicyTimeline({
+          strategies: [{ id: "s1", qualityTier: 1 }],
+          steps: [
+            {
+              signals: [],
+              strategies: [{ id: "s1", qualityTier: 1, samples: -5 }],
+            },
+          ],
+        }),
+      (err: unknown) =>
+        err instanceof InvalidConfigurationError &&
+        err.field === "strategies.samples" &&
+        err.message.includes("steps[0].strategies[0].samples"),
+    );
+  });
+
+  it("propagates samples into candidate objects and respects cold-start guards in simulatePolicyTimeline", () => {
+    const errorGuard = createErrorRateGuardSelector({
+      maxErrorRate: 0.1,
+      minSamples: 5,
+    });
+
+    // Step 0: high-tier strategy has errorRate 0.5 (> 0.1), but samples: 2 (< 5) -> protected cold-start!
+    // Step 1: high-tier strategy now has samples: 6 (>= 5) with errorRate 0.5 -> disqualified! safe-tier selected.
+    const result = simulatePolicyTimeline({
+      policy: {
+        consecutiveSamples: 1,
+        customSelector: errorGuard,
+      },
+      strategies: [
+        { id: "high-tier", qualityTier: 2, errorRate: 0.5, samples: 2 },
+        { id: "safe-tier", qualityTier: 1, errorRate: 0.01, samples: 20 },
+      ],
+      steps: [
+        { signals: [] },
+        {
+          signals: [],
+          strategies: [
+            { id: "high-tier", qualityTier: 2, errorRate: 0.5, samples: 6 },
+            { id: "safe-tier", qualityTier: 1, errorRate: 0.01, samples: 20 },
+          ],
+        },
+      ],
+    });
+
+    assert.equal(result.decisions[0]?.strategyId, "high-tier");
+    assert.equal(result.decisions[1]?.strategyId, "safe-tier");
+    assert.equal(result.strategySwitches, 1);
   });
 });

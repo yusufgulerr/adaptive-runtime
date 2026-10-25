@@ -5,6 +5,18 @@ import {
   type PolicyState,
   type StrategyCandidate,
 } from "../policy/engine.js";
+
+/** Thrown when testing configuration or simulation parameters are invalid. */
+export class InvalidConfigurationError extends ConfigurationError {
+  readonly field: string;
+
+  constructor(field: string, message?: string) {
+    super(message ?? `${field} must be a non-negative integer or null when present.`);
+    this.name = "InvalidConfigurationError";
+    this.field = field;
+  }
+}
+
 import { resolvePolicy } from "../policy/resolve.js";
 import type { Clock, ClockTimer } from "../types/clock.js";
 import type { StrategyDecision } from "../types/decision.js";
@@ -603,6 +615,12 @@ export async function runProviderConformanceCheck(
     } catch {
       recorder.fail("provider.start() threw or rejected.");
     }
+    try {
+      await (maybe.start as () => void | Promise<void>)();
+      recorder.pass();
+    } catch {
+      recorder.fail("provider.start() threw or rejected on second call.");
+    }
   } else {
     recorder.pass();
   }
@@ -635,6 +653,40 @@ export async function runProviderConformanceCheck(
         }
       }
     }
+
+    let concurrentReadings: unknown;
+    let concurrentSucceeded = false;
+    try {
+      concurrentReadings = await Promise.all([
+        (maybe.read as (ctx: SignalReadContext) => unknown)(context),
+        (maybe.read as (ctx: SignalReadContext) => unknown)(context),
+      ]);
+      concurrentSucceeded = true;
+      recorder.pass();
+    } catch {
+      recorder.fail("concurrent provider.read() threw or rejected.");
+    }
+
+    if (concurrentSucceeded) {
+      if (!Array.isArray(concurrentReadings)) {
+        recorder.fail("concurrent provider.read() must return an array.");
+      } else {
+        const [readA, readB] = concurrentReadings;
+        if (!Array.isArray(readA) || !Array.isArray(readB)) {
+          recorder.fail("concurrent provider.read() calls must both return arrays of signals.");
+        } else {
+          recorder.pass();
+          const observedSeenA = new Set<string>();
+          for (const [index, reading] of readA.entries()) {
+            validateReading(reading, index, descriptors, observedSeenA, now, recorder);
+          }
+          const observedSeenB = new Set<string>();
+          for (const [index, reading] of readB.entries()) {
+            validateReading(reading, index, descriptors, observedSeenB, now, recorder);
+          }
+        }
+      }
+    }
   }
 
   if (typeof maybe.drainProviderErrors === "function") {
@@ -658,6 +710,12 @@ export async function runProviderConformanceCheck(
       closeSucceeded = true;
     } catch {
       recorder.fail("provider.close() threw or rejected.");
+    }
+    try {
+      await (maybe.close as () => void | Promise<void>)();
+      recorder.pass();
+    } catch {
+      recorder.fail("provider.close() threw or rejected on second call.");
     }
   } else {
     recorder.pass();
@@ -699,6 +757,8 @@ export interface SimulatedStrategy {
   readonly ewmaLatencyMs?: number | null;
   /** Observed failure ratio in the range 0..1; 0 when no runs exist, or null when untracked. */
   readonly errorRate?: number | null;
+  /** Number of execution samples observed for this strategy, or null when untracked. */
+  readonly samples?: number | null;
 }
 
 /** One clock-and-signal snapshot supplied to the simulator. */
@@ -776,6 +836,7 @@ function normalizeSimulatedStrategies(
     const estimatedLatencyMs = strategy.estimatedLatencyMs;
     const ewmaLatencyMs = strategy.ewmaLatencyMs;
     const errorRate = strategy.errorRate;
+    const samples = (strategy as { samples?: unknown }).samples;
     if (!isCanonicalIdentifier(id)) {
       throw new ConfigurationError(`${label}[${index}].id must be a non-empty trimmed string.`);
     }
@@ -826,6 +887,16 @@ function normalizeSimulatedStrategies(
         `${label}[${index}].errorRate must be a finite number between 0 and 1 or null when present.`,
       );
     }
+    if (
+      samples !== undefined &&
+      samples !== null &&
+      (typeof samples !== "number" || !Number.isSafeInteger(samples) || samples < 0)
+    ) {
+      throw new InvalidConfigurationError(
+        "strategies.samples",
+        `${label}[${index}].samples must be a non-negative integer or null when present.`,
+      );
+    }
     return {
       id,
       qualityTier,
@@ -834,7 +905,8 @@ function normalizeSimulatedStrategies(
       ...(estimatedLatencyMs !== undefined ? { estimatedLatencyMs } : {}),
       ...(ewmaLatencyMs !== undefined ? { ewmaLatencyMs } : {}),
       ...(errorRate !== undefined ? { errorRate } : {}),
-    };
+      samples: (strategy as { samples?: number | null }).samples ?? null,
+    } as StrategyCandidate;
   });
 }
 
@@ -961,6 +1033,30 @@ export function simulatePolicyTimeline(
   let lastSwitchTo: string | null = null;
 
   for (const [index, step] of steps.entries()) {
+    let stepPolicy = resolvedPolicy;
+    if (resolvedPolicy.customSelector) {
+      const originalSelector = resolvedPolicy.customSelector;
+      const candidateSamples = new Map(
+        step.strategies.map((s) => [s.id, (s as { samples?: number | null }).samples ?? null]),
+      );
+      stepPolicy = {
+        ...resolvedPolicy,
+        customSelector: (ctx) => {
+          const enrichedCandidates = ctx.candidates.map((c) => ({
+            ...c,
+            samples:
+              (c as { samples?: number | null }).samples ??
+              candidateSamples.get(c.candidate.id) ??
+              null,
+          }));
+          return originalSelector({
+            ...ctx,
+            candidates: enrichedCandidates,
+          });
+        },
+      };
+    }
+
     const evaluation = evaluatePolicy(
       state,
       {
@@ -973,7 +1069,7 @@ export function simulatePolicyTimeline(
         sampleSequence: step.sampleSequence,
         signalsCached: step.signalsCached,
       },
-      resolvedPolicy,
+      stepPolicy,
     );
 
     const decision = evaluation.decision;

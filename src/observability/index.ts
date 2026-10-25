@@ -68,6 +68,8 @@ export interface ObservabilityOptions {
   readonly defaultAttributes?: MetricAttributesLike;
   /** Custom latency histogram buckets in seconds. */
   readonly buckets?: readonly number[];
+  /** Custom latency histogram buckets in seconds (alias for buckets). */
+  readonly latencyBuckets?: readonly number[];
   /** Maximum series cardinality across all families. Defaults to 1000. */
   readonly maxSeries?: number;
 }
@@ -115,6 +117,9 @@ export interface RuntimeMetricsCollector {
   getSnapshot(): MetricsSnapshot;
   toPrometheusText(): string;
   reset(): void;
+  resetMetrics(): void;
+  getActiveSeriesCount(): number;
+  getSeriesCapacity(): number;
   /** Removes all series associated with the specified operation id; surrounding whitespace is trimmed. */
   removeOperation(operationId: string): void;
 }
@@ -392,15 +397,16 @@ export class MetricsCollector implements RuntimeMetricsCollector {
   readonly #histograms = new Map<string, InternalHistogramSeries>();
   readonly #families = new Map<string, MetricFamilyMeta>();
   readonly #lruOrder = new Map<string, MetricFamilyType>();
+  #totalSeries = 0;
+  #droppedSeriesCount = 0;
 
   constructor(options?: ObservabilityOptions) {
     validateMaxSeries(options?.maxSeries);
     this.#prefix = options?.prefix ?? "adaptive_runtime";
     this.#defaultAttributes = options?.defaultAttributes;
+    const bucketOptions = options?.latencyBuckets ?? options?.buckets;
     this.#buckets =
-      options?.buckets !== undefined
-        ? normalizeBuckets(options.buckets)
-        : DEFAULT_HISTOGRAM_BUCKETS;
+      bucketOptions !== undefined ? normalizeBuckets(bucketOptions) : DEFAULT_HISTOGRAM_BUCKETS;
     this.#maxSeries = options?.maxSeries ?? 1000;
   }
 
@@ -422,6 +428,7 @@ export class MetricsCollector implements RuntimeMetricsCollector {
         } else if (kind === "histogram") {
           this.#histograms.delete(oldestKey);
         }
+        this.#droppedSeriesCount += 1;
       }
     }
   }
@@ -451,6 +458,7 @@ export class MetricsCollector implements RuntimeMetricsCollector {
       this.#evictIfNeeded();
       this.#counters.set(key, { name, labels: metricLabels, value: amount });
       this.#touchLru(key, "counter");
+      this.#totalSeries = this.#lruOrder.size;
       return;
     }
     existing.value += amount;
@@ -469,6 +477,7 @@ export class MetricsCollector implements RuntimeMetricsCollector {
       this.#evictIfNeeded();
       this.#gauges.set(key, { name, labels: metricLabels, value });
       this.#touchLru(key, "gauge");
+      this.#totalSeries = this.#lruOrder.size;
       return;
     }
     existing.value = value;
@@ -497,6 +506,7 @@ export class MetricsCollector implements RuntimeMetricsCollector {
         bucketCounts: this.#buckets.map((b) => (value <= b ? 1 : 0)),
       });
       this.#touchLru(key, "histogram");
+      this.#totalSeries = this.#lruOrder.size;
       return;
     }
     existing.count += 1;
@@ -704,12 +714,34 @@ export class MetricsCollector implements RuntimeMetricsCollector {
     return `${lines.join("\n")}\n`;
   }
 
-  reset(): void {
+  getActiveSeriesCount(): number {
+    return this.#totalSeries;
+  }
+
+  getSeriesCapacity(): number {
+    return this.#maxSeries;
+  }
+
+  get droppedSeriesCount(): number {
+    return this.#droppedSeriesCount;
+  }
+
+  getDroppedSeriesCount(): number {
+    return this.#droppedSeriesCount;
+  }
+
+  resetMetrics(): void {
     this.#counters.clear();
     this.#gauges.clear();
     this.#histograms.clear();
     this.#families.clear();
     this.#lruOrder.clear();
+    this.#totalSeries = 0;
+    this.#droppedSeriesCount = 0;
+  }
+
+  reset(): void {
+    this.resetMetrics();
   }
 
   removeOperation(operationId: string): void {
@@ -738,6 +770,8 @@ export class MetricsCollector implements RuntimeMetricsCollector {
         this.#lruOrder.delete(key);
       }
     }
+
+    this.#totalSeries = this.#lruOrder.size;
   }
 }
 
