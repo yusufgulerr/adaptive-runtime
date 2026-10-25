@@ -19,8 +19,8 @@ export class InvalidConfigurationError extends ConfigurationError {
 
 import { resolvePolicy } from "../policy/resolve.js";
 import type { Clock, ClockTimer } from "../types/clock.js";
-import type { StrategyDecision } from "../types/decision.js";
-import type { Policy } from "../types/policy.js";
+import type { DecisionReason, StrategyDecision } from "../types/decision.js";
+import type { OperationPolicy, Policy } from "../types/policy.js";
 import type {
   ResourceSignal,
   SignalDescriptor,
@@ -763,6 +763,8 @@ export interface SimulatedStrategy {
 
 /** One clock-and-signal snapshot supplied to the simulator. */
 export interface PolicyTimelineStep {
+  /** Optional label identifying this step in comparison reports or logs. */
+  readonly label?: string;
   /** Clock value for this step. Defaults to index * 1000. */
   readonly now?: number;
   readonly signals: readonly ResourceSignal[];
@@ -798,12 +800,14 @@ export interface PolicyTimelineResult {
   readonly decisions: readonly StrategyDecision[];
   readonly finalState: PolicyState;
   readonly strategySwitches: number;
+  readonly totalSwitches: number;
   readonly strategyReversals: number;
   readonly engagedBudgetIds: readonly string[];
   readonly recoveredBudgetIds: readonly string[];
 }
 
 interface NormalizedPolicyTimelineStep {
+  readonly label?: string;
   readonly now: number;
   readonly signals: readonly ResourceSignal[];
   readonly strategies: readonly StrategyCandidate[];
@@ -923,6 +927,14 @@ function normalizePolicyTimelineStep(
     throw new ConfigurationError(`steps[${index}].signals must be an array.`);
   }
 
+  let label: string | undefined;
+  if (step.label !== undefined) {
+    if (typeof step.label !== "string") {
+      throw new ConfigurationError(`steps[${index}].label must be a string when present.`);
+    }
+    label = step.label;
+  }
+
   let now = index * 1000;
   if (step.now !== undefined) {
     if (typeof step.now !== "number" || !Number.isFinite(step.now) || step.now < 0) {
@@ -974,6 +986,7 @@ function normalizePolicyTimelineStep(
   }
 
   return {
+    ...(label !== undefined ? { label } : {}),
     now,
     signals: step.signals as readonly ResourceSignal[],
     strategies:
@@ -1127,8 +1140,161 @@ export function simulatePolicyTimeline(
     decisions,
     finalState: state,
     strategySwitches,
+    totalSwitches: strategySwitches,
     strategyReversals,
     engagedBudgetIds,
     recoveredBudgetIds,
   };
+}
+
+function deepFreeze<T>(value: T, seen = new Set<unknown>()): T {
+  if (value === null || typeof value !== "object" || seen.has(value)) {
+    return value;
+  }
+  seen.add(value);
+  for (const prop of Object.values(value)) {
+    if (prop !== null && typeof prop === "object" && !Object.isFrozen(prop)) {
+      deepFreeze(prop, seen);
+    }
+  }
+  return Object.freeze(value);
+}
+
+export type PolicyTimelineSimulationResult = PolicyTimelineResult;
+
+export interface ComparePolicyTimelinesOptions {
+  readonly baselinePolicy: OperationPolicy;
+  readonly candidatePolicy: OperationPolicy;
+  readonly strategies: readonly SimulatedStrategy[];
+  readonly steps: readonly PolicyTimelineStep[];
+  readonly initialStrategyId?: string | null;
+}
+
+export interface PolicyStepDivergence {
+  readonly stepIndex: number;
+  readonly timestamp: number;
+  readonly label?: string;
+  readonly baselineStrategyId: string;
+  readonly candidateStrategyId: string;
+  readonly baselineReason: DecisionReason;
+  readonly candidateReason: DecisionReason;
+}
+
+export interface PolicyTimelineComparisonReport {
+  readonly baseline: PolicyTimelineSimulationResult;
+  readonly candidate: PolicyTimelineSimulationResult;
+  readonly totalSteps: number;
+  readonly divergenceCount: number;
+  readonly agreementRatio: number;
+  readonly divergences: readonly PolicyStepDivergence[];
+  readonly switchCountDelta: number;
+}
+
+/**
+ * Compares two policies step-by-step across an identical simulated timeline.
+ * Calculates selection divergences, agreement ratio, and switch count delta.
+ * Returns a deeply frozen report.
+ */
+export function comparePolicyTimelines(
+  options: ComparePolicyTimelinesOptions,
+): PolicyTimelineComparisonReport {
+  if (options === null || typeof options !== "object") {
+    throw new ConfigurationError("comparePolicyTimelines requires an options object.");
+  }
+  if (options.baselinePolicy === null || typeof options.baselinePolicy !== "object") {
+    throw new ConfigurationError("baselinePolicy must be an object.");
+  }
+  if (options.candidatePolicy === null || typeof options.candidatePolicy !== "object") {
+    throw new ConfigurationError("candidatePolicy must be an object.");
+  }
+  if (!Array.isArray(options.strategies) || options.strategies.length === 0) {
+    throw new ConfigurationError("strategies must be a non-empty array.");
+  }
+  if (!Array.isArray(options.steps) || options.steps.length === 0) {
+    throw new ConfigurationError("steps must be a non-empty array.");
+  }
+  if (options.initialStrategyId !== undefined && options.initialStrategyId !== null) {
+    if (!isCanonicalIdentifier(options.initialStrategyId)) {
+      throw new ConfigurationError("initialStrategyId must be a non-empty trimmed string or null.");
+    }
+  }
+
+  let initialState: PolicyState | undefined;
+  if (options.initialStrategyId !== undefined && options.initialStrategyId !== null) {
+    const matched = options.strategies.find((s) => s.id === options.initialStrategyId);
+    initialState = {
+      initialized: true,
+      currentStrategyId: options.initialStrategyId,
+      currentQualityTier: matched?.qualityTier ?? null,
+      modeSince: options.steps[0]?.now ?? 0,
+      budgets: {},
+      pendingStrategyId: null,
+      pendingStreak: 0,
+      lastSampleSequence: null,
+    };
+  }
+
+  const baseline = simulatePolicyTimeline({
+    policy: options.baselinePolicy,
+    strategies: options.strategies,
+    steps: options.steps,
+    ...(initialState !== undefined ? { initialState } : {}),
+  });
+
+  const candidate = simulatePolicyTimeline({
+    policy: options.candidatePolicy,
+    strategies: options.strategies,
+    steps: options.steps,
+    ...(initialState !== undefined ? { initialState } : {}),
+  });
+
+  const totalSteps = options.steps.length;
+  const divergences: PolicyStepDivergence[] = [];
+
+  for (let i = 0; i < totalSteps; i++) {
+    const baselineDecision = baseline.decisions[i];
+    const candidateDecision = candidate.decisions[i];
+    const baselineStep = baseline.steps[i];
+    const rawStep = options.steps[i];
+    const timestamp = baselineStep ? baselineStep.now : (rawStep?.now ?? i * 1000);
+    const label = rawStep?.label;
+
+    if (
+      baselineDecision &&
+      candidateDecision &&
+      baselineDecision.strategyId !== candidateDecision.strategyId
+    ) {
+      divergences.push({
+        stepIndex: i,
+        timestamp,
+        ...(label !== undefined ? { label } : {}),
+        baselineStrategyId: baselineDecision.strategyId,
+        candidateStrategyId: candidateDecision.strategyId,
+        baselineReason: baselineDecision.reasons[0] ?? {
+          code: "strategy-switched",
+          message: `Baseline selected "${baselineDecision.strategyId}".`,
+        },
+        candidateReason: candidateDecision.reasons[0] ?? {
+          code: "strategy-switched",
+          message: `Candidate selected "${candidateDecision.strategyId}".`,
+        },
+      });
+    }
+  }
+
+  const divergenceCount = divergences.length;
+  const agreementRatio = totalSteps > 0 ? (totalSteps - divergenceCount) / totalSteps : 1;
+  const switchCountDelta = candidate.totalSwitches - baseline.totalSwitches;
+
+  const report: PolicyTimelineComparisonReport = {
+    baseline,
+    candidate,
+    totalSteps,
+    divergenceCount,
+    agreementRatio,
+    divergences,
+    switchCountDelta,
+  };
+
+  return deepFreeze(report);
 }

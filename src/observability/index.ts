@@ -72,6 +72,12 @@ export interface ObservabilityOptions {
   readonly latencyBuckets?: readonly number[];
   /** Maximum series cardinality across all families. Defaults to 1000. */
   readonly maxSeries?: number;
+  /** Callback invoked when a series is dropped due to exceeding maxSeries capacity. */
+  readonly onSeriesDropped?: (info: {
+    readonly metricName: string;
+    readonly maxSeries: number;
+    readonly droppedSeriesCount: number;
+  }) => void;
 }
 
 /**
@@ -112,10 +118,20 @@ export interface MetricsSnapshot {
   readonly histograms: readonly HistogramSnapshot[];
 }
 
+export interface MetricsJsonReport {
+  readonly schemaVersion: 1;
+  readonly activeSeriesCount: number;
+  readonly seriesCapacity: number;
+  readonly droppedSeriesCount: number;
+  readonly seriesUtilizationRatio: number;
+  readonly snapshot: MetricsSnapshot;
+}
+
 export interface RuntimeMetricsCollector {
   attach(runtime: AdaptiveRuntime): () => void;
   getSnapshot(): MetricsSnapshot;
   toPrometheusText(): string;
+  toJSON(): MetricsJsonReport;
   reset(): void;
   resetMetrics(): void;
   getActiveSeriesCount(): number;
@@ -173,6 +189,26 @@ function validateMaxSeries(maxSeries: number | undefined): void {
   ) {
     throw new ConfigurationError("maxSeries must be a positive integer.");
   }
+}
+
+function validateObservabilityOptions(options?: ObservabilityOptions): void {
+  validateMaxSeries(options?.maxSeries);
+  if (options?.onSeriesDropped !== undefined && typeof options.onSeriesDropped !== "function") {
+    throw new ConfigurationError("onSeriesDropped must be a function when provided.");
+  }
+}
+
+function deepFreeze<T>(value: T, seen = new Set<unknown>()): T {
+  if (value === null || typeof value !== "object" || seen.has(value)) {
+    return value;
+  }
+  seen.add(value);
+  for (const prop of Object.values(value)) {
+    if (prop !== null && typeof prop === "object" && !Object.isFrozen(prop)) {
+      deepFreeze(prop, seen);
+    }
+  }
+  return Object.freeze(value);
 }
 
 function normalizeBuckets(buckets: readonly number[]): readonly number[] {
@@ -391,6 +427,11 @@ export class MetricsCollector implements RuntimeMetricsCollector {
   readonly #defaultAttributes?: MetricAttributesLike;
   readonly #buckets: readonly number[];
   readonly #maxSeries: number;
+  readonly #onSeriesDropped?: (info: {
+    readonly metricName: string;
+    readonly maxSeries: number;
+    readonly droppedSeriesCount: number;
+  }) => void;
 
   readonly #counters = new Map<string, InternalCounterSeries>();
   readonly #gauges = new Map<string, InternalGaugeSeries>();
@@ -401,13 +442,14 @@ export class MetricsCollector implements RuntimeMetricsCollector {
   #droppedSeriesCount = 0;
 
   constructor(options?: ObservabilityOptions) {
-    validateMaxSeries(options?.maxSeries);
+    validateObservabilityOptions(options);
     this.#prefix = options?.prefix ?? "adaptive_runtime";
     this.#defaultAttributes = options?.defaultAttributes;
     const bucketOptions = options?.latencyBuckets ?? options?.buckets;
     this.#buckets =
       bucketOptions !== undefined ? normalizeBuckets(bucketOptions) : DEFAULT_HISTOGRAM_BUCKETS;
     this.#maxSeries = options?.maxSeries ?? 1000;
+    this.#onSeriesDropped = options?.onSeriesDropped;
   }
 
   #touchLru(key: string, kind: MetricFamilyType): void {
@@ -415,20 +457,35 @@ export class MetricsCollector implements RuntimeMetricsCollector {
     this.#lruOrder.set(key, kind);
   }
 
-  #evictIfNeeded(): void {
+  #evictIfNeeded(incomingMetricName?: string): void {
     if (this.#lruOrder.size >= this.#maxSeries) {
       const oldestKey = this.#lruOrder.keys().next().value;
       if (oldestKey !== undefined) {
         const kind = this.#lruOrder.get(oldestKey);
+        let droppedMetricName = "";
         this.#lruOrder.delete(oldestKey);
         if (kind === "counter") {
+          droppedMetricName = this.#counters.get(oldestKey)?.name ?? "";
           this.#counters.delete(oldestKey);
         } else if (kind === "gauge") {
+          droppedMetricName = this.#gauges.get(oldestKey)?.name ?? "";
           this.#gauges.delete(oldestKey);
         } else if (kind === "histogram") {
+          droppedMetricName = this.#histograms.get(oldestKey)?.name ?? "";
           this.#histograms.delete(oldestKey);
         }
         this.#droppedSeriesCount += 1;
+        if (typeof this.#onSeriesDropped === "function") {
+          try {
+            this.#onSeriesDropped({
+              metricName: droppedMetricName || incomingMetricName || "",
+              maxSeries: this.#maxSeries,
+              droppedSeriesCount: this.#droppedSeriesCount,
+            });
+          } catch {
+            // Listener errors never crash metric recording
+          }
+        }
       }
     }
   }
@@ -455,7 +512,7 @@ export class MetricsCollector implements RuntimeMetricsCollector {
     const key = buildSeriesKey(name, metricLabels);
     const existing = this.#counters.get(key);
     if (existing === undefined) {
-      this.#evictIfNeeded();
+      this.#evictIfNeeded(name);
       this.#counters.set(key, { name, labels: metricLabels, value: amount });
       this.#touchLru(key, "counter");
       this.#totalSeries = this.#lruOrder.size;
@@ -474,7 +531,7 @@ export class MetricsCollector implements RuntimeMetricsCollector {
     const key = buildSeriesKey(name, metricLabels);
     const existing = this.#gauges.get(key);
     if (existing === undefined) {
-      this.#evictIfNeeded();
+      this.#evictIfNeeded(name);
       this.#gauges.set(key, { name, labels: metricLabels, value });
       this.#touchLru(key, "gauge");
       this.#totalSeries = this.#lruOrder.size;
@@ -495,7 +552,7 @@ export class MetricsCollector implements RuntimeMetricsCollector {
     const key = buildSeriesKey(name, metricLabels);
     const existing = this.#histograms.get(key);
     if (existing === undefined) {
-      this.#evictIfNeeded();
+      this.#evictIfNeeded(name);
       this.#histograms.set(key, {
         name,
         labels: metricLabels,
@@ -714,6 +771,22 @@ export class MetricsCollector implements RuntimeMetricsCollector {
     return `${lines.join("\n")}\n`;
   }
 
+  toJSON(): MetricsJsonReport {
+    const activeSeriesCount = this.getActiveSeriesCount();
+    const seriesCapacity = this.getSeriesCapacity();
+    const droppedSeriesCount = this.getDroppedSeriesCount();
+    const seriesUtilizationRatio = seriesCapacity > 0 ? activeSeriesCount / seriesCapacity : 0;
+    const report: MetricsJsonReport = {
+      schemaVersion: 1,
+      activeSeriesCount,
+      seriesCapacity,
+      droppedSeriesCount,
+      seriesUtilizationRatio,
+      snapshot: this.getSnapshot(),
+    };
+    return deepFreeze(report);
+  }
+
   getActiveSeriesCount(): number {
     return this.#totalSeries;
   }
@@ -897,7 +970,7 @@ export function attachOpenTelemetryMeter(
     );
   }
 
-  validateMaxSeries(options?.maxSeries);
+  validateObservabilityOptions(options);
   const prefix = options?.prefix ?? "adaptive_runtime";
   const defaultAttrs = options?.defaultAttributes;
   const maxSeries = options?.maxSeries ?? 1000;

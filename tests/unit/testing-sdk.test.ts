@@ -16,8 +16,11 @@ import {
   ProcessMemoryProvider,
 } from "../../src/providers/index.js";
 import {
+  type ComparePolicyTimelinesOptions,
+  comparePolicyTimelines,
   createFakeClock,
   InvalidConfigurationError,
+  type PolicyTimelineComparisonReport,
   runProviderConformanceCheck,
   type ScriptedSignal,
   ScriptedSignalProvider,
@@ -1409,5 +1412,266 @@ describe("simulatePolicyTimeline", () => {
     assert.equal(result.decisions[0]?.strategyId, "high-tier");
     assert.equal(result.decisions[1]?.strategyId, "safe-tier");
     assert.equal(result.strategySwitches, 1);
+  });
+
+  describe("comparePolicyTimelines", () => {
+    const defaultStrategies: readonly SimulatedStrategy[] = [
+      { id: "premium", qualityTier: 3 },
+      { id: "standard", qualityTier: 2 },
+      { id: "fallback", qualityTier: 1 },
+    ];
+
+    it("validates comparePolicyTimelines input options thoroughly", () => {
+      // Rejects non-object options
+      assert.throws(
+        () => comparePolicyTimelines(null as unknown as ComparePolicyTimelinesOptions),
+        (err: unknown) =>
+          err instanceof ConfigurationError &&
+          err.message.includes("comparePolicyTimelines requires an options object"),
+      );
+
+      // Rejects invalid baselinePolicy
+      assert.throws(
+        () =>
+          comparePolicyTimelines({
+            baselinePolicy: null as unknown as ComparePolicyTimelinesOptions["baselinePolicy"],
+            candidatePolicy: {},
+            strategies: defaultStrategies,
+            steps: [{ signals: [] }],
+          }),
+        (err: unknown) =>
+          err instanceof ConfigurationError &&
+          err.message.includes("baselinePolicy must be an object"),
+      );
+
+      // Rejects invalid candidatePolicy
+      assert.throws(
+        () =>
+          comparePolicyTimelines({
+            baselinePolicy: {},
+            candidatePolicy:
+              "not-an-object" as unknown as ComparePolicyTimelinesOptions["candidatePolicy"],
+            strategies: defaultStrategies,
+            steps: [{ signals: [] }],
+          }),
+        (err: unknown) =>
+          err instanceof ConfigurationError &&
+          err.message.includes("candidatePolicy must be an object"),
+      );
+
+      // Rejects empty strategies array
+      assert.throws(
+        () =>
+          comparePolicyTimelines({
+            baselinePolicy: {},
+            candidatePolicy: {},
+            strategies: [],
+            steps: [{ signals: [] }],
+          }),
+        (err: unknown) =>
+          err instanceof ConfigurationError &&
+          err.message.includes("strategies must be a non-empty array"),
+      );
+
+      // Rejects empty steps array
+      assert.throws(
+        () =>
+          comparePolicyTimelines({
+            baselinePolicy: {},
+            candidatePolicy: {},
+            strategies: defaultStrategies,
+            steps: [],
+          }),
+        (err: unknown) =>
+          err instanceof ConfigurationError &&
+          err.message.includes("steps must be a non-empty array"),
+      );
+
+      // Rejects invalid initialStrategyId
+      for (const invalidId of ["", "   ", "\t\n", " leading", "trailing "]) {
+        assert.throws(
+          () =>
+            comparePolicyTimelines({
+              baselinePolicy: {},
+              candidatePolicy: {},
+              strategies: defaultStrategies,
+              steps: [{ signals: [] }],
+              initialStrategyId: invalidId,
+            }),
+          (err: unknown) =>
+            err instanceof ConfigurationError &&
+            err.message.includes("initialStrategyId must be a non-empty trimmed string"),
+        );
+      }
+
+      // Rejects invalid step label
+      assert.throws(
+        () =>
+          comparePolicyTimelines({
+            baselinePolicy: {},
+            candidatePolicy: {},
+            strategies: defaultStrategies,
+            steps: [{ signals: [], label: 12345 as unknown as string }],
+          }),
+        (err: unknown) =>
+          err instanceof ConfigurationError &&
+          err.message.includes("steps[0].label must be a string"),
+      );
+    });
+
+    it("evaluates identical policies with 1.0 agreementRatio and zero divergences", () => {
+      const policy = {
+        consecutiveSamples: 1,
+      };
+
+      const report: PolicyTimelineComparisonReport = comparePolicyTimelines({
+        baselinePolicy: policy,
+        candidatePolicy: policy,
+        strategies: defaultStrategies,
+        steps: [
+          { now: 1000, signals: [], label: "step-1" },
+          { now: 2000, signals: [], label: "step-2" },
+          { now: 3000, signals: [], label: "step-3" },
+        ],
+      });
+
+      assert.equal(report.totalSteps, 3);
+      assert.equal(report.divergenceCount, 0);
+      assert.equal(report.agreementRatio, 1.0);
+      assert.deepEqual(report.divergences, []);
+      assert.equal(report.switchCountDelta, 0);
+      assert.equal(report.baseline.decisions.length, 3);
+      assert.equal(report.candidate.decisions.length, 3);
+      assert.equal(report.baseline.totalSwitches, 0);
+      assert.equal(report.candidate.totalSwitches, 0);
+
+      // Report and child arrays are deeply frozen
+      assert.ok(Object.isFrozen(report));
+      assert.ok(Object.isFrozen(report.divergences));
+      assert.ok(Object.isFrozen(report.baseline));
+      assert.ok(Object.isFrozen(report.candidate));
+    });
+
+    it("detects divergences under budget differences with step indices, timestamps, labels, and reasons", () => {
+      const loadSignal = (value: number): ResourceSignal => ({
+        name: "system.cpu",
+        unit: "ratio",
+        status: "ok",
+        value,
+        observedAt: 1000,
+      });
+
+      const baselinePolicy = {
+        consecutiveSamples: 1,
+        budgets: [
+          {
+            id: "cpu-budget",
+            signal: "system.cpu",
+            limit: 0.8,
+            tierReduction: 1,
+            consecutiveSamples: 1,
+          },
+        ],
+      };
+
+      const candidatePolicy = {
+        consecutiveSamples: 1,
+        // No budgets configured, stays on highest quality tier
+      };
+
+      const report = comparePolicyTimelines({
+        baselinePolicy,
+        candidatePolicy,
+        strategies: defaultStrategies,
+        steps: [
+          { now: 1000, signals: [loadSignal(0.2)], label: "normal-load" },
+          { now: 2000, signals: [loadSignal(0.95)], label: "load-spike" },
+          { now: 3000, signals: [loadSignal(0.99)], label: "sustained-spike" },
+          { now: 4000, signals: [loadSignal(0.1)], label: "recovered" },
+        ],
+      });
+
+      assert.equal(report.totalSteps, 4);
+      assert.equal(report.divergenceCount, 2);
+      assert.equal(report.agreementRatio, 0.5); // 2 agreed out of 4 -> 0.5
+      assert.equal(report.divergences.length, 2);
+
+      // Step 1 diverged: baseline reduced to standard (tier 2), candidate retained premium (tier 3)
+      const div0 = report.divergences[0];
+      assert.ok(div0);
+      assert.equal(div0.stepIndex, 1);
+      assert.equal(div0.timestamp, 2000);
+      assert.equal(div0.label, "load-spike");
+      assert.equal(div0.baselineStrategyId, "standard");
+      assert.equal(div0.candidateStrategyId, "premium");
+      assert.ok(div0.baselineReason);
+      assert.ok(div0.candidateReason);
+      assert.ok(Object.isFrozen(div0));
+
+      // Step 2 diverged: baseline remains standard, candidate remains premium
+      const div1 = report.divergences[1];
+      assert.ok(div1);
+      assert.equal(div1.stepIndex, 2);
+      assert.equal(div1.timestamp, 3000);
+      assert.equal(div1.label, "sustained-spike");
+      assert.equal(div1.baselineStrategyId, "standard");
+      assert.equal(div1.candidateStrategyId, "premium");
+
+      // Switch count delta: baseline had 2 switches (premium -> standard -> premium), candidate had 0
+      assert.equal(report.baseline.totalSwitches, 2);
+      assert.equal(report.candidate.totalSwitches, 0);
+      assert.equal(report.switchCountDelta, -2);
+    });
+
+    it("evaluates switchCountDelta and hysteresis differences with initialStrategyId", () => {
+      // Baseline reacts quickly (consecutiveSamples: 1), candidate dampens changes (consecutiveSamples: 4)
+      const baselinePolicy = {
+        consecutiveSamples: 1,
+      };
+      const candidatePolicy = {
+        consecutiveSamples: 4,
+      };
+
+      const report = comparePolicyTimelines({
+        baselinePolicy,
+        candidatePolicy,
+        strategies: defaultStrategies,
+        initialStrategyId: "fallback", // Both start already on fallback tier
+        steps: [
+          { now: 1000, signals: [], label: "step-0" },
+          { now: 2000, signals: [], label: "step-1" },
+          { now: 3000, signals: [], label: "step-2" },
+        ],
+      });
+
+      // Baseline switches to premium on step 0 immediately
+      // Candidate requires 4 consecutive samples, so it stays on fallback across all 3 steps
+      assert.equal(report.baseline.totalSwitches, 1);
+      assert.equal(report.candidate.totalSwitches, 0);
+      assert.equal(report.switchCountDelta, -1);
+
+      assert.equal(report.divergenceCount, 3);
+      assert.equal(report.agreementRatio, 0);
+
+      assert.equal(report.divergences[0]?.baselineStrategyId, "premium");
+      assert.equal(report.divergences[0]?.candidateStrategyId, "fallback");
+    });
+
+    it("accepts null initialStrategyId and handles unlabelled steps cleanly", () => {
+      const report = comparePolicyTimelines({
+        baselinePolicy: { consecutiveSamples: 1 },
+        candidatePolicy: { consecutiveSamples: 1 },
+        strategies: defaultStrategies,
+        initialStrategyId: null,
+        steps: [{ signals: [] }, { signals: [] }],
+      });
+
+      assert.equal(report.totalSteps, 2);
+      assert.equal(report.agreementRatio, 1.0);
+      assert.equal(report.divergenceCount, 0);
+      assert.equal(report.switchCountDelta, 0);
+      assert.equal(report.baseline.decisions[0]?.kind, "initial");
+      assert.equal(report.candidate.decisions[0]?.kind, "initial");
+    });
   });
 });
