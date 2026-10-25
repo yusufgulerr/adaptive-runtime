@@ -11,6 +11,8 @@ export interface StrategyCandidate {
   readonly ewmaLatencyMs?: number | null;
   /** Observed failure ratio in the range 0..1; 0 when no runs exist. */
   readonly errorRate?: number | null;
+  /** Number of execution samples observed for this candidate, or null when untracked. */
+  readonly samples?: number | null;
 }
 
 export interface TargetTierClamp {

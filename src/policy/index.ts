@@ -17,6 +17,7 @@ export type {
   CustomPolicySelector,
   CustomPolicySelectorContext,
   CustomSelectorCandidate,
+  CustomSelectorContext,
   MissingSignalBehavior,
   Policy,
   PolicyCandidate,
@@ -35,10 +36,15 @@ export {
 } from "./engine.js";
 export { resolvePolicy } from "./resolve.js";
 export {
+  type CostBudgetSelectorOptions,
   composeSelectors,
+  createCostBudgetSelector,
   createErrorRateGuardSelector,
   createLatencyBudgetSelector,
+  createSafeSelector,
   type ErrorRateGuardSelectorOptions,
   formatDecisionSummary,
+  InvalidConfigurationError,
   type LatencyBudgetSelectorOptions,
+  type SafeSelectorOptions,
 } from "./selectors.js";

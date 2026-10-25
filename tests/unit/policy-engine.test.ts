@@ -14,7 +14,7 @@ import {
   type StrategyCandidate,
 } from "../../src/policy/engine.js";
 import { resolvePolicy } from "../../src/policy/resolve.js";
-import type { Policy } from "../../src/types/policy.js";
+import type { CustomSelectorCandidate, Policy } from "../../src/types/policy.js";
 import { okSignal, unavailableSignal } from "../helpers/providers.js";
 
 const NOW = 1_000_000;
@@ -26,6 +26,7 @@ function candidates(
     qualityTier: number;
     costTier?: number;
     applicable?: boolean;
+    samples?: number | null;
   }>,
 ): StrategyCandidate[] {
   return specs.map((spec) => ({
@@ -33,6 +34,7 @@ function candidates(
     qualityTier: spec.qualityTier,
     costTier: spec.costTier,
     applicable: spec.applicable ?? true,
+    samples: spec.samples,
   }));
 }
 
@@ -552,5 +554,36 @@ describe("policy engine", () => {
     assert.equal(current?.status, "ok");
     assert.equal(current?.ageMs, 250);
     assert.equal(other?.status, "error");
+  });
+
+  it("propagates samples from StrategyCandidate into selectorCandidates for customSelector", () => {
+    let capturedCandidates: readonly CustomSelectorCandidate[] = [];
+    const policy = makePolicy({
+      customSelector: (ctx) => {
+        capturedCandidates = ctx.candidates;
+        return null;
+      },
+    });
+
+    evaluate(
+      createInitialPolicyState(),
+      makeInput({
+        strategies: candidates([
+          { id: "high", qualityTier: 3, samples: 42 },
+          { id: "balanced", qualityTier: 2, samples: null },
+          { id: "economy", qualityTier: 1 },
+        ]),
+      }),
+      policy,
+    );
+
+    assert.equal(capturedCandidates.length, 3);
+    const high = capturedCandidates.find((c) => c.candidate.id === "high");
+    const balanced = capturedCandidates.find((c) => c.candidate.id === "balanced");
+    const economy = capturedCandidates.find((c) => c.candidate.id === "economy");
+
+    assert.equal(high?.samples, 42);
+    assert.equal(balanced?.samples, null);
+    assert.equal(economy?.samples, null);
   });
 });
