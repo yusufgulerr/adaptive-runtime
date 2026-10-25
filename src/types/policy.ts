@@ -21,6 +21,8 @@ export interface CustomSelectorCandidate {
   readonly ewmaLatencyMs?: number | null;
   /** Observed failure ratio in the range 0..1; 0 when no runs exist. */
   readonly errorRate?: number | null;
+  /** Number of execution samples observed for this candidate, or null/undefined if untracked. */
+  readonly samples?: number | null;
 }
 
 export interface CustomPolicySelectorContext {
@@ -30,6 +32,8 @@ export interface CustomPolicySelectorContext {
   readonly signals: Readonly<Record<string, SignalReading>>;
   readonly now: number;
 }
+
+export type CustomSelectorContext = CustomPolicySelectorContext;
 
 export interface CustomPolicySelection {
   readonly strategyId: string;

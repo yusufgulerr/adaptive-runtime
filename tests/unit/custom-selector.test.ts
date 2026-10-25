@@ -9,12 +9,17 @@ import {
 } from "../../src/policy/engine.js";
 import { resolvePolicy } from "../../src/policy/resolve.js";
 import {
+  type CostBudgetSelectorOptions,
   composeSelectors,
+  createCostBudgetSelector,
   createErrorRateGuardSelector,
   createLatencyBudgetSelector,
+  createSafeSelector,
   type ErrorRateGuardSelectorOptions,
   formatDecisionSummary,
+  InvalidConfigurationError,
   type LatencyBudgetSelectorOptions,
+  type SafeSelectorOptions,
 } from "../../src/policy/selectors.js";
 import { createAdaptiveRuntime } from "../../src/runtime/runtime.js";
 import type { StrategyDecision } from "../../src/types/decision.js";
@@ -693,6 +698,7 @@ describe("Built-in Policy Selectors and formatDecisionSummary", () => {
     estimatedLatencyMs: number | null = null,
     samples?: number | null,
     ewmaLatencyMs?: number | null,
+    lastLatencyMs?: number | null,
   ): CustomSelectorCandidate => ({
     candidate: { id, qualityTier, costTier, applicable: true },
     estimatedCost: costTier,
@@ -700,6 +706,7 @@ describe("Built-in Policy Selectors and formatDecisionSummary", () => {
     errorRate,
     samples,
     ewmaLatencyMs,
+    ...(lastLatencyMs !== undefined ? { lastLatencyMs } : {}),
   });
 
   describe("createErrorRateGuardSelector", () => {
@@ -1506,6 +1513,635 @@ describe("Built-in Policy Selectors and formatDecisionSummary", () => {
         summary,
         '[unengaged-op] strategy="fast" tier=1/1 kind=initial changed=false budgets=cpu(ok) reasons=initial-selection',
       );
+    });
+  });
+
+  describe("createCostBudgetSelector", () => {
+    it("validates input options strictly", () => {
+      assert.throws(
+        () => createCostBudgetSelector(null as unknown as CostBudgetSelectorOptions),
+        InvalidConfigurationError,
+      );
+      assert.throws(
+        () => createCostBudgetSelector(undefined as unknown as CostBudgetSelectorOptions),
+        ConfigurationError,
+      );
+      assert.throws(
+        () => createCostBudgetSelector("not-an-object" as unknown as CostBudgetSelectorOptions),
+        InvalidConfigurationError,
+      );
+      assert.throws(
+        () => createCostBudgetSelector(123 as unknown as CostBudgetSelectorOptions),
+        InvalidConfigurationError,
+      );
+      assert.throws(
+        () => createCostBudgetSelector([] as unknown as CostBudgetSelectorOptions),
+        InvalidConfigurationError,
+      );
+      assert.throws(
+        () => createCostBudgetSelector({ maxCostTier: "2" as unknown as number }),
+        InvalidConfigurationError,
+      );
+      assert.throws(
+        () => createCostBudgetSelector({ maxCostTier: Number.NaN }),
+        InvalidConfigurationError,
+      );
+      assert.throws(
+        () => createCostBudgetSelector({ maxCostTier: Number.POSITIVE_INFINITY }),
+        InvalidConfigurationError,
+      );
+      assert.throws(
+        () => createCostBudgetSelector({ maxCostTier: Number.NEGATIVE_INFINITY }),
+        InvalidConfigurationError,
+      );
+      assert.throws(
+        () =>
+          createCostBudgetSelector({
+            maxCostTier: 2,
+            preferLowestLatency: "yes" as unknown as boolean,
+          }),
+        InvalidConfigurationError,
+      );
+      assert.throws(
+        () =>
+          createCostBudgetSelector({
+            maxCostTier: 2,
+            useEwma: 1 as unknown as boolean,
+          }),
+        InvalidConfigurationError,
+      );
+      assert.throws(
+        () =>
+          createCostBudgetSelector({
+            maxCostTier: 2,
+            fallbackSelector: "invalid" as unknown as CustomPolicySelector,
+          }),
+        InvalidConfigurationError,
+      );
+    });
+
+    it("returns null when candidates are empty", () => {
+      const selector = createCostBudgetSelector({ maxCostTier: 2 });
+      const res = selector({ operation: "test", candidates: [], signals: {}, now: 1000 });
+      assert.equal(res, null);
+    });
+
+    it("filters candidates within budget and selects highest quality tier by default", () => {
+      const selector = createCostBudgetSelector({ maxCostTier: 2 });
+      const cands = [
+        cand("too-expensive", 5, 3), // costTier 3 > 2
+        cand("high-quality", 4, 2), // costTier 2 <= 2
+        cand("medium-quality", 3, 1), // costTier 1 <= 2
+        cand("low-quality", 1, 0), // costTier 0 <= 2
+      ];
+
+      const res = selector({ operation: "test", candidates: cands, signals: {}, now: 1000 });
+      assert.ok(typeof res === "object" && res !== null);
+      assert.equal(res.strategyId, "high-quality");
+      assert.equal(
+        res.reason,
+        'cost-budget: selected strategy "high-quality" within budget maxCostTier 2 (costTier=2)',
+      );
+    });
+
+    it("breaks ties by lowest costTier ascending when qualityTier is identical", () => {
+      const selector = createCostBudgetSelector({ maxCostTier: 3 });
+      const cands = [
+        cand("tier2-cost2", 3, 2),
+        cand("tier2-cost1", 3, 1), // lower cost wins tie
+      ];
+
+      const res = selector({ operation: "test", candidates: cands, signals: {}, now: 1000 });
+      assert.ok(typeof res === "object" && res !== null);
+      assert.equal(res.strategyId, "tier2-cost1");
+    });
+
+    it("breaks ties by code-unit id ascending when qualityTier and costTier are identical", () => {
+      const selector = createCostBudgetSelector({ maxCostTier: 2 });
+      const cands = [
+        cand("strategy-beta", 3, 1),
+        cand("strategy-alpha", 3, 1), // "strategy-alpha" < "strategy-beta"
+      ];
+
+      const res = selector({ operation: "test", candidates: cands, signals: {}, now: 1000 });
+      assert.ok(typeof res === "object" && res !== null);
+      assert.equal(res.strategyId, "strategy-alpha");
+    });
+
+    it("treats undefined costTier as 0 when filtering and comparing", () => {
+      const selector = createCostBudgetSelector({ maxCostTier: 0 });
+      const candNoCost: CustomSelectorCandidate = {
+        candidate: { id: "free-strat", qualityTier: 2, applicable: true },
+        estimatedCost: null,
+        estimatedLatencyMs: null,
+        errorRate: null,
+      };
+      const candCost1: CustomSelectorCandidate = {
+        candidate: { id: "paid-strat", qualityTier: 3, costTier: 1, applicable: true },
+        estimatedCost: 1,
+        estimatedLatencyMs: null,
+        errorRate: null,
+      };
+
+      const res = selector({
+        operation: "test",
+        candidates: [candCost1, candNoCost],
+        signals: {},
+        now: 1000,
+      });
+      assert.ok(typeof res === "object" && res !== null);
+      assert.equal(res.strategyId, "free-strat");
+      assert.equal(
+        res.reason,
+        'cost-budget: selected strategy "free-strat" within budget maxCostTier 0 (costTier=0)',
+      );
+    });
+
+    it("selects lowest cost candidate when all candidates exceed maxCostTier", () => {
+      const selector = createCostBudgetSelector({ maxCostTier: 1 });
+      const cands = [
+        cand("expensive-high", 5, 4),
+        cand("moderate-low", 2, 2),
+        cand("moderate-high", 3, 2), // costTier 2 wins over 4, quality 3 wins over 2
+      ];
+
+      const res = selector({ operation: "test", candidates: cands, signals: {}, now: 1000 });
+      assert.ok(typeof res === "object" && res !== null);
+      assert.equal(res.strategyId, "moderate-high");
+      assert.equal(
+        res.reason,
+        'cost-budget: all candidates exceeded budget maxCostTier 1; selected candidate "moderate-high" with lowest costTier 2',
+      );
+    });
+
+    it("breaks ties by code-unit id when all candidates exceed budget and have same cost and quality", () => {
+      const selector = createCostBudgetSelector({ maxCostTier: 0 });
+      const cands = [cand("strat-z", 2, 2), cand("strat-a", 2, 2)];
+      const res = selector({ operation: "test", candidates: cands, signals: {}, now: 1000 });
+      assert.ok(typeof res === "object" && res !== null);
+      assert.equal(res.strategyId, "strat-a");
+    });
+
+    it("chains to fallbackSelector with frozen withinBudget candidates when provided", () => {
+      let passedCandidatesCount = 0;
+      let candidatesAreFrozen = false;
+
+      const selector = createCostBudgetSelector({
+        maxCostTier: 2,
+        fallbackSelector: (ctx) => {
+          passedCandidatesCount = ctx.candidates.length;
+          candidatesAreFrozen = Object.isFrozen(ctx.candidates);
+          return { strategyId: "selected-by-fallback", reason: "custom fallback reason" };
+        },
+      });
+
+      const cands = [
+        cand("strat-1", 1, 1),
+        cand("selected-by-fallback", 2, 2),
+        cand("strat-over", 5, 3), // excluded from withinBudget
+      ];
+
+      const res = selector({ operation: "test", candidates: cands, signals: {}, now: 1000 });
+      assert.equal(passedCandidatesCount, 2);
+      assert.equal(candidatesAreFrozen, true);
+      assert.ok(typeof res === "object" && res !== null);
+      assert.equal(res.strategyId, "selected-by-fallback");
+      assert.equal(res.reason, "custom fallback reason");
+    });
+
+    it("supports string return value from fallbackSelector", () => {
+      const selector = createCostBudgetSelector({
+        maxCostTier: 2,
+        fallbackSelector: () => "strat-string",
+      });
+
+      const cands = [cand("strat-string", 1, 1), cand("strat-other", 2, 2)];
+      const res = selector({ operation: "test", candidates: cands, signals: {}, now: 1000 });
+      assert.equal(res, "strat-string");
+    });
+
+    it("falls back to default sorting when fallbackSelector returns null or undefined", () => {
+      const selectorNull = createCostBudgetSelector({
+        maxCostTier: 2,
+        fallbackSelector: () => null,
+      });
+      const selectorUndef = createCostBudgetSelector({
+        maxCostTier: 2,
+        fallbackSelector: () => undefined,
+      });
+
+      const cands = [cand("low-qual", 1, 1), cand("high-qual", 3, 2)];
+      const resNull = selectorNull({
+        operation: "test",
+        candidates: cands,
+        signals: {},
+        now: 1000,
+      });
+      const resUndef = selectorUndef({
+        operation: "test",
+        candidates: cands,
+        signals: {},
+        now: 1000,
+      });
+
+      assert.ok(typeof resNull === "object" && resNull !== null);
+      assert.equal(resNull.strategyId, "high-qual");
+      assert.ok(typeof resUndef === "object" && resUndef !== null);
+      assert.equal(resUndef.strategyId, "high-qual");
+    });
+
+    it("falls back to default sorting when fallbackSelector returns an ID not in withinBudget", () => {
+      const selector = createCostBudgetSelector({
+        maxCostTier: 2,
+        fallbackSelector: () => ({ strategyId: "unknown-or-over-budget" }),
+      });
+
+      const cands = [
+        cand("low-qual", 1, 1),
+        cand("high-qual", 3, 2),
+        cand("unknown-or-over-budget", 5, 4), // cost 4 > 2
+      ];
+
+      const res = selector({ operation: "test", candidates: cands, signals: {}, now: 1000 });
+      assert.ok(typeof res === "object" && res !== null);
+      assert.equal(res.strategyId, "high-qual");
+    });
+
+    it("does not invoke fallbackSelector when all candidates exceed maxCostTier", () => {
+      let fallbackCalled = false;
+      const selector = createCostBudgetSelector({
+        maxCostTier: 1,
+        fallbackSelector: () => {
+          fallbackCalled = true;
+          return { strategyId: "should-not-run" };
+        },
+      });
+
+      const cands = [cand("over-1", 3, 2), cand("over-2", 4, 3)];
+      const res = selector({ operation: "test", candidates: cands, signals: {}, now: 1000 });
+      assert.equal(fallbackCalled, false);
+      assert.ok(typeof res === "object" && res !== null);
+      assert.equal(res.strategyId, "over-1");
+    });
+
+    it("sorts by latency ascending when preferLowestLatency is true (known latency before unknown)", () => {
+      const selector = createCostBudgetSelector({
+        maxCostTier: 2,
+        preferLowestLatency: true,
+      });
+
+      const cands = [
+        cand("unmeasured", 5, 1, null, null, null, null), // unknown latency
+        cand("slow", 4, 1, null, 150, null, 150),
+        cand("fast", 2, 2, null, 25, null, 25), // lowest latency
+      ];
+
+      const res = selector({ operation: "test", candidates: cands, signals: {}, now: 1000 });
+      assert.ok(typeof res === "object" && res !== null);
+      assert.equal(res.strategyId, "fast");
+    });
+
+    it("places known finite latency before unknown latency under preferLowestLatency: true", () => {
+      const selector = createCostBudgetSelector({
+        maxCostTier: 2,
+        preferLowestLatency: true,
+      });
+
+      const cands = [
+        cand("unmeasured-high-tier", 5, 1, null, null, null, null),
+        cand("measured-modest-tier", 2, 1, null, 90, null, 90),
+      ];
+
+      const res = selector({ operation: "test", candidates: cands, signals: {}, now: 1000 });
+      assert.ok(typeof res === "object" && res !== null);
+      assert.equal(res.strategyId, "measured-modest-tier");
+    });
+
+    it("uses ewmaLatencyMs ?? lastLatencyMs when useEwma is true or default (useEwma !== false)", () => {
+      // With useEwma: true (default)
+      const selectorDefault = createCostBudgetSelector({
+        maxCostTier: 3,
+        preferLowestLatency: true,
+      });
+
+      const cands = [
+        // strat-a has last 10, but EWMA 100
+        cand("strat-a", 3, 1, null, 10, null, 100, 10),
+        // strat-b has last 50, but EWMA 20
+        cand("strat-b", 3, 1, null, 50, null, 20, 50),
+      ];
+
+      const res = selectorDefault({ operation: "test", candidates: cands, signals: {}, now: 1000 });
+      assert.ok(typeof res === "object" && res !== null);
+      // strat-b wins because EWMA 20 < 100
+      assert.equal(res.strategyId, "strat-b");
+    });
+
+    it("uses lastLatencyMs ?? ewmaLatencyMs when useEwma === false", () => {
+      const selectorNoEwma = createCostBudgetSelector({
+        maxCostTier: 3,
+        preferLowestLatency: true,
+        useEwma: false,
+      });
+
+      const cands = [
+        // strat-a has last 10, but EWMA 100
+        cand("strat-a", 3, 1, null, 10, null, 100, 10),
+        // strat-b has last 50, but EWMA 20
+        cand("strat-b", 3, 1, null, 50, null, 20, 50),
+      ];
+
+      const res = selectorNoEwma({ operation: "test", candidates: cands, signals: {}, now: 1000 });
+      assert.ok(typeof res === "object" && res !== null);
+      // strat-a wins because lastLatencyMs 10 < 50
+      assert.equal(res.strategyId, "strat-a");
+    });
+
+    it("breaks ties in preferLowestLatency by qualityTier descending then costTier ascending then id", () => {
+      const selector = createCostBudgetSelector({
+        maxCostTier: 3,
+        preferLowestLatency: true,
+      });
+
+      const cands = [
+        cand("same-lat-low-qual", 1, 1, null, 50, null, 50),
+        cand("same-lat-high-qual", 3, 2, null, 50, null, 50), // higher quality wins
+      ];
+
+      const res = selector({ operation: "test", candidates: cands, signals: {}, now: 1000 });
+      assert.ok(typeof res === "object" && res !== null);
+      assert.equal(res.strategyId, "same-lat-high-qual");
+
+      // Now tie in both latency and quality: lower cost wins
+      const candsCostTie = [
+        cand("same-q-high-cost", 3, 3, null, 50, null, 50),
+        cand("same-q-low-cost", 3, 1, null, 50, null, 50),
+      ];
+      const resCostTie = selector({
+        operation: "test",
+        candidates: candsCostTie,
+        signals: {},
+        now: 1000,
+      });
+      assert.ok(typeof resCostTie === "object" && resCostTie !== null);
+      assert.equal(resCostTie.strategyId, "same-q-low-cost");
+
+      // Now tie in latency, quality, and cost: code-unit id wins
+      const candsIdTie = [
+        cand("strat-z", 3, 1, null, 50, null, 50),
+        cand("strat-m", 3, 1, null, 50, null, 50),
+      ];
+      const resIdTie = selector({
+        operation: "test",
+        candidates: candsIdTie,
+        signals: {},
+        now: 1000,
+      });
+      assert.ok(typeof resIdTie === "object" && resIdTie !== null);
+      assert.equal(resIdTie.strategyId, "strat-m");
+    });
+
+    it("is re-exported from policy barrel and core", async () => {
+      const policyModule = await import("../../src/policy/index.js");
+      const coreModule = await import("../../src/core.js");
+      assert.equal(typeof policyModule.createCostBudgetSelector, "function");
+      assert.equal(typeof coreModule.createCostBudgetSelector, "function");
+      assert.equal(policyModule.createCostBudgetSelector, createCostBudgetSelector);
+      assert.equal(coreModule.createCostBudgetSelector, createCostBudgetSelector);
+    });
+  });
+
+  describe("createSafeSelector", () => {
+    it("validates input arguments strictly", () => {
+      assert.throws(
+        () => createSafeSelector(null as unknown as CustomPolicySelector),
+        InvalidConfigurationError,
+      );
+      assert.throws(
+        () => createSafeSelector(undefined as unknown as CustomPolicySelector),
+        InvalidConfigurationError,
+      );
+      assert.throws(
+        () => createSafeSelector("not-a-fn" as unknown as CustomPolicySelector),
+        InvalidConfigurationError,
+      );
+      assert.throws(
+        () => createSafeSelector(123 as unknown as CustomPolicySelector),
+        InvalidConfigurationError,
+      );
+      assert.throws(
+        () => createSafeSelector({} as unknown as CustomPolicySelector),
+        InvalidConfigurationError,
+      );
+      assert.throws(
+        () => createSafeSelector(() => null, null as unknown as SafeSelectorOptions),
+        InvalidConfigurationError,
+      );
+      assert.throws(
+        () => createSafeSelector(() => null, "options" as unknown as SafeSelectorOptions),
+        InvalidConfigurationError,
+      );
+      assert.throws(
+        () => createSafeSelector(() => null, [] as unknown as SafeSelectorOptions),
+        InvalidConfigurationError,
+      );
+      assert.throws(
+        () =>
+          createSafeSelector(() => null, {
+            fallbackSelector: "invalid" as unknown as CustomPolicySelector,
+          }),
+        InvalidConfigurationError,
+      );
+      assert.throws(
+        () =>
+          createSafeSelector(() => null, {
+            onSelectorError: "invalid" as unknown as (err: unknown) => void,
+          }),
+        InvalidConfigurationError,
+      );
+    });
+
+    it("returns selector's selection when selector succeeds without errors", () => {
+      let onErrorCalled = false;
+      const safe = createSafeSelector(() => ({ strategyId: "selected-fast", reason: "all good" }), {
+        onSelectorError: () => {
+          onErrorCalled = true;
+        },
+      });
+
+      const res = safe({
+        operation: "test",
+        candidates: [cand("selected-fast", 1, 1)],
+        signals: {},
+        now: 1000,
+      });
+      assert.ok(typeof res === "object" && res !== null);
+      assert.equal(res.strategyId, "selected-fast");
+      assert.equal(res.reason, "all good");
+      assert.equal(onErrorCalled, false);
+    });
+
+    it("returns null when selector succeeds and returns null", () => {
+      const safe = createSafeSelector(() => null);
+      const res = safe({
+        operation: "test",
+        candidates: [cand("strat", 1, 1)],
+        signals: {},
+        now: 1000,
+      });
+      assert.equal(res, null);
+    });
+
+    it("calls onSelectorError safely and returns null on selector error when no fallback", () => {
+      let capturedError: unknown = null;
+      let capturedContextOp = "";
+
+      const safe = createSafeSelector(
+        () => {
+          throw new Error("Selector explosion!");
+        },
+        {
+          onSelectorError: (err, ctx) => {
+            capturedError = err;
+            capturedContextOp = ctx.operation;
+          },
+        },
+      );
+
+      const res = safe({
+        operation: "safe-op",
+        candidates: [cand("strat", 1, 1)],
+        signals: {},
+        now: 1000,
+      });
+      assert.equal(res, null);
+      assert.ok(capturedError instanceof Error);
+      assert.equal((capturedError as Error).message, "Selector explosion!");
+      assert.equal(capturedContextOp, "safe-op");
+    });
+
+    it("calls fallbackSelector when selector throws and returns fallback result", () => {
+      const safe = createSafeSelector(
+        () => {
+          throw new TypeError("Failed in primary selector");
+        },
+        {
+          fallbackSelector: (ctx) => ({
+            strategyId: ctx.candidates[0]?.candidate.id ?? "fallback-default",
+            reason: "recovered by fallback selector",
+          }),
+        },
+      );
+
+      const res = safe({
+        operation: "fallback-op",
+        candidates: [cand("fallback-choice", 2, 1)],
+        signals: {},
+        now: 1000,
+      });
+      assert.ok(typeof res === "object" && res !== null);
+      assert.equal(res.strategyId, "fallback-choice");
+      assert.equal(res.reason, "recovered by fallback selector");
+    });
+
+    it("swallows error when onSelectorError throws and proceeds to fallbackSelector", () => {
+      const safe = createSafeSelector(
+        () => {
+          throw new Error("Primary failed");
+        },
+        {
+          onSelectorError: () => {
+            throw new Error("Logging failed!");
+          },
+          fallbackSelector: () => ({ strategyId: "salvaged-strat" }),
+        },
+      );
+
+      const res = safe({
+        operation: "test",
+        candidates: [cand("salvaged-strat", 1, 1)],
+        signals: {},
+        now: 1000,
+      });
+      assert.ok(typeof res === "object" && res !== null);
+      assert.equal(res.strategyId, "salvaged-strat");
+    });
+
+    it("returns null safely when both selector and fallbackSelector throw", () => {
+      let onErrorCount = 0;
+      const safe = createSafeSelector(
+        () => {
+          throw new Error("Primary selector failed");
+        },
+        {
+          onSelectorError: () => {
+            onErrorCount++;
+          },
+          fallbackSelector: () => {
+            throw new Error("Fallback selector also failed");
+          },
+        },
+      );
+
+      const res = safe({
+        operation: "double-fail",
+        candidates: [cand("strat", 1, 1)],
+        signals: {},
+        now: 1000,
+      });
+      assert.equal(res, null);
+      assert.equal(onErrorCount, 1);
+    });
+
+    it("returns null safely when selector throws, onSelectorError throws, and fallbackSelector throws", () => {
+      const safe = createSafeSelector(
+        () => {
+          throw new Error("Fail 1");
+        },
+        {
+          onSelectorError: () => {
+            throw new Error("Fail 2");
+          },
+          fallbackSelector: () => {
+            throw new Error("Fail 3");
+          },
+        },
+      );
+
+      assert.doesNotThrow(() => {
+        const res = safe({
+          operation: "triple-fail",
+          candidates: [cand("strat", 1, 1)],
+          signals: {},
+          now: 1000,
+        });
+        assert.equal(res, null);
+      });
+    });
+
+    it("integrates seamlessly into policy evaluation and prevents runtime crashes", () => {
+      const safeSelector = createSafeSelector(() => {
+        throw new Error("Buggy user selector!");
+      });
+
+      const policy = resolvePolicy({
+        customSelector: safeSelector,
+      });
+
+      const input = createInput();
+      const state = createInitialPolicyState();
+      // Should not throw, and falls back to deterministic default (highest tier "high-tier")
+      const evaluation = evaluatePolicy(state, input, policy);
+      assert.equal(evaluation.decision.strategyId, "high-tier");
+    });
+
+    it("is re-exported from policy barrel and core", async () => {
+      const policyModule = await import("../../src/policy/index.js");
+      const coreModule = await import("../../src/core.js");
+      assert.equal(typeof policyModule.createSafeSelector, "function");
+      assert.equal(typeof coreModule.createSafeSelector, "function");
+      assert.equal(policyModule.createSafeSelector, createSafeSelector);
+      assert.equal(coreModule.createSafeSelector, createSafeSelector);
     });
   });
 });

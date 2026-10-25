@@ -431,6 +431,7 @@ export function evaluatePolicy(
       estimatedLatencyMs: c.estimatedLatencyMs ?? null,
       ewmaLatencyMs: c.ewmaLatencyMs ?? null,
       errorRate: c.errorRate ?? null,
+      samples: c.samples ?? null,
     }));
 
     const signalsRecord: Record<string, ResourceSignal> = {};

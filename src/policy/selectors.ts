@@ -1,11 +1,15 @@
 import { ConfigurationError } from "../errors/index.js";
 import type { StrategyDecision } from "../types/decision.js";
-import type { CustomPolicySelector, CustomSelectorCandidate } from "../types/policy.js";
+import type {
+  CustomPolicySelector,
+  CustomSelectorCandidate,
+  CustomSelectorContext,
+} from "../types/policy.js";
 
-declare module "../types/policy.js" {
-  interface CustomSelectorCandidate {
-    /** Number of execution samples observed for this candidate, or null/undefined if untracked. */
-    readonly samples?: number | null;
+export class InvalidConfigurationError extends ConfigurationError {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "InvalidConfigurationError";
   }
 }
 
@@ -20,6 +24,18 @@ export interface LatencyBudgetSelectorOptions {
   readonly preferLowestCost?: boolean;
   readonly fallbackSelector?: CustomPolicySelector;
   readonly useEwma?: boolean;
+}
+
+export interface CostBudgetSelectorOptions {
+  readonly maxCostTier: number;
+  readonly preferLowestLatency?: boolean;
+  readonly fallbackSelector?: CustomPolicySelector;
+  readonly useEwma?: boolean;
+}
+
+export interface SafeSelectorOptions {
+  readonly fallbackSelector?: CustomPolicySelector;
+  readonly onSelectorError?: (error: unknown, context: CustomSelectorContext) => void;
 }
 
 function compareCandidatesQualityFirst(
@@ -219,6 +235,218 @@ export function createLatencyBudgetSelector(
       strategyId: chosen.candidate.id,
       reason: `latency-budget: all candidates exceeded budget ${maxLatencyMs}ms; selected candidate "${chosen.candidate.id}" with lowest latency ${chosenLatency}ms`,
     };
+  };
+}
+
+function getCandidateCostTier(c: CustomSelectorCandidate): number {
+  const cost = c.candidate?.costTier ?? (c as { costTier?: number | null }).costTier;
+  return typeof cost === "number" && Number.isFinite(cost) ? cost : 0;
+}
+
+function getCandidateQualityTier(c: CustomSelectorCandidate): number {
+  const quality = c.candidate?.qualityTier ?? (c as { qualityTier?: number | null }).qualityTier;
+  return typeof quality === "number" && Number.isFinite(quality) ? quality : 0;
+}
+
+function getCandidateId(c: CustomSelectorCandidate): string {
+  return c.candidate?.id ?? (c as { id?: string }).id ?? "";
+}
+
+function getCandidateCostSelectorLatency(
+  c: CustomSelectorCandidate,
+  useEwma: boolean,
+): number | null {
+  const ewma =
+    typeof c.ewmaLatencyMs === "number" && Number.isFinite(c.ewmaLatencyMs)
+      ? c.ewmaLatencyMs
+      : null;
+  const lastRaw = (c as { lastLatencyMs?: number | null }).lastLatencyMs ?? c.estimatedLatencyMs;
+  const last = typeof lastRaw === "number" && Number.isFinite(lastRaw) ? lastRaw : null;
+
+  return useEwma ? (ewma ?? last) : (last ?? ewma);
+}
+
+/**
+ * Creates a pure custom selector that constrains selection to strategies within
+ * a maximum cost tier budget (`costTier <= maxCostTier`).
+ *
+ * If eligible candidates remain:
+ * - When `fallbackSelector` is provided, it delegates to it over the within-budget candidates.
+ * - Otherwise, sorts candidates:
+ *   - When `preferLowestLatency: true`, orders by ascending latency (known latency before unknown),
+ *     then descending quality tier, then ascending cost tier, then code-unit id.
+ *   - Otherwise, orders by descending quality tier, then ascending cost tier, then code-unit id.
+ *
+ * If all candidates exceed `maxCostTier`, selects the candidate with the lowest cost tier,
+ * tie-breaking by descending quality tier, then code-unit id.
+ */
+export function createCostBudgetSelector(options: CostBudgetSelectorOptions): CustomPolicySelector {
+  if (options === null || typeof options !== "object" || Array.isArray(options)) {
+    throw new InvalidConfigurationError("options must be an object.");
+  }
+  const { maxCostTier, preferLowestLatency, fallbackSelector, useEwma } = options;
+  if (typeof maxCostTier !== "number" || !Number.isFinite(maxCostTier)) {
+    throw new InvalidConfigurationError("maxCostTier must be a finite number.");
+  }
+  if (preferLowestLatency !== undefined && typeof preferLowestLatency !== "boolean") {
+    throw new InvalidConfigurationError("preferLowestLatency must be a boolean.");
+  }
+  if (useEwma !== undefined && typeof useEwma !== "boolean") {
+    throw new InvalidConfigurationError("useEwma must be a boolean.");
+  }
+  if (fallbackSelector !== undefined && typeof fallbackSelector !== "function") {
+    throw new InvalidConfigurationError("fallbackSelector must be a function.");
+  }
+
+  return (context) => {
+    if (context.candidates.length === 0) {
+      return null;
+    }
+
+    const withinBudget = context.candidates.filter((c) => getCandidateCostTier(c) <= maxCostTier);
+
+    if (withinBudget.length > 0) {
+      if (fallbackSelector !== undefined) {
+        const delegated = fallbackSelector({
+          ...context,
+          candidates: Object.freeze(withinBudget),
+        });
+        if (delegated !== null && delegated !== undefined) {
+          const delegatedId = typeof delegated === "string" ? delegated : delegated.strategyId;
+          if (
+            typeof delegatedId === "string" &&
+            withinBudget.some((c) => getCandidateId(c) === delegatedId)
+          ) {
+            return delegated;
+          }
+        }
+      }
+
+      const useEwmaVal = useEwma !== false;
+      const sorted = [...withinBudget].sort((a, b) => {
+        if (preferLowestLatency === true) {
+          const latA = getCandidateCostSelectorLatency(a, useEwmaVal);
+          const latB = getCandidateCostSelectorLatency(b, useEwmaVal);
+
+          if (latA !== null && latB !== null) {
+            if (latA !== latB) {
+              return latA - latB;
+            }
+          } else if (latA !== null && latB === null) {
+            return -1;
+          } else if (latA === null && latB !== null) {
+            return 1;
+          }
+        }
+
+        const qA = getCandidateQualityTier(a);
+        const qB = getCandidateQualityTier(b);
+        if (qB !== qA) {
+          return qB - qA;
+        }
+
+        const cA = getCandidateCostTier(a);
+        const cB = getCandidateCostTier(b);
+        if (cA !== cB) {
+          return cA - cB;
+        }
+
+        const idA = getCandidateId(a);
+        const idB = getCandidateId(b);
+        return idA < idB ? -1 : idA > idB ? 1 : 0;
+      });
+
+      const chosen = sorted[0] as CustomSelectorCandidate;
+      const chosenId = getCandidateId(chosen);
+      const chosenCost = getCandidateCostTier(chosen);
+
+      return {
+        strategyId: chosenId,
+        reason: `cost-budget: selected strategy "${chosenId}" within budget maxCostTier ${maxCostTier} (costTier=${chosenCost})`,
+      };
+    }
+
+    const sortedByCost = [...context.candidates].sort((a, b) => {
+      const cA = getCandidateCostTier(a);
+      const cB = getCandidateCostTier(b);
+      if (cA !== cB) {
+        return cA - cB;
+      }
+
+      const qA = getCandidateQualityTier(a);
+      const qB = getCandidateQualityTier(b);
+      if (qB !== qA) {
+        return qB - qA;
+      }
+
+      const idA = getCandidateId(a);
+      const idB = getCandidateId(b);
+      return idA < idB ? -1 : idA > idB ? 1 : 0;
+    });
+
+    const chosen = sortedByCost[0] as CustomSelectorCandidate;
+    const chosenId = getCandidateId(chosen);
+    const chosenCost = getCandidateCostTier(chosen);
+
+    return {
+      strategyId: chosenId,
+      reason: `cost-budget: all candidates exceeded budget maxCostTier ${maxCostTier}; selected candidate "${chosenId}" with lowest costTier ${chosenCost}`,
+    };
+  };
+}
+
+/**
+ * Wraps a custom policy selector with a resilient error-handling boundary.
+ *
+ * Catches any synchronous or runtime errors thrown by `selector`.
+ * If an error occurs:
+ * - Calls `options.onSelectorError` safely (never re-throwing error from handler).
+ * - Falls back to `options.fallbackSelector` inside its own try/catch.
+ * - If no fallback is provided or fallback also throws, returns `null` so the engine
+ *   reverts to deterministic tie-breaking.
+ */
+export function createSafeSelector(
+  selector: CustomPolicySelector,
+  options?: SafeSelectorOptions,
+): CustomPolicySelector {
+  if (typeof selector !== "function") {
+    throw new InvalidConfigurationError("selector must be a function.");
+  }
+  if (options !== undefined) {
+    if (options === null || typeof options !== "object" || Array.isArray(options)) {
+      throw new InvalidConfigurationError("options must be an object.");
+    }
+    if (options.fallbackSelector !== undefined && typeof options.fallbackSelector !== "function") {
+      throw new InvalidConfigurationError("fallbackSelector must be a function.");
+    }
+    if (options.onSelectorError !== undefined && typeof options.onSelectorError !== "function") {
+      throw new InvalidConfigurationError("onSelectorError must be a function.");
+    }
+  }
+
+  const fallback = options?.fallbackSelector;
+  const onError = options?.onSelectorError;
+
+  return (context) => {
+    try {
+      return selector(context);
+    } catch (error) {
+      if (onError !== undefined) {
+        try {
+          onError(error, context);
+        } catch {
+          // Never let onSelectorError throw!
+        }
+      }
+      if (fallback !== undefined) {
+        try {
+          return fallback(context);
+        } catch {
+          return null;
+        }
+      }
+      return null;
+    }
   };
 }
 

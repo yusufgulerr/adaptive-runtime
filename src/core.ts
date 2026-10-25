@@ -23,12 +23,17 @@ export {
 } from "./errors/index.js";
 export { definePolicy } from "./policy/define-policy.js";
 export {
+  type CostBudgetSelectorOptions,
   composeSelectors,
+  createCostBudgetSelector,
   createErrorRateGuardSelector,
   createLatencyBudgetSelector,
+  createSafeSelector,
   type ErrorRateGuardSelectorOptions,
   formatDecisionSummary,
+  InvalidConfigurationError,
   type LatencyBudgetSelectorOptions,
+  type SafeSelectorOptions,
 } from "./policy/selectors.js";
 export {
   CompositeSignalProvider,
@@ -62,6 +67,7 @@ export type {
   CustomPolicySelector,
   CustomPolicySelectorContext,
   CustomSelectorCandidate,
+  CustomSelectorContext,
   MissingSignalBehavior,
   Policy,
   ResolvedBudgetRule,
