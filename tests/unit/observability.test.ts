@@ -2142,4 +2142,132 @@ describe("Observability Bridge Unit Tests", () => {
       assert.ok(snapshot.counters.some((c) => c.labels.operation_id === "op-beta"));
     });
   });
+
+  describe("MetricsCollector series introspection & resetMetrics", () => {
+    it("reports configured capacity and tracks active series count", () => {
+      const defaultCollector = createMetricsCollector();
+      assert.equal(defaultCollector.getSeriesCapacity(), 1000);
+      assert.equal(defaultCollector.getActiveSeriesCount(), 0);
+
+      const customCollector = new MetricsCollector({ maxSeries: 50 });
+      assert.equal(customCollector.getSeriesCapacity(), 50);
+      assert.equal(customCollector.getActiveSeriesCount(), 0);
+
+      // Add a counter series
+      customCollector.increment("counter_a", { env: "prod" }, 1);
+      assert.equal(customCollector.getActiveSeriesCount(), 1);
+
+      // Increment the same counter series (does not add a new series)
+      customCollector.increment("counter_a", { env: "prod" }, 5);
+      assert.equal(customCollector.getActiveSeriesCount(), 1);
+
+      // Add another counter series with different labels
+      customCollector.increment("counter_a", { env: "staging" }, 2);
+      assert.equal(customCollector.getActiveSeriesCount(), 2);
+
+      // Add a gauge series
+      customCollector.setGauge("gauge_b", 42, { region: "us-east" });
+      assert.equal(customCollector.getActiveSeriesCount(), 3);
+
+      // Add a histogram series
+      customCollector.observe("hist_c", 0.1, { op: "read" });
+      assert.equal(customCollector.getActiveSeriesCount(), 4);
+
+      // Updating gauge or histogram does not increase active series count
+      customCollector.setGauge("gauge_b", 99, { region: "us-east" });
+      customCollector.observe("hist_c", 0.5, { op: "read" });
+      assert.equal(customCollector.getActiveSeriesCount(), 4);
+    });
+
+    it("updates active series count when operations are removed", () => {
+      const collector = new MetricsCollector({ maxSeries: 100 });
+      collector.increment("requests", { operation_id: "op-1", method: "GET" });
+      collector.increment("requests", { operation_id: "op-1", method: "POST" });
+      collector.setGauge("active_jobs", 3, { operation_id: "op-1" });
+      collector.increment("requests", { operation_id: "op-2", method: "GET" });
+
+      assert.equal(collector.getActiveSeriesCount(), 4);
+
+      collector.removeOperation("op-1");
+      assert.equal(collector.getActiveSeriesCount(), 1);
+
+      collector.removeOperation("op-2");
+      assert.equal(collector.getActiveSeriesCount(), 0);
+    });
+
+    it("resets all metrics, series counts, and dropped series counts while preserving configuration", () => {
+      const collector = new MetricsCollector({
+        maxSeries: 3,
+        defaultAttributes: { env: "test" },
+        latencyBuckets: [0.01, 0.05, 0.1],
+      });
+
+      assert.equal(collector.getSeriesCapacity(), 3);
+      assert.equal(collector.getActiveSeriesCount(), 0);
+      assert.equal(collector.droppedSeriesCount, 0);
+
+      // Add 3 series to fill capacity
+      collector.increment("metric_1");
+      collector.setGauge("metric_2", 10);
+      collector.observe("metric_3", 0.02);
+      assert.equal(collector.getActiveSeriesCount(), 3);
+      assert.equal(collector.droppedSeriesCount, 0);
+
+      // Exceed capacity: adds 4th series, evicting the oldest (metric_1)
+      collector.increment("metric_4");
+      assert.equal(collector.getActiveSeriesCount(), 3);
+      assert.equal(collector.droppedSeriesCount, 1);
+      assert.equal(collector.getDroppedSeriesCount(), 1);
+
+      let snapshot = collector.getSnapshot();
+      assert.equal(snapshot.counters.length, 1);
+      assert.equal(snapshot.gauges.length, 1);
+      assert.equal(snapshot.histograms.length, 1);
+      assert.notEqual(collector.toPrometheusText(), "");
+
+      // Perform resetMetrics()
+      collector.resetMetrics();
+
+      // Introspection state after reset
+      assert.equal(collector.getActiveSeriesCount(), 0);
+      assert.equal(collector.droppedSeriesCount, 0);
+      assert.equal(collector.getSeriesCapacity(), 3); // preserved
+
+      // Snapshot is completely empty
+      snapshot = collector.getSnapshot();
+      assert.deepEqual(snapshot.counters, []);
+      assert.deepEqual(snapshot.gauges, []);
+      assert.deepEqual(snapshot.histograms, []);
+      assert.equal(collector.toPrometheusText(), "");
+
+      // Clean subsequent recording with preserved configuration (default attributes & buckets)
+      collector.observe("new_latency", 0.03);
+      assert.equal(collector.getActiveSeriesCount(), 1);
+
+      const newSnapshot = collector.getSnapshot();
+      assert.equal(newSnapshot.histograms.length, 1);
+      const hist = newSnapshot.histograms[0];
+      assert.ok(hist);
+      assert.equal(hist.name, "new_latency");
+      assert.equal(hist.labels.env, "test"); // defaultAttributes preserved
+      assert.equal(hist.count, 1);
+      assert.equal(hist.sum, 0.03);
+      // latencyBuckets preserved: [0.01, 0.05, 0.1, +Inf]
+      assert.equal(hist.buckets.length, 4);
+      assert.equal(hist.buckets[0]?.count, 0); // 0.03 > 0.01
+      assert.equal(hist.buckets[1]?.count, 1); // 0.03 <= 0.05
+    });
+
+    it("reset() delegates to resetMetrics() cleanly", () => {
+      const collector = new MetricsCollector({ maxSeries: 10 });
+      collector.increment("hits", { user: "alice" });
+      collector.setGauge("temperature", 25);
+      assert.equal(collector.getActiveSeriesCount(), 2);
+
+      collector.reset();
+      assert.equal(collector.getActiveSeriesCount(), 0);
+      assert.equal(collector.droppedSeriesCount, 0);
+      assert.deepEqual(collector.getSnapshot(), { counters: [], gauges: [], histograms: [] });
+    });
+  });
 });
