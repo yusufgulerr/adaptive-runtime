@@ -9,6 +9,7 @@ import {
   type MetricAttributesLike,
   type MetricOptionsLike,
   MetricsCollector,
+  type MetricsJsonReport,
   type OpenTelemetryMeterLike,
   type UpDownCounterLike,
 } from "../../src/observability/index.js";
@@ -2268,6 +2269,197 @@ describe("Observability Bridge Unit Tests", () => {
       assert.equal(collector.getActiveSeriesCount(), 0);
       assert.equal(collector.droppedSeriesCount, 0);
       assert.deepEqual(collector.getSnapshot(), { counters: [], gauges: [], histograms: [] });
+    });
+  });
+
+  describe("Structured JSON Export & Cardinality Callbacks", () => {
+    it("validates onSeriesDropped callback parameter in MetricsCollector and attachOpenTelemetryMeter", () => {
+      // Rejects non-function onSeriesDropped
+      for (const invalid of [123, "not-a-fn", {}, true]) {
+        assert.throws(
+          () =>
+            new MetricsCollector({
+              onSeriesDropped: invalid as unknown as () => void,
+            }),
+          (err: unknown) =>
+            err instanceof ConfigurationError &&
+            err.message.includes("onSeriesDropped must be a function"),
+        );
+
+        const runtime = new MockEmitterRuntime() as unknown as AdaptiveRuntime;
+        const meter = new MockOpenTelemetryMeter();
+        assert.throws(
+          () =>
+            attachOpenTelemetryMeter(runtime, meter, {
+              onSeriesDropped: invalid as unknown as () => void,
+            }),
+          (err: unknown) =>
+            err instanceof ConfigurationError &&
+            err.message.includes("onSeriesDropped must be a function"),
+        );
+      }
+
+      // Accepts valid function
+      const collector = new MetricsCollector({
+        onSeriesDropped: () => {},
+      });
+      assert.ok(collector);
+    });
+
+    it("generates structured toJSON() report with schemaVersion 1 and cardinality diagnostics", () => {
+      const collector = new MetricsCollector({ maxSeries: 4 });
+      const emptyReport = collector.toJSON();
+
+      assert.equal(emptyReport.schemaVersion, 1);
+      assert.equal(emptyReport.activeSeriesCount, 0);
+      assert.equal(emptyReport.seriesCapacity, 4);
+      assert.equal(emptyReport.droppedSeriesCount, 0);
+      assert.equal(emptyReport.seriesUtilizationRatio, 0);
+      assert.deepEqual(emptyReport.snapshot, { counters: [], gauges: [], histograms: [] });
+
+      // Verifies JSON serialization
+      const jsonStr = JSON.stringify(emptyReport);
+      const parsed = JSON.parse(jsonStr) as MetricsJsonReport;
+      assert.equal(parsed.schemaVersion, 1);
+      assert.equal(parsed.seriesCapacity, 4);
+
+      // Record series
+      collector.increment("http_requests_total", { method: "GET" }, 5);
+      collector.setGauge("memory_usage_bytes", 1024);
+
+      const activeReport = collector.toJSON();
+      assert.equal(activeReport.schemaVersion, 1);
+      assert.equal(activeReport.activeSeriesCount, 2);
+      assert.equal(activeReport.seriesCapacity, 4);
+      assert.equal(activeReport.droppedSeriesCount, 0);
+      assert.equal(activeReport.seriesUtilizationRatio, 0.5);
+      assert.equal(activeReport.snapshot.counters.length, 1);
+      assert.equal(activeReport.snapshot.gauges.length, 1);
+      assert.equal(activeReport.snapshot.histograms.length, 0);
+      assert.deepEqual(activeReport.snapshot, collector.getSnapshot());
+    });
+
+    it("returns deeply frozen JSON report that prevents mutations", () => {
+      const collector = new MetricsCollector({ maxSeries: 5 });
+      collector.increment("events_total", { env: "prod" });
+      collector.observe("latency_seconds", 0.05);
+
+      const report = collector.toJSON();
+
+      assert.ok(Object.isFrozen(report));
+      assert.ok(Object.isFrozen(report.snapshot));
+      assert.ok(Object.isFrozen(report.snapshot.counters));
+      assert.ok(Object.isFrozen(report.snapshot.counters[0]));
+      assert.ok(Object.isFrozen(report.snapshot.counters[0]?.labels));
+      assert.ok(Object.isFrozen(report.snapshot.histograms));
+      assert.ok(Object.isFrozen(report.snapshot.histograms[0]));
+      assert.ok(Object.isFrozen(report.snapshot.histograms[0]?.buckets));
+      assert.ok(Object.isFrozen(report.snapshot.histograms[0]?.buckets[0]));
+
+      assert.throws(() => {
+        (report as unknown as Record<string, unknown>).activeSeriesCount = 999;
+      }, TypeError);
+
+      assert.throws(() => {
+        (report.snapshot as unknown as Record<string, unknown>).counters = [];
+      }, TypeError);
+    });
+
+    it("computes seriesUtilizationRatio accurately across fill, eviction, and reset", () => {
+      const collector = new MetricsCollector({ maxSeries: 2 });
+      assert.equal(collector.toJSON().seriesUtilizationRatio, 0);
+
+      collector.increment("series_1");
+      assert.equal(collector.toJSON().seriesUtilizationRatio, 0.5);
+
+      collector.increment("series_2");
+      assert.equal(collector.toJSON().seriesUtilizationRatio, 1.0);
+
+      // Exceeds capacity -> evicts series_1
+      collector.increment("series_3");
+      const evictedReport = collector.toJSON();
+      assert.equal(evictedReport.activeSeriesCount, 2);
+      assert.equal(evictedReport.droppedSeriesCount, 1);
+      assert.equal(evictedReport.seriesUtilizationRatio, 1.0);
+
+      // Reset
+      collector.resetMetrics();
+      const resetReport = collector.toJSON();
+      assert.equal(resetReport.activeSeriesCount, 0);
+      assert.equal(resetReport.droppedSeriesCount, 0);
+      assert.equal(resetReport.seriesUtilizationRatio, 0);
+    });
+
+    it("invokes onSeriesDropped callback upon cardinality eviction with accurate info", () => {
+      const droppedEvents: Array<{
+        metricName: string;
+        maxSeries: number;
+        droppedSeriesCount: number;
+      }> = [];
+
+      const collector = new MetricsCollector({
+        maxSeries: 3,
+        onSeriesDropped: (info) => droppedEvents.push(info),
+      });
+
+      collector.increment("metric_first");
+      collector.setGauge("metric_second", 42);
+      collector.observe("metric_third", 0.1);
+      assert.equal(droppedEvents.length, 0);
+
+      // Adding 4th series evicts oldest (metric_first)
+      collector.increment("metric_fourth");
+      assert.equal(droppedEvents.length, 1);
+      assert.deepEqual(droppedEvents[0], {
+        metricName: "metric_first",
+        maxSeries: 3,
+        droppedSeriesCount: 1,
+      });
+
+      // Adding 5th series evicts oldest (metric_second)
+      collector.setGauge("metric_fifth", 100);
+      assert.equal(droppedEvents.length, 2);
+      assert.deepEqual(droppedEvents[1], {
+        metricName: "metric_second",
+        maxSeries: 3,
+        droppedSeriesCount: 2,
+      });
+    });
+
+    it("is resilient when onSeriesDropped listener throws errors", () => {
+      let callCount = 0;
+      const collector = new MetricsCollector({
+        maxSeries: 2,
+        onSeriesDropped: () => {
+          callCount += 1;
+          throw new Error("Simulated listener crash!");
+        },
+      });
+
+      collector.increment("metric_1");
+      collector.setGauge("metric_2", 10);
+
+      // Exceeding capacity invokes throwing listener, but operation must NOT throw
+      assert.doesNotThrow(() => {
+        collector.increment("metric_3");
+      });
+      assert.equal(callCount, 1);
+      assert.equal(collector.droppedSeriesCount, 1);
+      assert.equal(collector.getActiveSeriesCount(), 2);
+
+      // Gauge eviction also resilient
+      assert.doesNotThrow(() => {
+        collector.setGauge("metric_4", 20);
+      });
+      assert.equal(callCount, 2);
+      assert.equal(collector.droppedSeriesCount, 2);
+
+      // Histogram eviction also resilient
+      assert.doesNotThrow(() => {
+        collector.observe("metric_5", 0.5);
+      });
+      assert.equal(callCount, 3);
+      assert.equal(collector.droppedSeriesCount, 3);
     });
   });
 });
