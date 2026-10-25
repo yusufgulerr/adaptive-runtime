@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { ConfigurationError } from "../../src/errors/index.js";
+import type {
+  CpuUtilizationStats,
+  NetworkLatencyStats,
+  ProcessMemoryStats,
+} from "../../src/node.js";
 import {
   CpuUtilizationProvider,
   type CpuUtilizationProviderOptions,
@@ -141,6 +146,117 @@ describe("ProcessMemoryProvider", () => {
       },
     ]);
   });
+
+  it("validates heapLimitBytes option thoroughly", () => {
+    const invalidHeapLimits = [0, -1, -500, Number.NaN, Number.POSITIVE_INFINITY, "1000", null, {}];
+    for (const heapLimitBytes of invalidHeapLimits) {
+      assert.throws(
+        () =>
+          new ProcessMemoryProvider({
+            heapLimitBytes: heapLimitBytes as unknown as number,
+          }),
+        ConfigurationError,
+      );
+    }
+    assert.doesNotThrow(() => new ProcessMemoryProvider({ heapLimitBytes: 1024 }));
+  });
+
+  it("tracks memory stats and exposes frozen getMemoryStats()", () => {
+    const provider = new ProcessMemoryProvider({
+      memoryUsage: () => ({ heapUsed: 1000, rss: 2000 }),
+    });
+
+    const initialStats: ProcessMemoryStats = provider.getMemoryStats();
+    assert.ok(Object.isFrozen(initialStats));
+    assert.deepEqual(initialStats, {
+      lastRssBytes: null,
+      lastHeapUsedBytes: null,
+      peakRssBytes: null,
+      peakHeapUsedBytes: null,
+      heapUtilizationRatio: null,
+      remainingHeapBytes: null,
+    });
+
+    provider.read({ now: NOW, signal });
+    const afterFirst = provider.getMemoryStats();
+    assert.ok(Object.isFrozen(afterFirst));
+    assert.deepEqual(afterFirst, {
+      lastRssBytes: 2000,
+      lastHeapUsedBytes: 1000,
+      peakRssBytes: 2000,
+      peakHeapUsedBytes: 1000,
+      heapUtilizationRatio: null,
+      remainingHeapBytes: null,
+    });
+  });
+
+  it("calculates heap utilization ratio and remaining headroom when heapLimitBytes is configured", () => {
+    const usages = [
+      { heapUsed: 2500, rss: 4000 },
+      { heapUsed: 8000, rss: 9000 },
+      { heapUsed: 12000, rss: 15000 },
+      { heapUsed: 2000, rss: 3000 },
+    ];
+    const provider = new ProcessMemoryProvider({
+      heapLimitBytes: 10_000,
+      memoryUsage: () => usages.shift() ?? { heapUsed: 0, rss: 0 },
+    });
+
+    const first = provider.read({ now: NOW, signal });
+    const heapFirst = requireOk(first[0]);
+    assert.equal(heapFirst.value, 2500);
+    assert.deepEqual(heapFirst.details, {
+      heapLimitBytes: 10_000,
+      heapUtilizationRatio: 0.25,
+      remainingHeapBytes: 7500,
+    });
+    assert.deepEqual(provider.getMemoryStats(), {
+      lastRssBytes: 4000,
+      lastHeapUsedBytes: 2500,
+      peakRssBytes: 4000,
+      peakHeapUsedBytes: 2500,
+      heapUtilizationRatio: 0.25,
+      remainingHeapBytes: 7500,
+    });
+
+    provider.read({ now: NOW + 100, signal });
+    assert.deepEqual(provider.getMemoryStats(), {
+      lastRssBytes: 9000,
+      lastHeapUsedBytes: 8000,
+      peakRssBytes: 9000,
+      peakHeapUsedBytes: 8000,
+      heapUtilizationRatio: 0.8,
+      remainingHeapBytes: 2000,
+    });
+
+    const third = provider.read({ now: NOW + 200, signal });
+    const heapThird = requireOk(third[0]);
+    assert.equal(heapThird.value, 12000);
+    assert.deepEqual(heapThird.details, {
+      heapLimitBytes: 10_000,
+      heapUtilizationRatio: 1,
+      remainingHeapBytes: 0,
+    });
+    assert.deepEqual(provider.getMemoryStats(), {
+      lastRssBytes: 15000,
+      lastHeapUsedBytes: 12000,
+      peakRssBytes: 15000,
+      peakHeapUsedBytes: 12000,
+      heapUtilizationRatio: 1,
+      remainingHeapBytes: 0,
+    });
+
+    // Fourth read drops heap usage; peaks are retained
+    provider.read({ now: NOW + 300, signal });
+    assert.deepEqual(provider.getMemoryStats(), {
+      lastRssBytes: 3000,
+      lastHeapUsedBytes: 2000,
+      peakRssBytes: 15000,
+      peakHeapUsedBytes: 12000,
+      heapUtilizationRatio: 0.2,
+      remainingHeapBytes: 8000,
+    });
+  });
 });
 
 describe("CpuUtilizationProvider", () => {
@@ -215,6 +331,187 @@ describe("CpuUtilizationProvider", () => {
       status: "unsupported",
       observedAt: NOW,
       error: "Provider is closed.",
+    });
+  });
+
+  it("validates smoothingAlpha option thoroughly", () => {
+    const invalidAlphas = [
+      0,
+      -0.1,
+      -5,
+      1.0001,
+      2,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      Number.NEGATIVE_INFINITY,
+      "0.5",
+      null,
+      {},
+    ];
+    for (const alpha of invalidAlphas) {
+      assert.throws(
+        () =>
+          new CpuUtilizationProvider({
+            smoothingAlpha: alpha as unknown as number,
+          }),
+        ConfigurationError,
+      );
+    }
+    assert.doesNotThrow(() => new CpuUtilizationProvider({ smoothingAlpha: 1 }));
+    assert.doesNotThrow(() => new CpuUtilizationProvider({ smoothingAlpha: 0.5 }));
+    assert.doesNotThrow(() => new CpuUtilizationProvider({ smoothingAlpha: 0.001 }));
+  });
+
+  it("tracks cpu stats and EWMA smoothed utilization", () => {
+    const usage = [
+      { user: 0, system: 0 },
+      { user: 1_000_000, system: 0 },
+      { user: 3_000_000, system: 0 },
+      { user: 3_000_000, system: 0 },
+    ];
+    const provider = new CpuUtilizationProvider({
+      smoothingAlpha: 0.5,
+      cpuUsage: () => usage.shift() ?? { user: 0, system: 0 },
+    });
+
+    const initialStats: CpuUtilizationStats = provider.getCpuStats();
+    assert.ok(Object.isFrozen(initialStats));
+    assert.deepEqual(initialStats, {
+      sampleCount: 0,
+      lastRawUtilization: null,
+      smoothedUtilization: null,
+      peakUtilization: null,
+    });
+
+    // Baseline read
+    const baseline = provider.read({ now: NOW, signal })[0];
+    assert.equal(baseline?.status, "unknown");
+    assert.deepEqual(provider.getCpuStats(), {
+      sampleCount: 0,
+      lastRawUtilization: null,
+      smoothedUtilization: null,
+      peakUtilization: null,
+    });
+
+    // First sample (raw: 1.0)
+    const sample1 = provider.read({ now: NOW + 1000, signal })[0];
+    assert.equal(sample1?.status, "ok");
+    assert.equal(requireOk(sample1).value, 1.0);
+    assert.deepEqual(provider.getCpuStats(), {
+      sampleCount: 1,
+      lastRawUtilization: 1.0,
+      smoothedUtilization: 1.0,
+      peakUtilization: 1.0,
+    });
+
+    // Second sample (raw: 2.0 -> smoothed: 0.5 * 2.0 + 0.5 * 1.0 = 1.5)
+    const sample2 = provider.read({ now: NOW + 2000, signal })[0];
+    assert.equal(sample2?.status, "ok");
+    assert.equal(requireOk(sample2).value, 1.5);
+    assert.equal(sample2?.details?.smoothedUtilization, 1.5);
+    assert.equal(sample2?.details?.rawUtilization, 2.0);
+    assert.deepEqual(provider.getCpuStats(), {
+      sampleCount: 2,
+      lastRawUtilization: 2.0,
+      smoothedUtilization: 1.5,
+      peakUtilization: 2.0,
+    });
+
+    // Third sample (raw: 0.0 -> smoothed: 0.5 * 0.0 + 0.5 * 1.5 = 0.75, peak retained at 2.0)
+    const sample3 = provider.read({ now: NOW + 3000, signal })[0];
+    assert.equal(sample3?.status, "ok");
+    assert.equal(requireOk(sample3).value, 0.75);
+    assert.deepEqual(provider.getCpuStats(), {
+      sampleCount: 3,
+      lastRawUtilization: 0.0,
+      smoothedUtilization: 0.75,
+      peakUtilization: 2.0,
+    });
+  });
+
+  it("reports raw instantaneous utilization when smoothingAlpha is 1 or undefined", () => {
+    // When smoothingAlpha is 1
+    const usageAlpha1 = [
+      { user: 0, system: 0 },
+      { user: 1_000_000, system: 0 },
+      { user: 4_000_000, system: 0 },
+    ];
+    const providerAlpha1 = new CpuUtilizationProvider({
+      smoothingAlpha: 1,
+      cpuUsage: () => usageAlpha1.shift() ?? { user: 0, system: 0 },
+    });
+    providerAlpha1.read({ now: NOW, signal });
+    const s1 = providerAlpha1.read({ now: NOW + 1000, signal })[0];
+    assert.equal(requireOk(s1).value, 1.0);
+    const s2 = providerAlpha1.read({ now: NOW + 2000, signal })[0];
+    assert.equal(requireOk(s2).value, 3.0);
+    assert.deepEqual(providerAlpha1.getCpuStats(), {
+      sampleCount: 2,
+      lastRawUtilization: 3.0,
+      smoothedUtilization: 3.0,
+      peakUtilization: 3.0,
+    });
+
+    // When smoothingAlpha is undefined
+    const usageUndefined = [
+      { user: 0, system: 0 },
+      { user: 2_500_000, system: 0 },
+      { user: 4_000_000, system: 0 },
+    ];
+    const providerUndefined = new CpuUtilizationProvider({
+      cpuUsage: () => usageUndefined.shift() ?? { user: 0, system: 0 },
+    });
+    providerUndefined.read({ now: NOW, signal });
+    const u1 = providerUndefined.read({ now: NOW + 1000, signal })[0];
+    assert.equal(requireOk(u1).value, 2.5);
+    const u2 = providerUndefined.read({ now: NOW + 2000, signal })[0];
+    assert.equal(requireOk(u2).value, 1.5);
+    assert.deepEqual(providerUndefined.getCpuStats(), {
+      sampleCount: 2,
+      lastRawUtilization: 1.5,
+      smoothedUtilization: null,
+      peakUtilization: 2.5,
+    });
+  });
+
+  it("resets baseline and statistics on resetBaseline()", () => {
+    const usage = [
+      { user: 0, system: 0 },
+      { user: 1_000_000, system: 0 },
+      { user: 2_000_000, system: 0 },
+      { user: 2_500_000, system: 0 },
+    ];
+    const provider = new CpuUtilizationProvider({
+      smoothingAlpha: 0.5,
+      cpuUsage: () => usage.shift() ?? { user: 0, system: 0 },
+    });
+
+    provider.read({ now: NOW, signal });
+    provider.read({ now: NOW + 1000, signal });
+    assert.equal(provider.getCpuStats().sampleCount, 1);
+
+    provider.resetBaseline();
+    const statsAfterReset = provider.getCpuStats();
+    assert.deepEqual(statsAfterReset, {
+      sampleCount: 0,
+      lastRawUtilization: null,
+      smoothedUtilization: null,
+      peakUtilization: null,
+    });
+
+    // Next reading establishes baseline again
+    const baselineAfterReset = provider.read({ now: NOW + 2000, signal })[0];
+    assert.equal(baselineAfterReset?.status, "unknown");
+
+    // Next reading computes fresh sample
+    const freshSample = provider.read({ now: NOW + 3000, signal })[0];
+    assert.equal(freshSample?.status, "ok");
+    assert.equal(requireOk(freshSample).value, 0.5);
+    assert.deepEqual(provider.getCpuStats(), {
+      sampleCount: 1,
+      lastRawUtilization: 0.5,
+      smoothedUtilization: 0.5,
+      peakUtilization: 0.5,
     });
   });
 });
@@ -716,5 +1013,163 @@ describe("NetworkLatencyProvider", () => {
     });
     await provider.read({ now: NOW, signal: controller.signal });
     assert.equal(received, controller.signal);
+  });
+
+  it("validates windowSize option thoroughly", () => {
+    const invalidWindowSizes = [
+      0,
+      1,
+      -1,
+      -20,
+      1001,
+      10000,
+      2.5,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      "20",
+      null,
+      {},
+    ];
+    for (const size of invalidWindowSizes) {
+      assert.throws(
+        () =>
+          new NetworkLatencyProvider({
+            probe: () => 1,
+            windowSize: size as unknown as number,
+          }),
+        ConfigurationError,
+      );
+    }
+    assert.doesNotThrow(() => new NetworkLatencyProvider({ probe: () => 1, windowSize: 2 }));
+    assert.doesNotThrow(() => new NetworkLatencyProvider({ probe: () => 1, windowSize: 20 }));
+    assert.doesNotThrow(() => new NetworkLatencyProvider({ probe: () => 1, windowSize: 1000 }));
+  });
+
+  it("tracks latency stats, min, max, jitter, and p95 across sliding window", async () => {
+    const samples = [50, 70, 40];
+    const provider = new NetworkLatencyProvider({
+      probe: () => samples.shift() ?? 0,
+    });
+
+    const initialStats: NetworkLatencyStats = provider.getLatencyStats();
+    assert.ok(Object.isFrozen(initialStats));
+    assert.deepEqual(initialStats, {
+      sampleCount: 0,
+      lastLatencyMs: null,
+      minLatencyMs: null,
+      maxLatencyMs: null,
+      jitterMs: null,
+      p95LatencyMs: null,
+    });
+
+    // Sample 1: jitter is 0 when < 2 samples
+    await provider.read({ now: NOW, signal });
+    assert.deepEqual(provider.getLatencyStats(), {
+      sampleCount: 1,
+      lastLatencyMs: 50,
+      minLatencyMs: 50,
+      maxLatencyMs: 50,
+      jitterMs: 0,
+      p95LatencyMs: 50,
+    });
+
+    // Sample 2: jitter is |70 - 50| / 1 = 20
+    await provider.read({ now: NOW + 100, signal });
+    assert.deepEqual(provider.getLatencyStats(), {
+      sampleCount: 2,
+      lastLatencyMs: 70,
+      minLatencyMs: 50,
+      maxLatencyMs: 70,
+      jitterMs: 20,
+      p95LatencyMs: 70,
+    });
+
+    // Sample 3: jitter is (|70 - 50| + |40 - 70|) / 2 = 25
+    await provider.read({ now: NOW + 200, signal });
+    assert.deepEqual(provider.getLatencyStats(), {
+      sampleCount: 3,
+      lastLatencyMs: 40,
+      minLatencyMs: 40,
+      maxLatencyMs: 70,
+      jitterMs: 25,
+      p95LatencyMs: 70,
+    });
+  });
+
+  it("bounds samples to windowSize and evicts oldest samples", async () => {
+    const samples = [10, 20, 30, 40];
+    const provider = new NetworkLatencyProvider({
+      windowSize: 3,
+      probe: () => samples.shift() ?? 0,
+    });
+
+    await provider.read({ now: NOW, signal });
+    await provider.read({ now: NOW + 10, signal });
+    await provider.read({ now: NOW + 20, signal });
+    assert.equal(provider.getLatencyStats().sampleCount, 3);
+    assert.equal(provider.getLatencyStats().minLatencyMs, 10);
+
+    // 4th sample evicts the 1st (10) -> window is now [20, 30, 40]
+    await provider.read({ now: NOW + 30, signal });
+    const stats = provider.getLatencyStats();
+    assert.equal(stats.sampleCount, 3);
+    assert.equal(stats.lastLatencyMs, 40);
+    assert.equal(stats.minLatencyMs, 20);
+    assert.equal(stats.maxLatencyMs, 40);
+    // jitter: (|30 - 20| + |40 - 30|) / 2 = 10
+    assert.equal(stats.jitterMs, 10);
+  });
+
+  it("calculates P95 accurately with a populated window", async () => {
+    let current = 0;
+    const provider = new NetworkLatencyProvider({
+      windowSize: 20,
+      probe: () => {
+        current += 10;
+        return current;
+      },
+    });
+
+    for (let i = 0; i < 20; i++) {
+      await provider.read({ now: NOW + i * 10, signal });
+    }
+
+    const stats = provider.getLatencyStats();
+    assert.equal(stats.sampleCount, 20);
+    assert.equal(stats.minLatencyMs, 10);
+    assert.equal(stats.maxLatencyMs, 200);
+    // 20 elements (10, 20, ..., 200): p95 index is ceil(20 * 0.95) - 1 = 18 -> 190
+    assert.equal(stats.p95LatencyMs, 190);
+    // Constant consecutive step of 10 -> jitter is 10
+    assert.equal(stats.jitterMs, 10);
+  });
+
+  it("clears samples on resetSamples()", async () => {
+    let current = 50;
+    const provider = new NetworkLatencyProvider({
+      probe: () => {
+        current += 10;
+        return current;
+      },
+    });
+
+    await provider.read({ now: NOW, signal });
+    await provider.read({ now: NOW + 10, signal });
+    assert.equal(provider.getLatencyStats().sampleCount, 2);
+
+    provider.resetSamples();
+    assert.deepEqual(provider.getLatencyStats(), {
+      sampleCount: 0,
+      lastLatencyMs: null,
+      minLatencyMs: null,
+      maxLatencyMs: null,
+      jitterMs: null,
+      p95LatencyMs: null,
+    });
+
+    // Next read starts with 1 fresh sample
+    await provider.read({ now: NOW + 20, signal });
+    assert.equal(provider.getLatencyStats().sampleCount, 1);
+    assert.equal(provider.getLatencyStats().jitterMs, 0);
   });
 });
