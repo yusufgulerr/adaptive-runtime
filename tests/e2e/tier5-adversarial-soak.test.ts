@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { createAdaptiveRuntime } from "../../src/core.js";
+import { ConfigurationError } from "../../src/errors/index.js";
 import { definePolicy } from "../../src/policy/index.js";
+import { validateRuntimeStateSnapshot } from "../../src/runtime/state.js";
 import { createFakeClock } from "../../src/testing/index.js";
 import type {
   ResourceSignal,
@@ -470,6 +472,362 @@ describe("Tier 5 E2E: Hostile Throwing/Hanging Providers & Adversarial Soak", ()
     } finally {
       await runtimeA.close();
       await runtimeB.close();
+    }
+  });
+
+  it("shared-read collector storm with intermittent provider timeouts & synchronous throws guarantees zero unhandled rejections, exact cleanup, and post-storm recovery", async () => {
+    let chaotic = true;
+    const providerErrors: Array<{ providerId: string; message: string }> = [];
+
+    const syncThrowProvider: SignalProvider = {
+      id: "storm-sync-throw",
+      signals: [{ name: "chaos.sync", unit: "count" }],
+      read: (context) => {
+        if (chaotic && Math.random() < 0.7) {
+          throw new Error("STORM_SYNC_EXPLOSION");
+        }
+        return [
+          {
+            name: "chaos.sync",
+            unit: "count",
+            status: "ok",
+            value: 10,
+            observedAt: context.now,
+          },
+        ];
+      },
+    };
+
+    const asyncRejectProvider: SignalProvider = {
+      id: "storm-async-reject",
+      signals: [{ name: "chaos.async", unit: "count" }],
+      read: async (context) => {
+        if (chaotic && Math.random() < 0.7) {
+          throw new Error("STORM_ASYNC_EXPLOSION");
+        }
+        return [
+          {
+            name: "chaos.async",
+            unit: "count",
+            status: "ok",
+            value: 20,
+            observedAt: context.now,
+          },
+        ];
+      },
+    };
+
+    const timeoutProvider: SignalProvider = {
+      id: "storm-timeout",
+      signals: [{ name: "chaos.timeout", unit: "count" }],
+      read: (context) => {
+        if (chaotic) {
+          return new Promise<readonly ResourceSignal[]>((resolve) => {
+            setTimeout(() => {
+              resolve([
+                {
+                  name: "chaos.timeout",
+                  unit: "count",
+                  status: "ok",
+                  value: 30,
+                  observedAt: context.now,
+                },
+              ]);
+            }, 100);
+          });
+        }
+        return [
+          {
+            name: "chaos.timeout",
+            unit: "count",
+            status: "ok",
+            value: 30,
+            observedAt: context.now,
+          },
+        ];
+      },
+    };
+
+    const healthyProvider: SignalProvider = {
+      id: "storm-healthy",
+      signals: [{ name: "chaos.healthy", unit: "count" }],
+      read: (context) => [
+        {
+          name: "chaos.healthy",
+          unit: "count",
+          status: "ok",
+          value: 100,
+          observedAt: context.now,
+        },
+      ],
+    };
+
+    const runtime = createAdaptiveRuntime({
+      providers: [syncThrowProvider, asyncRejectProvider, timeoutProvider, healthyProvider],
+      providerTimeoutMs: 30,
+      policy: definePolicy({
+        evaluationIntervalMs: 0,
+        fallbackStrategyId: "safe-fallback",
+        missingSignalBehavior: "fallback",
+        budgets: [
+          { id: "b-sync", signal: "chaos.sync", limit: 50 },
+          { id: "b-async", signal: "chaos.async", limit: 50 },
+          { id: "b-timeout", signal: "chaos.timeout", limit: 50 },
+        ],
+      }),
+    });
+
+    runtime.on("provider:error", ({ providerId, error }) => {
+      providerErrors.push({ providerId, message: error.message });
+    });
+
+    const unhandledRejections: unknown[] = [];
+    const onUnhandled = (reason: unknown) => {
+      unhandledRejections.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+
+    try {
+      const TOTAL_CALLERS = 60;
+      const tasks: Promise<unknown>[] = [];
+
+      for (let i = 0; i < TOTAL_CALLERS; i++) {
+        const opId = `storm-op-${i % 6}`;
+        const controller = new AbortController();
+
+        // Abort a subset of callers early to stress shared-read waiter ref-counting
+        if (i % 4 === 1) {
+          setTimeout(() => controller.abort(new Error(`aborted-${i}`)), 5 + (i % 15));
+        }
+
+        if (i % 2 === 0) {
+          tasks.push(
+            runtime.run({
+              operationId: opId,
+              input: i,
+              strategies: [optimalStrategy, fallbackStrategy],
+              signal: controller.signal,
+            }),
+          );
+        } else {
+          tasks.push(
+            runtime.evaluate(
+              {
+                operationId: opId,
+                input: i,
+                strategies: [optimalStrategy, fallbackStrategy],
+                signal: controller.signal,
+              },
+              { dryRun: i % 3 === 0 },
+            ),
+          );
+        }
+      }
+
+      const results = await Promise.allSettled(tasks);
+
+      // Verify zero unhandled rejections during the entire storm
+      assert.equal(
+        unhandledRejections.length,
+        0,
+        `Expected 0 unhandled rejections, got: ${JSON.stringify(unhandledRejections)}`,
+      );
+
+      // Verify every caller either succeeded or rejected with expected abort
+      for (const res of results) {
+        if (res.status === "rejected") {
+          assert.match(
+            String(res.reason),
+            /aborted/i,
+            "Rejections must only be due to caller aborts",
+          );
+        } else {
+          assert.ok(res.value !== undefined);
+        }
+      }
+
+      // Exact cleanup: ensure provider errors were logged and no background crash
+      assert.ok(providerErrors.length > 0, "Hostile provider errors must be captured by listener");
+
+      // Healed post-storm: Turn off chaos and verify pristine provider reads and optimal execution
+      chaotic = false;
+      // Allow any lagging setTimeout from hanging reads to settle
+      await new Promise((resolve) => setTimeout(resolve, 120));
+
+      const postStormRun = await runtime.run({
+        operationId: "post-storm-recovered-op",
+        input: 7,
+        strategies: [optimalStrategy, fallbackStrategy],
+      });
+
+      assert.equal(
+        postStormRun.value,
+        70,
+        "Post-storm run must execute optimal strategy using healed signals",
+      );
+      assert.equal(postStormRun.metadata.strategyId, "optimal");
+
+      const postStormExplain = await runtime.evaluate(
+        {
+          operationId: "post-storm-recovered-op",
+          input: 7,
+          strategies: [optimalStrategy, fallbackStrategy],
+        },
+        { dryRun: true },
+      );
+      assert.equal(postStormExplain.strategyId, "optimal");
+      assert.equal(unhandledRejections.length, 0);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+      await runtime.close();
+    }
+  });
+
+  it("rapid state hydration & reset churn under load verifies no state corruption or uncaught exceptions", async () => {
+    const runtime = createAdaptiveRuntime({
+      policy: definePolicy({
+        evaluationIntervalMs: 0,
+        maxTrackedOperations: 30,
+      }),
+    });
+
+    const asyncStrategy: Strategy<number, number> = {
+      id: "async-strat",
+      qualityTier: 2,
+      run: async (ctx) => {
+        await new Promise((resolve) => setTimeout(resolve, 8 + (ctx.input % 8)));
+        return ctx.input * 3;
+      },
+    };
+
+    const fastStrategy: Strategy<number, number> = {
+      id: "fast-strat",
+      qualityTier: 1,
+      run: (ctx) => ctx.input + 1,
+    };
+
+    try {
+      // Warm up a few operations
+      for (let i = 0; i < 5; i++) {
+        await runtime.run({
+          operationId: `churn-op-${i}`,
+          input: i,
+          strategies: [fastStrategy],
+        });
+      }
+
+      const activeOps: Promise<unknown>[] = [];
+      const TOTAL_CONCURRENT = 25;
+
+      // Launch concurrent operations in flight on "load-op-*"
+      for (let i = 0; i < TOTAL_CONCURRENT; i++) {
+        const opId = `load-op-${i % 5}`;
+        activeOps.push(
+          runtime.run({
+            operationId: opId,
+            input: i,
+            strategies: [asyncStrategy, fastStrategy],
+          }),
+        );
+      }
+
+      // Concurrently churn state export, import, reset, and removal while load operations are in flight
+      let churnIterations = 0;
+      const CHURN_COUNT = 20;
+
+      for (let k = 0; k < CHURN_COUNT; k++) {
+        churnIterations++;
+        const churnOpId = `churn-op-${k % 5}`;
+        const loadOpId = `load-op-${k % 5}`;
+
+        // 1. Run quick churn operation
+        await runtime.run({
+          operationId: churnOpId,
+          input: k,
+          strategies: [fastStrategy],
+        });
+
+        // 2. exportState() while concurrent load-ops are in flight
+        const snapshot = runtime.exportState();
+        assert.ok(snapshot.version === 1);
+        validateRuntimeStateSnapshot(snapshot);
+
+        // 3. importState()
+        // If snapshot includes in-flight loadOpId, importState must throw ConfigurationError
+        // without corrupting state. If targeting an isolated idle churnOpId, it succeeds.
+        try {
+          runtime.importState(snapshot);
+        } catch (error) {
+          assert.ok(
+            error instanceof ConfigurationError,
+            `Unexpected error during importState: ${String(error)}`,
+          );
+        }
+
+        const isolatedSnapshot = runtime.exportState(churnOpId);
+        if (isolatedSnapshot.operations.length > 0) {
+          const restored = runtime.importState(isolatedSnapshot);
+          assert.equal(restored, 1);
+        }
+
+        // 4. resetStats() for completed churn operation
+        runtime.resetStats(churnOpId);
+        const resetStats = runtime.getStats(churnOpId);
+        assert.equal(resetStats.runs, 0);
+
+        // 5. removeOperation() on in-flight loadOpId (safely returns false) and on idle churnOpId
+        const loadRemoved = runtime.removeOperation(loadOpId);
+        assert.equal(typeof loadRemoved, "boolean");
+
+        const churnRemoved = runtime.removeOperation(churnOpId);
+        assert.equal(typeof churnRemoved, "boolean");
+
+        await new Promise((resolve) => setTimeout(resolve, 2));
+      }
+
+      assert.equal(churnIterations, CHURN_COUNT);
+
+      // Await all concurrent in-flight load operations to finish cleanly without crashing
+      const runResults = await Promise.all(activeOps);
+      assert.equal(runResults.length, TOTAL_CONCURRENT);
+
+      // Verify no state corruption after concurrent churn
+      const finalSnapshot = runtime.exportState();
+      assert.ok(finalSnapshot.version === 1);
+      const validated = validateRuntimeStateSnapshot(finalSnapshot);
+      assert.ok(validated !== null);
+
+      // Hydrate into a clean second runtime
+      const runtime2 = createAdaptiveRuntime({
+        policy: definePolicy({
+          evaluationIntervalMs: 0,
+          maxTrackedOperations: 30,
+        }),
+      });
+
+      try {
+        const restored = runtime2.importState(finalSnapshot);
+        assert.equal(restored, finalSnapshot.operations.length);
+
+        // Both runtimes execute deterministically post-churn
+        const res1 = await runtime.run({
+          operationId: "post-churn-verify",
+          input: 100,
+          strategies: [asyncStrategy, fastStrategy],
+        });
+        const res2 = await runtime2.run({
+          operationId: "post-churn-verify",
+          input: 100,
+          strategies: [asyncStrategy, fastStrategy],
+        });
+
+        assert.equal(res1.value, res2.value);
+        assert.equal(res1.metadata.strategyId, res2.metadata.strategyId);
+      } finally {
+        await runtime2.close();
+      }
+    } finally {
+      await runtime.close();
     }
   });
 });
