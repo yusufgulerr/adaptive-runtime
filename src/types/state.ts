@@ -27,6 +27,11 @@ export interface OperationStateSnapshot {
 }
 
 /**
+ * Type alias for an operation's serialized runtime state.
+ */
+export type SerializedOperationState = OperationRuntimeState;
+
+/**
  * Versioned state snapshot produced by `exportState()` and accepted by
  * `importState()`. Only JSON-compatible values are present.
  */
@@ -35,4 +40,36 @@ export interface RuntimeStateSnapshot {
   /** Clock value at which the snapshot was produced. */
   readonly exportedAt: number;
   readonly operations: readonly OperationStateSnapshot[];
+}
+
+/**
+ * Summary inspection view of a runtime state snapshot.
+ */
+export interface StateSnapshotInspection {
+  readonly version: 1;
+  readonly exportedAtMs: number;
+  readonly operationCount: number;
+  readonly operationIds: readonly string[];
+  readonly totalStrategyRecords: number;
+  readonly activeStrategiesByOperation: Readonly<Record<string, string | null>>;
+}
+
+/**
+ * Strategy transition details for an operation between two state snapshots.
+ */
+export interface OperationStateTransition {
+  readonly operationId: string;
+  readonly previousStrategyId: string | null;
+  readonly currentStrategyId: string | null;
+  readonly switchCountDelta: number;
+}
+
+/**
+ * Deterministic diff between two runtime state snapshots.
+ */
+export interface StateSnapshotDiff {
+  readonly addedOperations: readonly string[];
+  readonly removedOperations: readonly string[];
+  readonly strategyTransitions: readonly OperationStateTransition[];
+  readonly unchangedOperations: readonly string[];
 }
