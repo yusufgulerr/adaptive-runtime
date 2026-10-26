@@ -1,9 +1,10 @@
 # Roadmap
 
 This roadmap describes intent, not commitments or dates. Priorities may change
-with feedback and evidence. The 0.9.0 source line is implemented, verified, tagged,
-and released on GitHub, advancing the runtime to 1.0-RC readiness. Releases `v0.1.0`
-through `v0.9.0` are tagged and released on GitHub; npm publication is a separate
+with feedback and evidence. The 0.10.0 source line is implemented and verified
+locally; tagging, GitHub release, and npm publication require explicit owner
+approval. Releases `v0.1.0` and `v0.3.0` through `v0.9.0` are tagged and released
+on GitHub (0.2.0 was folded into 0.3.0); npm publication is a separate
 owner-approved workflow dispatch and remains pending.
 
 ## 0.1.0 — Foundation (delivered)
@@ -287,15 +288,47 @@ Delivered:
   - `runtime.waitForIdle()` for zero-drop graceful container shutdown (SIGTERM).
   - `runtime.importState(snapshot, { mode: "merge" })` for non-destructive additive state hydration.
 
+## 0.10.0 — Production Control Plane (implemented, release pending approval)
+
+Delivered:
+
+- **Adaptive concurrency limiter:**
+  - `createAdaptiveLimiter` with deterministic AIMD limits, EWMA latency pressure,
+    bounded FIFO queueing, acquire timeouts, abort-aware waiters, idempotent permits,
+    and `withPermit` measurement.
+  - `AdmissionRejectedError` (`ADMISSION_REJECTED`) distinguishes queue-full, timeout,
+    and closed rejections; snapshots and limit-change events are frozen.
+- **Deterministic percentage rollout:**
+  - `createPolicyRollout` and `computeRolloutBucket` map salted operation ids to stable
+    baseline/candidate cohorts with a 0–100 percentage and no shared state.
+- **Policy trace capture, replay, and diff:**
+  - `createPolicyTraceRecorder`, `capturePolicyTrace`, `replayPolicyTrace`,
+    `diffPolicyTraces`, `summarizePolicyTrace`, and `importPolicyTrace` under
+    `adaptive-runtime/testing`.
+  - Bounded, JSON-safe, deeply frozen traces; replay reports changed decision fields
+    and state divergence; import validates untrusted JSON.
+- **SLO and error-budget monitoring:**
+  - `createSloMonitor` evaluates availability, error rate, and mean latency over
+    bounded rolling windows with `met`, `at-risk`, `breached`, and `insufficient-data`
+    statuses.
+  - `attachSloMonitor` records runtime success/error events and returns an idempotent
+    unsubscribe function.
+- **Bounded signal window analytics:**
+  - `createSignalWindow` reports min/max/mean/population standard deviation,
+    interpolated quantiles, least-squares slope, trend, freshness, and explicit
+    unavailable counts without coercing unavailable readings to zero.
+- **Release integration:** ADR 0021, updated package export verification and
+  integration tests, and a frozen 13-error-code catalog.
+
 ## 1.0.0-RC & 1.0.0 — Stability and Release Candidate
 
-The 0.8.0 and 0.9.0 milestones achieve complete 1.0.0-RC technical and architectural readiness:
+The 0.8.0 through 0.10.0 milestones achieve complete 1.0.0-RC technical and architectural readiness:
 
-- [x] **Complete architectural coverage across 20 ADRs:** ADRs 0001 through 0020 document every architectural decision, lifecycle guarantee, and stability contract.
+- [x] **Complete architectural coverage across 21 ADRs:** ADRs 0001 through 0021 document every architectural decision, lifecycle guarantee, and stability contract.
 - [x] **Zero runtime dependencies, portable core, and platform-targeted subpaths:** Validated by automated repository scans and package export verification (`npm run verify:zero-deps`, `npm run verify:exports`).
 - [x] **Rigorous property-based fuzzing and multi-platform CI verification:** Enforced across Node 22, 24, and 26 on Linux, macOS, and Windows.
 - [x] **Published 0.x line stability:** 0.5.0, 0.6.0, and 0.7.0 delivered stable minor cycles without breaking changes.
-- [x] **Frozen public type and error-code compatibility policy:** Frozen 12-error-code catalog formalized in [DEPRECATION_AND_STABILITY.md](DEPRECATION_AND_STABILITY.md).
+- [x] **Frozen public type and error-code compatibility policy:** Frozen 13-error-code catalog formalized in [DEPRECATION_AND_STABILITY.md](DEPRECATION_AND_STABILITY.md).
 - [x] **Documented deprecation policy:** Standardized 2-minor-cycle deprecation policy formalized in [DEPRECATION_AND_STABILITY.md](DEPRECATION_AND_STABILITY.md).
 - [x] **Security review of provider and event surfaces:** Strict reading validation, bounded quality detail lengths, and frozen data snapshots.
 - [x] **Load, concurrency, and soak telemetry:** Automated machine-readable JSON telemetry for runtime overhead and concurrency benchmarks with regression comparison tooling (`scripts/compare-benchmarks.mjs`).

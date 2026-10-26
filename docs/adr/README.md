@@ -20,6 +20,7 @@
 - [0018 — Selector composition, runtime introspection, and simulation fidelity](0018-selector-composition-and-simulation-fidelity.md)
 - [0019 — Concurrency benchmarks, resilient selector pipeline, and runtime state lifecycle](0019-concurrency-benchmarks-and-resilient-selector-pipeline.md)
 - [0020 — Utility selectors, cooperative drain, and provider circuit breakers](0020-utility-selectors-cooperative-drain-and-provider-circuit-breakers.md)
+- [0021 — Production control plane: admission, rollout, traces, SLOs, and signal windows](0021-production-control-plane.md)
 
 ## Decision map
 
@@ -46,6 +47,7 @@ duplicating records:
 | Shadow evaluation, state hydration, telemetry parity, provider expansion | [0016](0016-shadow-evaluation-state-hydration-and-provider-expansion.md) |
 | Runtime introspection, bounded quality details, composable policy selectors | [0017](0017-runtime-introspection-and-composable-selectors.md) |
 | Selector composition, runtime introspection, simulation fidelity | [0018](0018-selector-composition-and-simulation-fidelity.md) |
+| Admission control, rollout, traces, SLOs, signal windows | [0021](0021-production-control-plane.md) |
 
 New decisions use the same structure: status, date, context, decision,
 consequences, alternatives, and follow-up. A decision that changes public

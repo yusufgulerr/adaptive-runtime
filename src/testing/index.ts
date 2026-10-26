@@ -17,6 +17,25 @@ export class InvalidConfigurationError extends ConfigurationError {
   }
 }
 
+export {
+  capturePolicyTrace,
+  createPolicyTraceRecorder,
+  diffPolicyTraces,
+  importPolicyTrace,
+  type PolicyTrace,
+  type PolicyTraceDiff,
+  type PolicyTraceDivergence,
+  type PolicyTraceEntry,
+  type PolicyTraceRecorder,
+  type PolicyTraceRecorderOptions,
+  type PolicyTraceReplayDivergence,
+  type PolicyTraceReplayReport,
+  type PolicyTraceSummary,
+  type RecordPolicyTraceEntryInput,
+  replayPolicyTrace,
+  summarizePolicyTrace,
+} from "./trace.js";
+
 import { resolvePolicy } from "../policy/resolve.js";
 import type { Clock, ClockTimer } from "../types/clock.js";
 import type { DecisionReason, StrategyDecision } from "../types/decision.js";

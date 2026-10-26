@@ -1,6 +1,6 @@
 # Cookbook
 
-> **Status:** Adaptive Runtime 0.9.0 is the current development line (1.0-RC preparation).
+> **Status:** Adaptive Runtime 0.10.0 is the current development line (1.0-RC preparation).
 > The GitHub release is tag-driven; npm publication is a separate owner-approved OIDC
 > workflow dispatch and is pending.
 > These patterns target the API in [API.md](API.md) and run against a local

@@ -60,8 +60,30 @@ async function main() {
       `Version mismatch: package.json=${packageVersion}, CITATION.cff=${citationVersion}.`,
     );
   }
-  if (!/^date-released:\s*["']?2026-10-(?:24|25)["']?/m.test(citation)) {
-    throw new Error("CITATION.cff is missing or has incorrect date-released field.");
+  const releaseDateMatch = citation.match(/^date-released:\s*["']?(\d{4}-\d{2}-\d{2})["']?\s*$/m);
+  if (!releaseDateMatch) {
+    throw new Error("CITATION.cff is missing or has an invalid date-released field.");
+  }
+  const releaseDate = releaseDateMatch[1];
+  const parsedReleaseDate = new Date(`${releaseDate}T00:00:00.000Z`);
+  if (
+    Number.isNaN(parsedReleaseDate.getTime()) ||
+    parsedReleaseDate.toISOString().slice(0, 10) !== releaseDate
+  ) {
+    throw new Error(`CITATION.cff date-released "${releaseDate}" is not a valid calendar date.`);
+  }
+
+  const escapedVersion = packageVersion.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const changelogDateMatch = changelog.match(
+    new RegExp(`^## \\[${escapedVersion}\\]\\s*[—–-]\\s*(\\d{4}-\\d{2}-\\d{2})`, "m"),
+  );
+  if (!changelogDateMatch) {
+    throw new Error(`CHANGELOG.md has no dated "## [${packageVersion}]" section.`);
+  }
+  if (changelogDateMatch[1] !== releaseDate) {
+    throw new Error(
+      `Release date mismatch: CHANGELOG.md=${changelogDateMatch[1]}, CITATION.cff=${releaseDate}.`,
+    );
   }
 
   console.log(

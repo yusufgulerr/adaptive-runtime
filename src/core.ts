@@ -21,7 +21,28 @@ export {
   StrategyApplicabilityError,
   StrategyExecutionError,
 } from "./errors/index.js";
+export {
+  attachSloMonitor,
+  createSloMonitor,
+  type SloMetric,
+  type SloMonitor,
+  type SloMonitorOptions,
+  type SloMonitorSnapshot,
+  type SloObjective,
+  type SloObjectiveSnapshot,
+  type SloObservation,
+  type SloStatus,
+} from "./observability/slo.js";
 export { definePolicy } from "./policy/define-policy.js";
+export {
+  computeRolloutBucket,
+  createPolicyRollout,
+  type PolicyCohort,
+  type PolicyRollout,
+  type PolicyRolloutAssignment,
+  type PolicyRolloutOptions,
+  type PolicyRolloutSnapshot,
+} from "./policy/rollout.js";
 export {
   type CostBudgetSelectorOptions,
   composeSelectors,
@@ -54,6 +75,17 @@ export {
   type NetworkLatencyStats,
   type NetworkProbeContext,
 } from "./providers/network-latency.js";
+export {
+  type AcquirePermitOptions,
+  type AdaptiveLimiter,
+  type AdaptiveLimiterOptions,
+  type AdaptiveLimiterPermit,
+  type AdaptiveLimiterSnapshot,
+  AdmissionRejectedError,
+  createAdaptiveLimiter,
+  type LimiterLimitChangeEvent,
+  type LimiterOutcome,
+} from "./runtime/admission.js";
 export { createAdaptiveRuntime } from "./runtime/runtime.js";
 export {
   diffStateSnapshots,
@@ -63,6 +95,13 @@ export {
   validateStateSnapshot,
 } from "./runtime/state.js";
 export type { ProviderHealthStatus } from "./signals/collector.js";
+export {
+  createSignalWindow,
+  type SignalTrend,
+  type SignalWindow,
+  type SignalWindowOptions,
+  type SignalWindowSummary,
+} from "./signals/window.js";
 export type { Clock, ClockTimer } from "./types/clock.js";
 export type {
   BudgetView,

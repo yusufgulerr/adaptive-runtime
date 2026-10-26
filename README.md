@@ -25,20 +25,26 @@ strategies with declared quality and cost tiers. The runtime reads the signals
 you supply, applies a deterministic policy, and runs exactly one strategy with
 inspectable metadata explaining the choice.
 
-> **Status: v0.9.0 (1.0-RC preparation).** The public repository is live and the
-> v0.9.0 tree passes CI on Node.js 22, 24, and 26, plus CodeQL and OpenSSF
-> Scorecard on `main`. The release keeps the verified multi-runtime core for
-> Node.js, browsers, and WinterCG edge runtimes with **zero runtime dependencies**
-> and a fully typed ESM surface. v0.9.0 delivers multi-objective weighted utility selection
-> (`createWeightedUtilitySelector`), signal-slope trend guard selection (`createSignalTrendGuardSelector`),
-> cooperative graceful draining (`waitForIdle`), runtime and per-provider circuit breaker health
-> diagnostics (`getRuntimeHealth`, `circuitBreaker`), state snapshot merge hydration (`importState({ mode: 'merge' })`),
-> structured JSON metrics export (`toStructuredMetrics`, `toMetricsJson`) with metric cardinality
-> safety guards and simulator (`simulateMetricsCardinality`), Node.js provider EWMA smoothing,
-> heap headroom, and network jitter statistics, and offline policy timeline divergence comparison
-> (`comparePolicyTimelines`). The public API follows semantic versioning; GitHub releases are
-> tag-driven; npm publication is a separate owner-approved OIDC/provenance dispatch.
-> See [Architectural boundaries](#architectural-boundaries-and-operational-notes).
+> **Status: v0.10.0 (1.0-RC preparation).** The public repository is live, with CI
+> configured for Node.js 22, 24, and 26, plus CodeQL and OpenSSF Scorecard on
+> `main`. The v0.10.0 tree is verified locally; tagging, GitHub release, and npm
+> publication require explicit owner approval. The package keeps the verified
+> multi-runtime core for Node.js, browsers, and WinterCG edge runtimes with
+> **zero runtime dependencies** and a fully typed ESM surface. v0.10.0 adds
+> adaptive admission control (`createAdaptiveLimiter`), deterministic percentage
+> rollout (`createPolicyRollout`), policy trace capture/replay/diff
+> (`adaptive-runtime/testing`), SLO and error-budget monitoring (`createSloMonitor`,
+> `attachSloMonitor`), and bounded signal window analytics (`createSignalWindow`),
+> building on v0.9.0's multi-objective weighted utility selection, signal-slope
+> trend guards, cooperative draining (`waitForIdle`), runtime and per-provider
+> circuit-breaker diagnostics (`getRuntimeHealth`), state merge hydration
+> (`importState({ mode: 'merge' })`), structured JSON metrics with cardinality
+> safety, Node.js provider EWMA smoothing, heap headroom, network jitter
+> statistics, and offline policy timeline comparison (`comparePolicyTimelines`).
+> The public API is versioned; strict Semantic Versioning guarantees begin at
+> 1.0. GitHub releases are tag-driven; npm publication is a separate
+> owner-approved OIDC/provenance dispatch. See
+> [Architectural boundaries](#architectural-boundaries-and-operational-notes).
 
 ## Why
 
@@ -353,14 +359,14 @@ import { createFakeClock, ScriptedSignalProvider, simulatePolicyTimeline } from 
 | Subpath | Contents | Portable? |
 | --- | --- | --- |
 | `adaptive-runtime` | Core plus Node.js providers | No (Node.js) |
-| `adaptive-runtime/core` | Runtime, errors, types, policy helper, network latency, composite signals | Yes |
+| `adaptive-runtime/core` | Runtime, admission limiter, errors, types, policy helper, rollout, signal window, SLO monitor, network latency, composite signals | Yes |
 | `adaptive-runtime/node` | Core plus process, CPU, and event-loop providers | No (Node.js) |
 | `adaptive-runtime/web` | Core plus browser providers | Yes |
 | `adaptive-runtime/edge` | Core plus execution-budget provider | Yes |
-| `adaptive-runtime/policy` | Pure policy types, resolution, evaluation, and `definePolicy` | Yes |
+| `adaptive-runtime/policy` | Pure policy types, resolution, evaluation, rollout, and `definePolicy` | Yes |
 | `adaptive-runtime/providers` | Every built-in provider, including Node.js | No (mixed) |
-| `adaptive-runtime/observability` | In-memory metrics collector, Prometheus text, OpenTelemetry meter bridge | Yes |
-| `adaptive-runtime/testing` | Fake clock, scripted provider, conformance runner, policy timeline simulator | Yes |
+| `adaptive-runtime/observability` | In-memory metrics collector, Prometheus text, OpenTelemetry meter bridge, SLO monitor | Yes |
+| `adaptive-runtime/testing` | Fake clock, scripted provider, conformance runner, policy timeline simulator, policy traces | Yes |
 | `adaptive-runtime/package.json` | Package metadata | n/a |
 
 The `/core`, `/web`, `/edge`, `/policy`, `/observability`, and `/testing`
@@ -436,16 +442,16 @@ import {
 } from "adaptive-runtime";
 
 const utilitySelector = createWeightedUtilitySelector({
-  objectives: [
-    { name: "quality", weight: 0.6, value: ({ candidate }) => candidate.qualityTier },
-    { name: "economy", weight: 0.4, value: ({ candidate }) => 1 / (candidate.costTier ?? 1) },
-  ],
+  qualityWeight: 0.6,
+  latencyWeight: 0.3,
+  costWeight: 0.1,
+  useEwma: true,
 });
 
 const trendGuard = createSignalTrendGuardSelector({
   signalName: "net.latency",
-  slopeThreshold: 25.0, // ms per second degradation slope
-  degradeStrategyId: "fast-fallback",
+  maxSlopePerSec: 25.0, // ms per second degradation slope
+  degradedQualityCap: 1,
 });
 
 const selector = composeSelectors([trendGuard, utilitySelector]);
@@ -470,6 +476,47 @@ if (!health.healthy) {
 }
 
 await runtime.close();
+```
+
+### Admission control, rollout, SLOs, and decision traces
+
+Protect downstream dependencies, roll out policies deterministically, and keep
+production evidence:
+
+```ts
+import {
+  createAdaptiveLimiter,
+  createPolicyRollout,
+  createSignalWindow,
+  createSloMonitor,
+  attachSloMonitor,
+} from "adaptive-runtime";
+import { capturePolicyTrace, replayPolicyTrace } from "adaptive-runtime/testing";
+
+const limiter = createAdaptiveLimiter({ initialLimit: 8, maxQueueSize: 32 });
+await limiter.withPermit(() => callDownstream());
+
+const rollout = createPolicyRollout({
+  baselinePolicy: baseline,
+  candidatePolicy: candidate,
+  percentage: 10,
+  salt: "release-0.10",
+});
+const activePolicy = rollout.assign("checkout").policy;
+
+const slo = createSloMonitor({
+  objectives: [{ id: "availability", metric: "availability", target: 0.99 }],
+});
+const detachSlo = attachSloMonitor(runtime, slo);
+
+const latency = createSignalWindow({ capacity: 100, staleAfterMs: 30_000 });
+latency.push(reading);
+
+const trace = capturePolicyTrace({ strategies, steps });
+const replay = replayPolicyTrace(trace);
+// replay.deterministic, replay.divergences
+detachSlo();
+limiter.close();
 ```
 
 The full type and error reference is in [docs/API.md](docs/API.md). Design

@@ -1,13 +1,15 @@
-# Project: Adaptive Runtime — Phase 6 (v0.7.0, 1.0-RC preparation)
+# Project: Adaptive Runtime — Phase 7 (v0.10.0, 1.0-RC preparation)
 
 ## Architecture
 
 Adaptive Runtime is a deterministic, resource-aware execution runtime for
 Node.js `>=22`, modern browsers, and WinterCG-compatible edge runtimes. The
-0.7.0 line delivers composable policy selectors, non-disturbing runtime
-introspection, exact state hydration without floating-point drift, coalesced
-in-flight signal reads, configurable quality check bounds, and high-fidelity
-timeline simulation, establishing the technical baseline for 1.0.0-RC.
+0.10.0 line adds a production control plane: adaptive admission control,
+deterministic policy rollout, decision trace capture/replay, SLO/error-budget
+monitoring, and bounded signal window analytics. These build on the 0.7.0
+selector and introspection work, the 0.8.0 state and resilience work, and the
+0.9.0 utility-selector, drain, and circuit-breaker work, establishing the
+technical baseline for 1.0.0-RC.
 
 Core principles:
 
@@ -40,17 +42,17 @@ Core principles:
 | Subpath | Contents | Portable? |
 | --- | --- | --- |
 | `adaptive-runtime` | Core plus Node.js providers | No (Node.js) |
-| `adaptive-runtime/core` | Runtime, errors, types, policy helper, network latency, composite signals | Yes |
+| `adaptive-runtime/core` | Runtime, admission limiter, errors, types, policy helper, rollout, signal window, SLO monitor, network latency, composite signals | Yes |
 | `adaptive-runtime/node` | Core plus process, CPU, event-loop delay, and event-loop utilization providers | No (Node.js) |
 | `adaptive-runtime/web` | Core plus device-memory, network-information, frame-timing, and compute-pressure providers | Yes |
 | `adaptive-runtime/edge` | Core plus execution-budget provider | Yes |
-| `adaptive-runtime/policy` | Pure policy types, resolution, evaluation, and `definePolicy` | Yes |
+| `adaptive-runtime/policy` | Pure policy types, resolution, evaluation, rollout, and `definePolicy` | Yes |
 | `adaptive-runtime/providers` | Every built-in provider, including Node.js | No (mixed) |
-| `adaptive-runtime/observability` | Metrics collector, Prometheus text, OpenTelemetry meter bridge | Yes |
-| `adaptive-runtime/testing` | Fake clock, scripted provider, conformance runner, policy timeline simulator | Yes |
+| `adaptive-runtime/observability` | Metrics collector, Prometheus text, OpenTelemetry meter bridge, SLO monitor | Yes |
+| `adaptive-runtime/testing` | Fake clock, scripted provider, conformance runner, policy timeline simulator, policy traces | Yes |
 | `adaptive-runtime/package.json` | Package metadata | n/a |
 
-## Feature Inventory (v0.5.0 / 0.6.0 / 0.7.0)
+## Feature Inventory (v0.8.0 / 0.9.0 / 0.10.0)
 
 | # | Feature | Description | Contract |
 | --- | --- | --- | --- |
@@ -80,6 +82,11 @@ Core principles:
 | 24 | Exact stats hydration | Bit-exact `totalDurationMs` persistence across export/import cycles | ADR 0018 |
 | 25 | Coalesced shared reads | Distinct `coalesced` vs `cached` snapshot semantics for in-flight joiners | ADR 0005, 0018 |
 | 26 | High-fidelity simulation | `estimatedLatencyMs`, `ewmaLatencyMs`, and `errorRate` on `SimulatedStrategy` | ADR 0018 |
+| 27 | Adaptive concurrency limiter | AIMD admission, bounded FIFO queue, EWMA latency pressure, timeouts, abort-aware waiters, frozen snapshots | ADR 0021 |
+| 28 | Deterministic policy rollout | Salted FNV-1a cohort assignment across replicas without shared state | ADR 0021 |
+| 29 | Policy trace capture/replay | Bounded JSON-safe traces, deterministic replay, diff, summary, and validated import | ADR 0021 |
+| 30 | SLO and error-budget monitor | Bounded rolling availability, error-rate, and latency objectives with `met`/`at-risk`/`breached` statuses | ADR 0021 |
+| 31 | Signal window analytics | Rolling statistics, quantiles, regression slope/trend, freshness, and explicit unavailable counts | ADR 0021 |
 
 ## Milestones
 
@@ -96,6 +103,9 @@ Core principles:
 | M9 | 0.5.0 shadow evaluation and state hydration | `evaluate`, `exportState`/`importState`, latency/error stats, provider expansion, timeline simulator | DONE (released) |
 | M10 | 0.6.0 hardening | Bounded OTel delta maps, provider branch coverage, post-close conformance, dist benchmark verification, documentation synchronization | DONE |
 | M11 | 0.7.0 Wave 1 & 2 integration | Composable selectors, introspection, exact stats, coalesced reads, simulator fidelity, ADR 0018, v0.7.0 release prep | DONE |
+| M12 | 0.8.0 integration | Cost/safe selectors, state inspection, in-flight queries, web/edge/composite hardening, ADR 0019, v0.8.0 release prep | DONE (released) |
+| M13 | 0.9.0 integration | Utility/trend selectors, structured metrics, provider circuit breakers, cooperative drain, state merge, ADR 0020, v0.9.0 release prep | DONE (released) |
+| M14 | 0.10.0 production control plane | Admission limiter, policy rollout, policy traces, SLO monitor, signal windows, ADR 0021, v0.10.0 release prep | DONE (release pending approval) |
 
 ## Interface Contracts
 
@@ -150,6 +160,44 @@ Core principles:
 - `ScriptedSignalProvider({ script, repeatLast? })`
 - `runProviderConformanceCheck(provider, { now?, signal?, checkPostClose? })`
 - `simulatePolicyTimeline({ operationId?, policy?, strategies, initialState?, steps })`
+- `createPolicyTraceRecorder`, `capturePolicyTrace`, `replayPolicyTrace`,
+  `diffPolicyTraces`, `summarizePolicyTrace`, and `importPolicyTrace`
+
+### Admission control
+
+- `createAdaptiveLimiter(options?)` is deterministic under an injected clock.
+- `acquire` waits in a bounded FIFO queue; `tryAcquire` never waits.
+- Limits move by AIMD: success streaks increase; failures and EWMA latency
+  pressure decrease. Limits stay within `minLimit..maxLimit`.
+- `AdmissionRejectedError.reason` is `queue-full`, `timeout`, or `closed`.
+- Permits release once; `withPermit` measures and releases automatically.
+- `close()` rejects queued waiters and leaves in-flight permits releasable.
+
+### Policy rollout
+
+- `createPolicyRollout({ baselinePolicy, candidatePolicy, percentage, salt? })`
+  keeps no per-operation state.
+- `computeRolloutBucket(operationId, salt?)` is FNV-1a 32-bit modulo 10,000.
+- `0` percent is baseline and `100` percent is candidate; every id is stable
+  across calls, processes, and replicas.
+- Assignments and snapshots are frozen; policy references are preserved.
+
+### SLO monitoring
+
+- `createSloMonitor({ objectives })` supports `availability`, `error-rate`, and
+  `latency` metrics over bounded rolling windows.
+- Statuses are `met`, `at-risk`, `breached`, and `insufficient-data`.
+- `attachSloMonitor(runtime, monitor)` records runtime events and returns an
+  idempotent unsubscribe function.
+- Snapshots are frozen in configuration order; `reset()` keeps configuration.
+
+### Signal windows
+
+- `createSignalWindow({ capacity?, quantiles?, staleAfterMs?, trendThresholdPerMs? })`
+  retains the newest readings and evicts FIFO.
+- Unavailable readings are counted but never enter value statistics or become `0`.
+- Summaries include min/max/mean/stdDev, interpolated quantiles, latest/age,
+  least-squares slope, trend, and staleness.
 
 ## Code Layout
 
@@ -157,17 +205,19 @@ Core principles:
 src/
   core.ts, node.ts, web.ts, edge.ts, index.ts
   errors/
-  policy/          budgets, candidates, define-policy, engine, resolve, stability
+  policy/          budgets, candidates, define-policy, engine, resolve, rollout,
+                   stability
   providers/       composite, cpu-utilization, event-loop-delay,
                    event-loop-utilization, network-latency, process-memory
     web/           compute-pressure, device-memory, frame-timing, network-info
     edge/          execution-budget
-  runtime/         clock, emitter, executor, runtime, state, stats, validate
-  signals/         collector
+  runtime/         admission, clock, emitter, executor, runtime, state, stats,
+                   validate
+  signals/         collector, window
   types/           clock, decision, events, policy, run, runtime, signals,
                    state, strategy
-  observability/   metrics collector and OpenTelemetry bridge
-  testing/         fake clock, scripted provider, conformance, timeline
+  observability/   metrics collector, OpenTelemetry bridge, SLO monitor
+  testing/         fake clock, scripted provider, conformance, timeline, trace
   utils/           error helpers
 tests/
   unit/            runtime, policy, providers, observability, testing SDK
@@ -188,17 +238,19 @@ docs/              API, architecture, providers, observability, benchmarks,
   `verify:exports`, `verify:zero-deps`, `check:links`, examples, and both
   benchmarks.
 - Node.js test suite (unit, integration, property, and E2E) passes with zero
-  failures and zero skipped tests (507 tests across 77 suites).
-- Global coverage on 2026-10-24 (Node 24.15.0): 99.00% lines, 96.28% branches,
-  99.05% functions; every `src/**` file remains above 91% branch coverage (well above 80% gate).
+  failures and zero skipped tests (850 tests across 139 suites).
+- Global coverage on 2026-10-26 (Node 24.15.0): 99.20% lines, 94.95% branches,
+  99.37% functions; every `src/**` file remains above the 80% branch gate, with
+  the lowest at 83.98% (`testing/trace.ts`).
 - `npm run build` and `npm run verify:exports` verify all ten export entries,
-  27 built files, and 36 runtime symbols.
+  27 built files, and 84 runtime symbols.
 - The benchmark JSON schema is validated against the TypeScript source and,
   after a build, the compiled `dist/index.js` (`config.entrypoint` distinguishes
   them).
-- The `v0.5.0` tag and GitHub release are published; npm publication is a
-  separate owner-approved dispatch and has not been performed. The 0.7.0
-  release line integrates Wave 1 and Wave 2 in preparation for 1.0-RC.
+- The `v0.5.0` through `v0.9.0` tags and GitHub releases are published; npm
+  publication is a separate owner-approved dispatch and has not been performed.
+  The 0.10.0 release line is prepared and locally verified, with tagging, GitHub
+  release, and npm publication pending explicit owner approval.
 - Remote CI/CodeQL/Scorecard status and release evidence are recorded in
   [docs/VERIFICATION.md](docs/VERIFICATION.md). Release steps are in
   [docs/RELEASING.md](docs/RELEASING.md).

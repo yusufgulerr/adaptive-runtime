@@ -70,7 +70,7 @@ still rejected by `createAdaptiveRuntime()`. The helper exists for editor
 completion and literal-type inference; a plain object works everywhere it does.
 The emitted declaration uses a TypeScript 5.0 `const` type parameter, so the
 package requires TypeScript `>=5.0` for declarations (the project is developed
-with TypeScript 5.9).
+with TypeScript 7.0).
 
 ## `createErrorRateGuardSelector(options)`
 
@@ -188,6 +188,33 @@ const trendGuard = createSignalTrendGuardSelector({
 - Computes linear regression slope over observed signal values across the sliding window.
 - When the observed slope exceeds `maxSlopePerSec`, restricts candidate selection to `degradedQualityCap` or selects the lowest-latency/lowest-cost resilient strategy.
 - Exposes a `.reset()` method on the returned selector (`SignalTrendGuardSelector`) to clear accumulated window history.
+
+## `createPolicyRollout(options)`
+
+Creates a deterministic percentage rollout across a fleet without shared state:
+
+```ts
+const rollout = createPolicyRollout({
+  baselinePolicy: { evaluationIntervalMs: 0 },
+  candidatePolicy: { evaluationIntervalMs: 0, consecutiveSamples: 2 },
+  percentage: 10,          // 0..100 inclusive
+  salt: "release-0.10",    // default "adaptive-runtime"
+});
+
+rollout.assign("checkout");              // { operationId, cohort, bucket, policy }
+rollout.getCohort("checkout");           // "baseline" | "candidate"
+rollout.isCandidate("checkout");         // boolean
+rollout.getSnapshot();                   // frozen configuration snapshot
+computeRolloutBucket("checkout", "release-0.10"); // integer 0..9999
+```
+
+- The bucket is FNV-1a 32-bit over `${salt}\u0000${operationId}`, reduced modulo
+  10,000. The candidate cohort is selected when `bucket < Math.round(percentage * 100)`.
+- The same operation id and salt always map to the same cohort on every replica and
+  process restart. `0` is always baseline and `100` is always candidate.
+- The module keeps no per-operation state. Assignments and snapshots are frozen;
+  configured policy references are preserved, not cloned.
+- Changing the salt or operation id deliberately reshuffles cohort assignment.
 
 ## `composeSelectors(selectors)`
 
@@ -553,6 +580,51 @@ pending read may remain pending or fail depending on provider shutdown. Abort
 callers or await runs before closing. A provider's `close()` failure is emitted
 as `provider:error` and does not reject `close()`.
 
+## `createAdaptiveLimiter(options?)`
+
+Creates a deterministic AIMD admission limiter for downstream work:
+
+```ts
+const limiter = createAdaptiveLimiter({
+  initialLimit: 8,          // default 8
+  minLimit: 1,              // default 1
+  maxLimit: 64,             // default 64
+  maxQueueSize: 32,         // default 0 (no queueing)
+  acquireTimeoutMs: 250,    // default 0 (disabled)
+  increaseStep: 1,          // default 1
+  decreaseFactor: 0.8,      // default 0.8
+  increaseEvery: 10,        // default 10 successful outcomes
+  latencyAlpha: 0.2,        // default 0.2
+  targetLatencyMs: 50,      // optional latency pressure target
+  latencyThresholdRatio: 1.5, // default 1.5
+});
+
+const permit = await limiter.acquire({ timeoutMs: 100, signal, label: "db-query" });
+try {
+  await runQuery();
+  permit.release({ succeeded: true, latencyMs: 12 });
+} catch (error) {
+  permit.release({ succeeded: false, latencyMs: 12 });
+  throw error;
+}
+
+await limiter.withPermit(() => runQuery()); // measures and releases automatically
+```
+
+- `acquire()` queues FIFO when the limit is reached; `tryAcquire()` returns `null`
+  immediately instead of queueing. `observe()` feeds AIMD without holding a permit;
+  if feedback raises the limit, queued waiters are admitted immediately.
+- Per-call `timeoutMs` overrides `acquireTimeoutMs`; `0` disables the timeout. An
+  aborted signal rejects with `OperationAbortedError`.
+- Queue-full, timeout, and closed rejections throw `AdmissionRejectedError` with
+  `code: "ADMISSION_REJECTED"` and `reason: "queue-full" | "timeout" | "closed"`.
+- Successes build a streak and increase the limit after `increaseEvery`; failures and
+  EWMA latency above `targetLatencyMs * latencyThresholdRatio` decrease it
+  multiplicatively. Limits are clamped to `minLimit..maxLimit`.
+- Permits are releasable once; a second `release()` is a no-op. `released` is live.
+- `close()` is idempotent, rejects queued waiters, and leaves in-flight permits
+  releasable. Snapshots and limit-change events are frozen.
+
 ## `Operation<TInput, TOutput>`
 
 ```ts
@@ -832,6 +904,39 @@ readings, never as zero. Provider errors and timeouts do not reject the run;
 they become readings and follow `missingSignalBehavior`. A provider timeout
 aborts that provider's read signal; full cancellation of the shared read also
 aborts it.
+
+### `createSignalWindow(options?)`
+
+Creates bounded rolling analytics for one signal stream:
+
+```ts
+const window = createSignalWindow({
+  capacity: 100,                       // default 100
+  quantiles: [0.5, 0.95, 0.99],        // each 0 < q < 1
+  staleAfterMs: 30_000,                // optional
+  trendThresholdPerMs: 0,              // default 0
+});
+
+window.push(reading);                  // ResourceSignal, including unavailable statuses
+const summary = window.summary(Date.now());
+// { count, okCount, unavailableCount, min, max, mean, stdDev,
+//   quantiles: { "0.5": ..., "0.95": ..., "0.99": ... },
+//   latest, latestAt, ageMs, slopePerMs, trend, stale }
+```
+
+- The window keeps the newest `capacity` readings and evicts FIFO. `clear()` resets
+  counts; `size()` reports retained readings.
+- Value statistics include only `status: "ok"` readings. Unavailable readings are
+  counted explicitly and never coerced to `0`.
+- Quantiles use linear interpolation between closest ranks over ascending values.
+- `slopePerMs` is ordinary least squares of `ok` values against `observedAt`.
+  Fewer than two `ok` samples or fewer than two distinct timestamps yields `null`
+  and `trend: "insufficient-data"`. Otherwise `trend` compares `|slope|` with
+  `trendThresholdPerMs`.
+- `summary(now?)` reports `ageMs` from the newest `ok` reading. Omitting `now`
+  reports `ageMs: 0` and `stale: false`; an explicit `now` sets
+  `stale = staleAfterMs !== undefined && ageMs > staleAfterMs`.
+- Invalid push input throws `ConfigurationError`. Summaries are frozen.
 
 ### Built-in providers
 
@@ -1176,13 +1281,14 @@ listener's responsibility.
 ## Errors
 
 All errors extend `AdaptiveRuntimeError`, which has a stable `code` string and
-supports the standard `cause` option. The 12 error codes below form the **Frozen
-12-Error-Code Catalog** guaranteed stable across 1.x releases; see
+supports the standard `cause` option. The 13 error codes below form the **Frozen
+13-Error-Code Catalog** guaranteed stable across 1.x releases; see
 [DEPRECATION_AND_STABILITY.md](DEPRECATION_AND_STABILITY.md) for stability guarantees.
 
 | Class | `code` | Extra fields |
 | --- | --- | --- |
 | `ConfigurationError` | `CONFIGURATION_ERROR` | — |
+| `AdmissionRejectedError` | `ADMISSION_REJECTED` | `reason: "queue-full" \| "timeout" \| "closed"` |
 | `RuntimeClosedError` | `RUNTIME_CLOSED` | — |
 | `NoEligibleStrategyError` | `NO_ELIGIBLE_STRATEGY` | `operationId`, `minQualityTier` |
 | `PinnedStrategyError` | `PINNED_STRATEGY_UNAVAILABLE` | `operationId`, `strategyId`, `reason` |
@@ -1284,6 +1390,41 @@ series state changes. Series keys encode label text unambiguously, so commas,
 equals signs, or quotes in label keys and values cannot merge distinct series.
 `reset()` clears family registrations along with the series. See
 [OBSERVABILITY.md](OBSERVABILITY.md) for the metric name table and examples.
+
+### SLO and error-budget monitoring
+
+```ts
+const monitor = createSloMonitor({
+  objectives: [
+    { id: "availability", metric: "availability", target: 0.99, minSamples: 100 },
+    { id: "error-rate", metric: "error-rate", target: 0.01, warningMargin: 0.2 },
+    { id: "latency", metric: "latency", target: 250, operationId: "search" },
+  ],
+});
+
+const detach = attachSloMonitor(runtime, monitor);
+monitor.record({ durationMs: 42, succeeded: true, operationId: "search" });
+const snapshot = monitor.getSnapshot();
+// { objectives: [{ id, metric, target, sampleCount, value, status }],
+//   observationCount, healthy }
+detach();
+```
+
+- `availability` is successes / samples and is met when `value >= target`.
+  `error-rate` is failures / samples and is met when `value <= target`.
+  `latency` is the arithmetic mean duration and is met when `value <= target`.
+- `warningMargin` defines the at-risk band. For at-most metrics,
+  `at-risk` means `value > target && value <= target * (1 + margin)`. For
+  availability, it means `value < target && value >= target * (1 - margin)`.
+  Values outside the band are `breached`; samples below `minSamples` are
+  `insufficient-data` with `value: null`.
+- Each objective evaluates the newest `windowSize` observations (default `1000`)
+  and optionally filters by `operationId`. One shared ring buffer is sized to the
+  largest configured window.
+- `attachSloMonitor(runtime, monitor)` records `run:success` and `run:error`
+  events and returns an idempotent unsubscribe function. Attaching does not
+  change runtime behavior. `reset()` clears observations and keeps configuration.
+  Snapshots are frozen in configuration order.
 
 ## Testing SDK (`adaptive-runtime/testing`)
 
@@ -1392,6 +1533,55 @@ const comparison = comparePolicyTimelines({
 
 Reports step-level divergences, agreement ratio, and strategy switch count deltas.
 
+### Policy trace capture, replay, and diff
+
+```ts
+const recorder = createPolicyTraceRecorder({
+  operationId: "search-op",   // default "traced-operation"
+  maxEntries: 10_000,          // default 10_000
+});
+
+recorder.record({
+  label: "after-deploy",
+  now: clock.now(),
+  stateBefore,
+  decision,
+  stateAfter,
+  signals,
+  strategies,
+  pinnedStrategyId: null,
+  adaptationEnabled: true,
+  sampleSequence: 1,
+  signalsCached: false,
+});
+
+const trace = recorder.exportTrace();       // JSON-safe, deeply frozen
+const replay = replayPolicyTrace(trace);    // { deterministic, divergences, ... }
+const diff = diffPolicyTraces(baseline, candidate);
+const summary = summarizePolicyTrace(trace);
+const restored = importPolicyTrace(JSON.parse(json));
+```
+
+- The recorder deep-copies and freezes entries and evicts the oldest when
+  `maxEntries` is exceeded. Sequence numbers remain monotonic.
+- `capturePolicyTrace({ operationId?, policy?, strategies, initialState?, steps, clock? })`
+  evaluates timeline steps with `evaluatePolicy` and records each complete
+  input, decision, and resulting state without providers or timers.
+- `replayPolicyTrace(trace)` re-evaluates every entry from its recorded
+  `stateBefore`, compares deterministic decision fields and the resulting state,
+  and sets `deterministic` only when every entry matches.
+- `diffPolicyTraces(baseline, candidate)` compares entries by index; missing
+  entries count as divergences. `agreementRatio` is
+  `(comparedEntries - divergenceCount) / comparedEntries` (1 when there are no
+  compared entries), and `strategySwitchDelta` is candidate switches minus
+  baseline switches.
+- `summarizePolicyTrace(trace)` reports strategy and decision-kind counts,
+  switches, immediate reversals, cached samples, and budget ids that transition
+  from idle to engaged at an entry. A budget already engaged in the first
+  entry's `stateBefore` is not reported as new.
+- `importPolicyTrace(value)` validates untrusted JSON structurally and returns a
+  deeply frozen trace; malformed input throws `ConfigurationError`.
+
 ## Exports
 
 The package exports:
@@ -1402,12 +1592,16 @@ The package exports:
   `CompositeSignalProvider`, `createCompositeSignalProvider`, `composeSelectors`,
   `createCostBudgetSelector`, `createErrorRateGuardSelector`, `createLatencyBudgetSelector`,
   `createSafeSelector`, `createWeightedUtilitySelector`, `createSignalTrendGuardSelector`,
+  `createAdaptiveLimiter`, `AdmissionRejectedError`, `createPolicyRollout`,
+  `computeRolloutBucket`, `createSignalWindow`, `createSloMonitor`, `attachSloMonitor`,
   `inspectStateSnapshot`, `diffStateSnapshots`, `filterStateSnapshot`,
   `validateStateSnapshot`, all public types, and all error classes;
 - `adaptive-runtime/core`: platform-neutral runtime, policy helper,
   `composeSelectors`, `createCostBudgetSelector`, `createErrorRateGuardSelector`,
   `createLatencyBudgetSelector`, `createSafeSelector`, `createWeightedUtilitySelector`,
-  `createSignalTrendGuardSelector`, `inspectStateSnapshot`,
+  `createSignalTrendGuardSelector`, `createAdaptiveLimiter`, `AdmissionRejectedError`,
+  `createPolicyRollout`, `computeRolloutBucket`, `createSignalWindow`,
+  `createSloMonitor`, `attachSloMonitor`, `inspectStateSnapshot`,
   `diffStateSnapshots`, `filterStateSnapshot`, `validateStateSnapshot`,
   errors, types (including state snapshot types), `NetworkLatencyProvider`, and
   `CompositeSignalProvider`, `createCompositeSignalProvider`;
@@ -1422,14 +1616,18 @@ The package exports:
   `resolvePolicy`, `createInitialPolicyState`, `evaluatePolicy`,
   `composeSelectors`, `createCostBudgetSelector`, `createErrorRateGuardSelector`,
   `createLatencyBudgetSelector`, `createSafeSelector`, `createWeightedUtilitySelector`,
-  `createSignalTrendGuardSelector`, and the decision/state types;
+  `createSignalTrendGuardSelector`, `createPolicyRollout`, `computeRolloutBucket`,
+  and the decision/state types;
 - `adaptive-runtime/providers`: every built-in provider (Node.js, web, edge, and
   composite), `createCompositeSignalProvider`, `createEdgeExecutionBudgetProvider`,
   plus signal-name constants; this mixed barrel is not platform-neutral;
 - `adaptive-runtime/observability`: `MetricsCollector`,
-  `createMetricsCollector`, `attachOpenTelemetryMeter`, and the metrics types;
+  `createMetricsCollector`, `attachOpenTelemetryMeter`, `createSloMonitor`,
+  `attachSloMonitor`, and the metrics/SLO types;
 - `adaptive-runtime/testing`: `createFakeClock`, `ScriptedSignalProvider`,
-  `runProviderConformanceCheck`, `simulatePolicyTimeline`, and `comparePolicyTimelines`;
+  `runProviderConformanceCheck`, `simulatePolicyTimeline`, `comparePolicyTimelines`,
+  `createPolicyTraceRecorder`, `capturePolicyTrace`, `replayPolicyTrace`,
+  `diffPolicyTraces`, `summarizePolicyTrace`, and `importPolicyTrace`;
 - `adaptive-runtime/package.json`: package metadata.
 
 The root entry point intentionally excludes `/observability` and `/testing`.
