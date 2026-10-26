@@ -125,7 +125,7 @@
     "prepublishOnly": "npm run check"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.2.0",
+    "@biomejs/biome": "^2.6.2",
     "@types/node": "^26.6.5",
     "fast-check": "^4.10.2",
     "tsx": "^4.20.0",
