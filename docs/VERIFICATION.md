@@ -38,8 +38,9 @@ npm publication remains pending owner approval.
 
 The 0.10.0 quality gates were run locally on **2026-10-26** with the repository's
 documented commands. Measurements below were captured on the working tree before
-tagging, remote CI, GitHub release, or npm publication. Those remote steps require
-explicit owner approval and are **not** claimed here.
+tagging, GitHub release, or npm publication. Those release steps require explicit
+owner approval and are **not** claimed here. Pull-request CI evidence is recorded
+separately below.
 
 ### Final independent QA review
 
@@ -66,6 +67,15 @@ The following P2/P3 findings were remediated before the final gate:
 The final gate was rerun after remediation: 850 tests / 139 suites, 99.20% lines,
 94.95% branches, 99.37% functions, 10 export entries / 27 files / 84 runtime
 symbols, and a 208-file package dry run.
+
+### Pull request CI
+
+Release integration PR [#55](https://github.com/yusufgulerr/adaptive-runtime/pull/55)
+was opened from `release/v0.10.0`. All required checks passed: `Node 22`, `Node 24`,
+`Node 26`, `Cross-platform (macos-latest)`, `Cross-platform (windows-latest)`,
+`Analyze JavaScript/TypeScript` (CodeQL), `Dependency Review`, `Property fuzzing`,
+`Security and documentation`, and `PR title`. The `v0.10.0` tag, GitHub release, and
+npm publication remain pending explicit owner approval.
 
 | Command | Result |
 | --- | --- |
