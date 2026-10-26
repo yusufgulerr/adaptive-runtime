@@ -6,6 +6,51 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) after 1.0.
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-10-26
+
+### Added
+
+- **Adaptive concurrency limiter (`createAdaptiveLimiter`):**
+  - Deterministic AIMD admission control with `acquire`, `tryAcquire`, `withPermit`, and
+    `observe`; permits are idempotently releasable and expose live `released` state.
+  - Bounded FIFO wait queue (`maxQueueSize`), configurable acquire timeouts, abort-aware
+    waiters, and `AdmissionRejectedError` (`ADMISSION_REJECTED`) for queue-full,
+    timeout, and closed rejections.
+  - EWMA latency tracking with optional target-latency pressure, multiplicative
+    decrease, additive increase, min/max clamping, and frozen snapshots/limit events.
+- **Deterministic policy rollout (`createPolicyRollout`):**
+  - Salted FNV-1a cohort assignment stable across processes and replicas, with a
+    precision-preserving 0–100 percentage and `computeRolloutBucket` helper.
+  - `assign`, `getCohort`, and `isCandidate` are pure; assignments and snapshots are
+    frozen and preserve the configured policy references.
+- **Policy trace capture, replay, and diff (`adaptive-runtime/testing`):**
+  - `createPolicyTraceRecorder` captures bounded, deep-frozen, JSON-safe policy inputs
+    and outputs; `capturePolicyTrace` records timelines without providers or timers.
+  - `replayPolicyTrace` detects non-determinism and reports changed decision fields and
+    state divergence; `diffPolicyTraces`, `summarizePolicyTrace`, and `importPolicyTrace`
+    compare traces, summarize switches/reversals/budget engagement, and validate
+    untrusted JSON traces.
+- **SLO and error-budget monitor (`createSloMonitor`, `attachSloMonitor`):**
+  - Bounded rolling observation windows for availability, error rate, and mean latency,
+    with `met`, `at-risk`, `breached`, and `insufficient-data` statuses plus configurable
+    minimum samples, warning margins, and per-objective operation filtering.
+  - `attachSloMonitor` records runtime success/error events without changing runtime
+    behavior and returns an idempotent unsubscribe function.
+- **Bounded signal window analytics (`createSignalWindow`):**
+  - Rolling min/max/mean/population standard deviation, interpolated quantiles,
+    least-squares slope, trend classification, freshness/staleness, and explicit
+    unavailable counts without coercing unavailable readings to zero.
+
+### Changed
+
+- Re-exported the new admission, rollout, signal-window, and SLO symbols from
+  `adaptive-runtime`, `adaptive-runtime/core`, `adaptive-runtime/policy`,
+  `adaptive-runtime/observability`, and `adaptive-runtime/testing` where applicable.
+- Updated the package export verifier, public API integration tests, and entry-point
+  tests to validate every v0.10.0 runtime symbol.
+- `verify-version-sync` now validates that `CITATION.cff` carries a real calendar
+  `date-released` and that it matches the dated `CHANGELOG.md` release section.
+
 ## [0.9.0] — 2026-10-25
 
 ### Added
@@ -444,7 +489,8 @@ to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) after 1.0.
 - The runtime is not a sandbox and does not enforce OS resource limits.
 - Public API and decision reason codes may change during 0.x.
 
-[Unreleased]: https://github.com/yusufgulerr/adaptive-runtime/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/yusufgulerr/adaptive-runtime/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/yusufgulerr/adaptive-runtime/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/yusufgulerr/adaptive-runtime/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/yusufgulerr/adaptive-runtime/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/yusufgulerr/adaptive-runtime/compare/v0.6.0...v0.7.0

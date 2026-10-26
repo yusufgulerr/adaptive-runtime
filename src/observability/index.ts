@@ -1,6 +1,19 @@
 import { ConfigurationError } from "../errors/index.js";
 import type { AdaptiveRuntime } from "../types/runtime.js";
 
+export {
+  attachSloMonitor,
+  createSloMonitor,
+  type SloMetric,
+  type SloMonitor,
+  type SloMonitorOptions,
+  type SloMonitorSnapshot,
+  type SloObjective,
+  type SloObjectiveSnapshot,
+  type SloObservation,
+  type SloStatus,
+} from "./slo.js";
+
 /**
  * Structural type for an OpenTelemetry attribute value.
  */

@@ -23,10 +23,10 @@ The following 9 entry points are guaranteed stable across all 1.x releases:
 | `./node` | `./dist/node.js` | Node.js `>=22.0.0` | Node.js platform bundle: core runtime re-exports plus `ProcessMemoryProvider`, `CpuUtilizationProvider`, `EventLoopDelayProvider`, `EventLoopUtilizationProvider`, and `NetworkLatencyProvider`. |
 | `./web` | `./dist/web.js` | Browser / Web Workers | Browser platform bundle: core runtime re-exports plus `DeviceMemoryProvider`, `NetworkInformationProvider`, `FrameTimingProvider`, and `ComputePressureProvider`. |
 | `./edge` | `./dist/edge.js` | Edge / WinterCG (Cloudflare Workers, Deno, Bun, Vercel Edge) | Edge platform bundle: core runtime re-exports plus `ExecutionBudgetProvider` and edge resource constants. |
-| `./policy` | `./dist/policy/index.js` | Universal | Policy engine components, combinators (`composeSelectors`), built-in selectors (`createCostBudgetSelector`, `createSafeSelector`, `createErrorRateGuardSelector`, `createLatencyBudgetSelector`), and budget evaluators. |
+| `./policy` | `./dist/policy/index.js` | Universal | Policy engine components, deterministic percentage rollout (`createPolicyRollout`), combinators (`composeSelectors`), built-in selectors (`createCostBudgetSelector`, `createSafeSelector`, `createErrorRateGuardSelector`, `createLatencyBudgetSelector`), and budget evaluators. |
 | `./providers` | `./dist/providers/index.js` | Mixed | Comprehensive provider barrel containing all Node.js, Web, and Edge providers alongside composite signal utilities. |
-| `./observability` | `./dist/observability/index.js` | Universal | Zero-dependency metrics collection (`MetricsCollector`), Prometheus text exposition, and structural OpenTelemetry adapters. |
-| `./testing` | `./dist/testing/index.js` | Universal | Deterministic testing SDK: `FakeClock`, `ScriptedSignalProvider`, `conformanceRunner`, and `simulatePolicyTimeline`. |
+| `./observability` | `./dist/observability/index.js` | Universal | Zero-dependency metrics collection (`MetricsCollector`), Prometheus text exposition, structural OpenTelemetry adapters, and SLO/error-budget monitoring (`createSloMonitor`, `attachSloMonitor`). |
+| `./testing` | `./dist/testing/index.js` | Universal | Deterministic testing SDK: `createFakeClock`, `ScriptedSignalProvider`, `runProviderConformanceCheck`, `simulatePolicyTimeline`, and policy trace capture/replay/diff. |
 | `./package.json` | `./package.json` | Universal | Standard package metadata export. |
 
 ### Environment Portability Guarantee
@@ -35,15 +35,16 @@ The following 9 entry points are guaranteed stable across all 1.x releases:
 
 ---
 
-## 2. Frozen 12-Error-Code Catalog
+## 2. Frozen 13-Error-Code Catalog
 
 Every error thrown by the runtime inherits from `AdaptiveRuntimeError` and provides a
-machine-readable `code` property. In 1.0-RC and all 1.x releases, this catalog of 12
+machine-readable `code` property. In 1.0-RC and all 1.x releases, this catalog of 13
 error codes is **frozen**. No code will be renamed, removed, or repurposed.
 
 | Error Class | Frozen `code` | Description / Trigger Condition |
 | --- | --- | --- |
 | `ConfigurationError` | `"CONFIGURATION_ERROR"` | Invalid runtime, policy, budget, or provider configuration supplied at construction. |
+| `AdmissionRejectedError` | `"ADMISSION_REJECTED"` | The adaptive concurrency limiter rejected an acquire because the queue is full, the acquire timed out, or the limiter is closed. |
 | `RuntimeClosedError` | `"RUNTIME_CLOSED"` | Attempted to execute `run()` or evaluate decisions after calling `runtime.close()`. |
 | `NoEligibleStrategyError` | `"NO_ELIGIBLE_STRATEGY"` | No declared strategy satisfied quality floor, applicability checks, or budget constraints. |
 | `PinnedStrategyError` | `"PINNED_STRATEGY_UNAVAILABLE"` | A pinned strategy is not present in declared strategies or failed its applicability check. |

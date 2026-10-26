@@ -1,12 +1,19 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  AdmissionRejectedError,
+  attachSloMonitor,
   type CustomPolicySelector,
+  computeRolloutBucket,
+  createAdaptiveLimiter,
   createAdaptiveRuntime,
   createCompositeSignalProvider,
   createCostBudgetSelector,
+  createPolicyRollout,
   createSafeSelector,
   createSignalTrendGuardSelector,
+  createSignalWindow,
+  createSloMonitor,
   createWeightedUtilitySelector,
   diffStateSnapshots,
   filterStateSnapshot,
@@ -23,7 +30,15 @@ import { createMetricsCollector, MetricsCollector } from "../../src/observabilit
 import * as policyApi from "../../src/policy/index.js";
 import * as providersApi from "../../src/providers/index.js";
 import { createEdgeExecutionBudgetProvider } from "../../src/providers/index.js";
-import { comparePolicyTimelines, createFakeClock } from "../../src/testing/index.js";
+import {
+  capturePolicyTrace,
+  comparePolicyTimelines,
+  createFakeClock,
+  diffPolicyTraces,
+  importPolicyTrace,
+  replayPolicyTrace,
+  summarizePolicyTrace,
+} from "../../src/testing/index.js";
 import { FunctionSignalProvider } from "../helpers/providers.js";
 
 function constantProvider(id: string, signalName: string, value: number) {
@@ -368,5 +383,129 @@ describe("public API integration", () => {
     assert.equal(comparison.totalSteps, 1);
     assert.equal(comparison.divergenceCount, 0);
     assert.equal(comparison.agreementRatio, 1);
+  });
+
+  it("exposes v0.10.0 admission control, deterministic rollout, and signal windows", async () => {
+    const limiter = createAdaptiveLimiter({ initialLimit: 2, maxQueueSize: 1 });
+    const directPermit = limiter.tryAcquire();
+    assert.ok(directPermit);
+    assert.equal(directPermit.released, false);
+    directPermit.release({ succeeded: true, latencyMs: 12 });
+    assert.equal(directPermit.released, true);
+
+    const queuedPermit = await limiter.acquire({ label: "v0100" });
+    queuedPermit.release();
+    assert.equal(limiter.getSnapshot().inFlight, 0);
+    limiter.close();
+    await assert.rejects(limiter.acquire(), AdmissionRejectedError);
+
+    const baselinePolicy = { evaluationIntervalMs: 0 };
+    const candidatePolicy = { evaluationIntervalMs: 0, consecutiveSamples: 2 };
+    const rollout = createPolicyRollout({
+      baselinePolicy,
+      candidatePolicy,
+      percentage: 25,
+      salt: "release-0.10",
+    });
+    const assignment = rollout.assign("checkout");
+    assert.ok(assignment.bucket >= 0 && assignment.bucket <= 9_999);
+    assert.equal(rollout.getCohort("checkout"), assignment.cohort);
+    assert.equal(computeRolloutBucket("checkout", "release-0.10"), assignment.bucket);
+    assert.equal(
+      assignment.policy,
+      assignment.cohort === "candidate" ? candidatePolicy : baselinePolicy,
+    );
+
+    const signalWindow = createSignalWindow({
+      capacity: 3,
+      quantiles: [0.5],
+      staleAfterMs: 100,
+    });
+    signalWindow.push({
+      name: "net.latency",
+      unit: "milliseconds",
+      status: "ok",
+      value: 10,
+      observedAt: 1_000,
+    });
+    signalWindow.push({
+      name: "net.latency",
+      unit: "milliseconds",
+      status: "ok",
+      value: 30,
+      observedAt: 1_100,
+    });
+    signalWindow.push({
+      name: "net.latency",
+      unit: "milliseconds",
+      status: "unknown",
+      observedAt: 1_150,
+    });
+    const windowSummary = signalWindow.summary(1_200);
+    assert.equal(windowSummary.count, 3);
+    assert.equal(windowSummary.okCount, 2);
+    assert.equal(windowSummary.unavailableCount, 1);
+    assert.equal(windowSummary.mean, 20);
+    assert.equal(windowSummary.quantiles["0.5"], 20);
+    assert.equal(windowSummary.latest, 30);
+    assert.equal(windowSummary.ageMs, 100);
+    assert.equal(windowSummary.stale, false);
+  });
+
+  it("exposes v0.10.0 SLO monitoring and policy trace replay", async () => {
+    const monitor = createSloMonitor({
+      objectives: [
+        { id: "availability", metric: "availability", target: 0.9 },
+        { id: "latency", metric: "latency", target: 5_000, operationId: "slo-op" },
+      ],
+    });
+    const runtime = createAdaptiveRuntime({ policy: { evaluationIntervalMs: 0 } });
+    const detach = attachSloMonitor(runtime, monitor);
+    const runResult = await runtime.run({
+      operationId: "slo-op",
+      input: 21,
+      strategies: identityStrategies,
+    });
+    assert.equal(runResult.value, 42);
+    detach();
+    await runtime.close();
+
+    const snapshot = monitor.getSnapshot();
+    assert.equal(snapshot.observationCount, 1);
+    assert.equal(snapshot.healthy, true);
+    assert.equal(snapshot.objectives[0]?.value, 1);
+    assert.equal(snapshot.objectives[0]?.status, "met");
+    assert.notEqual(snapshot.objectives[1]?.value, null);
+
+    const trace = capturePolicyTrace({
+      operationId: "v0100-trace",
+      strategies: [
+        { id: "fast", qualityTier: 1 },
+        { id: "thorough", qualityTier: 2 },
+      ],
+      steps: [
+        { now: 0, signals: [], label: "cold-start" },
+        { now: 1_000, signals: [] },
+      ],
+    });
+    assert.equal(trace.entries.length, 2);
+
+    const replay = replayPolicyTrace(trace);
+    assert.equal(replay.deterministic, true);
+    assert.equal(replay.totalEntries, 2);
+    assert.equal(replay.mismatchedEntries, 0);
+
+    const summary = summarizePolicyTrace(trace);
+    assert.equal(summary.entryCount, 2);
+    assert.equal(
+      Object.values(summary.strategyCounts).reduce((total, count) => total + count, 0),
+      2,
+    );
+
+    const restored = importPolicyTrace(JSON.parse(JSON.stringify(trace)) as unknown);
+    const traceDiff = diffPolicyTraces(restored, trace);
+    assert.equal(traceDiff.comparedEntries, 2);
+    assert.equal(traceDiff.divergenceCount, 0);
+    assert.equal(traceDiff.agreementRatio, 1);
   });
 });

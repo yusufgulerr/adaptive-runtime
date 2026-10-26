@@ -39,6 +39,13 @@ describe("package entry points", () => {
     expectExport(coreApi, "createCompositeSignalProvider");
     expectExport(coreApi, "NetworkLatencyProvider");
     expectExport(coreApi, "ConfigurationError");
+    expectExport(coreApi, "AdmissionRejectedError");
+    expectExport(coreApi, "createAdaptiveLimiter");
+    expectExport(coreApi, "createPolicyRollout");
+    expectExport(coreApi, "computeRolloutBucket");
+    expectExport(coreApi, "createSignalWindow");
+    expectExport(coreApi, "createSloMonitor");
+    expectExport(coreApi, "attachSloMonitor");
     expectMissing(coreApi, "ProcessMemoryProvider");
     expectMissing(coreApi, "CpuUtilizationProvider");
     expectMissing(coreApi, "EventLoopDelayProvider");
@@ -123,17 +130,27 @@ describe("package entry points", () => {
     expectExport(observabilityApi, "MetricsCollector");
     expectExport(observabilityApi, "createMetricsCollector");
     expectExport(observabilityApi, "attachOpenTelemetryMeter");
+    expectExport(observabilityApi, "createSloMonitor");
+    expectExport(observabilityApi, "attachSloMonitor");
     expectExport(testingApi, "createFakeClock");
     expectExport(testingApi, "ScriptedSignalProvider");
     expectExport(testingApi, "runProviderConformanceCheck");
     expectExport(testingApi, "simulatePolicyTimeline");
     expectExport(testingApi, "comparePolicyTimelines");
+    expectExport(testingApi, "createPolicyTraceRecorder");
+    expectExport(testingApi, "capturePolicyTrace");
+    expectExport(testingApi, "replayPolicyTrace");
+    expectExport(testingApi, "diffPolicyTraces");
+    expectExport(testingApi, "summarizePolicyTrace");
+    expectExport(testingApi, "importPolicyTrace");
     expectExport(policyApi, "definePolicy");
     expectExport(policyApi, "composeSelectors");
     expectExport(policyApi, "createCostBudgetSelector");
     expectExport(policyApi, "createSafeSelector");
     expectExport(policyApi, "createWeightedUtilitySelector");
     expectExport(policyApi, "createSignalTrendGuardSelector");
+    expectExport(policyApi, "createPolicyRollout");
+    expectExport(policyApi, "computeRolloutBucket");
     expectExport(policyApi, "evaluatePolicy");
     expectExport(providersApi, "ProcessMemoryProvider");
     expectExport(providersApi, "DeviceMemoryProvider");
@@ -154,7 +171,7 @@ describe("package entry points", () => {
       version?: string;
       exports?: Record<string, unknown>;
     };
-    assert.equal(packageJson.version, "0.9.0");
+    assert.equal(packageJson.version, "0.10.0");
     const exports = packageJson.exports ?? {};
     const required = [
       ".",

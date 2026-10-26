@@ -6,7 +6,8 @@ This document records the historical 0.3.0 release verification on
 **2026-10-24**, the 0.7.0 source-line and release-integration verification on
 **2026-10-24**, the 0.8.0 source-line and release-integration verification on
 **2026-10-25**, and the 0.9.0 source-line and release-integration verification on
-**2026-10-25**. It distinguishes local verification, remote workflow evidence,
+**2026-10-25**. The 0.10.0 source-line verification was run on **2026-10-26**. It
+distinguishes local verification, remote workflow evidence,
 GitHub repository settings, and npm registry status. The 0.3.0 tree was merged to
 `main` at `5504f21`; the release-workflow fix and the OpenSSF readiness
 documentation merged at `953a484` and `6f67ff3`. The property/fuzz suite merged
@@ -32,6 +33,86 @@ callbacks and simulation, Node.js provider EWMA smoothing/heap headroom/jitter s
 circuit breaker cooldowns and health diagnostics, cooperative `waitForIdle` drain, runtime health
 summary, state snapshot merge hydration, and offline policy timeline divergence comparison.
 npm publication remains pending owner approval.
+
+## 0.10.0 source-line verification
+
+The 0.10.0 quality gates were run locally on **2026-10-26** with the repository's
+documented commands. Measurements below were captured on the working tree before
+tagging, GitHub release, or npm publication. Those release steps require explicit
+owner approval and are **not** claimed here. Pull-request CI evidence is recorded
+separately below.
+
+### Final independent QA review
+
+A read-only independent reviewer audited the five new modules, their contracts,
+barrels, integration tests, and release documentation. No P0 or P1 issue was found.
+The following P2/P3 findings were remediated before the final gate:
+
+- `summarizePolicyTrace` no longer reports a budget that was already engaged in
+  the first entry's `stateBefore`; a regression test covers a pre-engaged initial
+  state.
+- Trace cloning and import preserve reserved `__proto__` keys as own, deeply frozen
+  data properties in budget state, JSON details, and count records; regression
+  tests cover those paths.
+- The SLO observation ring now allocates lazily, so a very large `windowSize` no
+  longer causes `new Array` to throw `RangeError`; a regression test records
+  observations under a `2 ** 32` window.
+- `observe()` documentation and the locked contract now state that an AIMD increase
+  may immediately admit queued waiters, increasing `inFlight`; a regression test
+  covers that transfer.
+- Stability documentation now names the real testing exports; the roadmap tag
+  range, API TypeScript version, README SemVer wording, and the historical
+  verification environment label were corrected.
+
+The final gate was rerun after remediation: 850 tests / 139 suites, 99.20% lines,
+94.95% branches, 99.37% functions, 10 export entries / 27 files / 84 runtime
+symbols, and a 208-file package dry run.
+
+### Pull request CI
+
+Release integration PR [#55](https://github.com/yusufgulerr/adaptive-runtime/pull/55)
+was opened from `release/v0.10.0`. All required checks passed: `Node 22`, `Node 24`,
+`Node 26`, `Cross-platform (macos-latest)`, `Cross-platform (windows-latest)`,
+`Analyze JavaScript/TypeScript` (CodeQL), `Dependency Review`, `Property fuzzing`,
+`Security and documentation`, and `PR title`. The `v0.10.0` tag, GitHub release, and
+npm publication remain pending explicit owner approval.
+
+| Command | Result |
+| --- | --- |
+| `npm run format` | **PASS** — 115 files checked, no fixes applied |
+| `npm run lint` | **PASS** — 115 files checked, no fixes applied |
+| `npm run typecheck` | **PASS** — `tsc -p tsconfig.check.json` (0 errors) |
+| `npm run verify:version-sync` | **PASS** — `adaptive-runtime 0.10.0` in `package.json`, `package-lock.json`, `CHANGELOG.md`, and `CITATION.cff`, including a real calendar release date |
+| `npm run check` | **PASS** — lint, typecheck, version sync, 850 tests / 139 suites, build, exports, zero dependencies, and Markdown links |
+| `npm test` | **PASS** — 850 tests, 139 suites, 0 failures, 0 skipped |
+| `npm run test:fuzz` | **PASS** — 18 property tests, 4 suites, 0 failures |
+| `npm run test:coverage` | **PASS** — 99.20% lines, 94.95% branches, 99.37% functions |
+| `npm run build` | **PASS** — ESM, declarations, and maps emitted to `dist/` |
+| `npm run verify:exports` | **PASS** — 10 export entries, 27 files, and 84 runtime symbols |
+| `npm run verify:zero-deps` | **PASS** — 64 lockfile entries, 0 production packages |
+| `npm audit --omit=dev --audit-level=high` | **PASS** — 0 vulnerabilities |
+| Six `npm run example:*` commands | **PASS** — basic, search, planning, quick-start, observability, edge |
+| `npm run benchmark` | **PASS** — 20,000 runs per round, 7 rounds; see [BENCHMARKS.md](BENCHMARKS.md) |
+| `npm run benchmark:concurrency` | **PASS** — 4,096 runs per level per round, 3 rounds; see [BENCHMARKS.md](BENCHMARKS.md) |
+| `npm pack --dry-run` | **PASS** — 208 files, 331.8 kB packed, 1.6 MB unpacked, version 0.10.0 |
+| `npm run check:links` | **PASS** — 49 Markdown files, 266 relative links, 0 broken |
+
+Coverage from the 0.10.0 run:
+
+| Metric | Result | Threshold | Status |
+| --- | ---: | ---: | --- |
+| Lines | 99.20% | 80% | PASS |
+| Branches | 94.95% | 80% | PASS |
+| Functions | 99.37% | 80% | PASS |
+
+The new modules are fully covered for lines and functions except where noted:
+`policy/rollout.ts` and `signals/window.ts` are at 100% for all three metrics;
+`observability/slo.ts` is fully covered; `runtime/admission.ts` is 99.86% lines and
+96.59% branches; `testing/trace.ts` is 99.03% lines, 83.98% branches, and 100%
+functions. Every `src/**` file remains above the 80% branch gate. The package
+inspection above is a dry-run inventory, not a clean-consumer install of a published
+tarball. The npm registry and provenance attestation remain **not verified** for
+0.10.0; npm publication requires explicit owner approval.
 
 ## 0.9.0 source-line and release-integration verification
 
@@ -283,7 +364,7 @@ section.
 | @types/node | 26.6.5 |
 | Biome | 2.5.15 |
 | fast-check | 4.10.2 (development only) |
-| Package | adaptive-runtime 0.6.0 |
+| Package | adaptive-runtime 0.3.0 (historical Wave 2 quality-gate tree) |
 
 ## Commands and results
 

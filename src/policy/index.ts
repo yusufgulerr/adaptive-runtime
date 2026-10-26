@@ -36,6 +36,15 @@ export {
 } from "./engine.js";
 export { resolvePolicy } from "./resolve.js";
 export {
+  computeRolloutBucket,
+  createPolicyRollout,
+  type PolicyCohort,
+  type PolicyRollout,
+  type PolicyRolloutAssignment,
+  type PolicyRolloutOptions,
+  type PolicyRolloutSnapshot,
+} from "./rollout.js";
+export {
   type CostBudgetSelectorOptions,
   composeSelectors,
   createCostBudgetSelector,
